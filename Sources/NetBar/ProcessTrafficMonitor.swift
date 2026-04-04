@@ -255,8 +255,8 @@ class ProcessTrafficMonitor: ObservableObject {
     }
 
     private func computeCumulativeRanking(period: TimePeriod, now: Date) -> [AppTraffic] {
-        // 长期查询走持久化存储
-        if period.isLongTerm, let store = trafficStore {
+        // 长期查询走持久化存储（包括 sinceStart 超过 1 小时的情况）
+        if let store = trafficStore, (period.isLongTerm || period == .sinceStart) {
             let summaries: [TrafficStore.AppSummary]
             switch period {
             case .today:
@@ -267,6 +267,8 @@ class ProcessTrafficMonitor: ObservableObject {
                 summaries = store.queryLastDays(30)
             case .thisMonth:
                 summaries = store.queryThisMonth()
+            case .sinceStart:
+                summaries = store.query(from: startTime)
             default:
                 summaries = []
             }

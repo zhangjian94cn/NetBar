@@ -85,18 +85,21 @@ class StatusBarController: NSObject {
     private var processTrafficMonitor: ProcessTrafficMonitor
     private var networkInfoProvider: NetworkInfoProvider
     private var appIconResolver: AppIconResolver
+    private var vpsTrafficMonitor: VPSTrafficMonitor
     private var updateTimer: Timer?
     private var eventMonitor: Any?
 
     init(networkMonitor: NetworkMonitor, proxyDetector: ProxyDetector,
          processTrafficMonitor: ProcessTrafficMonitor,
          networkInfoProvider: NetworkInfoProvider,
-         appIconResolver: AppIconResolver) {
+         appIconResolver: AppIconResolver,
+         vpsTrafficMonitor: VPSTrafficMonitor) {
         self.networkMonitor = networkMonitor
         self.proxyDetector = proxyDetector
         self.processTrafficMonitor = processTrafficMonitor
         self.networkInfoProvider = networkInfoProvider
         self.appIconResolver = appIconResolver
+        self.vpsTrafficMonitor = vpsTrafficMonitor
 
         super.init()
 
@@ -126,7 +129,7 @@ class StatusBarController: NSObject {
 
     private func setupPopover() {
         popover = NSPopover()
-        popover.contentSize = NSSize(width: 380, height: 480)
+        popover.contentSize = NSSize(width: 380, height: 620)
         popover.behavior = .transient
         popover.animates = true
 
@@ -135,6 +138,7 @@ class StatusBarController: NSObject {
             proxyDetector: proxyDetector,
             processTrafficMonitor: processTrafficMonitor,
             networkInfoProvider: networkInfoProvider,
+            vpsTrafficMonitor: vpsTrafficMonitor,
             appIconResolver: appIconResolver
         )
         popover.contentViewController = NSHostingController(rootView: contentView)

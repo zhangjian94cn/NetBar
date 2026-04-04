@@ -30,6 +30,7 @@ struct MenuPopoverView: View {
     @ObservedObject var proxyDetector: ProxyDetector
     @ObservedObject var processTrafficMonitor: ProcessTrafficMonitor
     @ObservedObject var networkInfoProvider: NetworkInfoProvider
+    @ObservedObject var vpsTrafficMonitor: VPSTrafficMonitor
     var appIconResolver: AppIconResolver
 
     var body: some View {
@@ -204,6 +205,19 @@ struct MenuPopoverView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
 
+            // --- VPS 流量 ---
+            if !vpsTrafficMonitor.vpsList.isEmpty {
+                Divider().padding(.horizontal, 12)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(vpsTrafficMonitor.vpsList) { vps in
+                        VPSTrafficCard(vps: vps)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+
             Divider().padding(.horizontal, 12)
 
             // --- 底部 ---
@@ -211,6 +225,7 @@ struct MenuPopoverView: View {
                 Button(action: {
                     proxyDetector.checkProxySettings()
                     networkInfoProvider.refresh()
+                    vpsTrafficMonitor.refresh()
                 }) {
                     HStack(spacing: 4) {
                         Image(systemName: "arrow.clockwise")
@@ -321,5 +336,126 @@ struct CumulativeRow: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 2)
         .background(RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.02)))
+    }
+}
+
+/// VPS 流量卡片
+struct VPSTrafficCard: View {
+    let vps: VPSTrafficMonitor.VPSTraffic
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // 标题行
+            HStack {
+                Image(systemName: "cloud.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(.cyan)
+                Text("☁️ VPS 流量")
+                    .font(.system(size: 11, weight: .semibold))
+                Spacer()
+                Text(vps.name)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 3).fill(Color.cyan.opacity(0.1)))
+            }
+
+            // 流量统计
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.green)
+                        Text("上传")
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                    }
+                    Text(vps.formattedUpload)
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.blue)
+                        Text("下载")
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                    }
+                    Text(vps.formattedDownload)
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("总计")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                    HStack(spacing: 3) {
+                        Text(vps.formattedTotal)
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        Text("/ \(vps.formattedLimit)")
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Spacer()
+            }
+
+            // 错误提示
+            if let error = vps.error {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(.yellow)
+                    Text(error)
+                        .font(.system(size: 9))
+                        .foregroundColor(.yellow)
+                }
+            }
+
+            // 客户端
+            if !vps.clients.isEmpty {
+                Divider()
+                ForEach(vps.clients) { client in
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(client.isOnline ? Color.green : Color.gray)
+                            .frame(width: 6, height: 6)
+                        Text(client.email)
+                            .font(.system(size: 10, weight: .medium))
+                        Spacer()
+                        Text("\(formatBytes(client.upload)) ↑")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        Text("\(formatBytes(client.download)) ↓")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            // 更新时间
+            HStack {
+                Spacer()
+                Text("⟳ \(vps.lastUpdatedText)")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary.opacity(0.6))
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.cyan.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.cyan.opacity(0.1), lineWidth: 0.5))
+    }
+
+    private func formatBytes(_ bytes: UInt64) -> String {
+        let b = Double(bytes)
+        if b < 1024 { return String(format: "%.0f B", b) }
+        else if b < 1024 * 1024 { return String(format: "%.1f KB", b / 1024) }
+        else if b < 1024 * 1024 * 1024 { return String(format: "%.2f MB", b / (1024 * 1024)) }
+        else { return String(format: "%.2f GB", b / (1024 * 1024 * 1024)) }
     }
 }

@@ -97,12 +97,13 @@ class NetworkMonitor: ObservableObject {
 
         for (name, current) in currentStats {
             if let previous = previousStats[name] {
+                // 计数器重置（VPN 断开重连、网络切换等）时跳过本次采样
                 let dlBytes = current.bytesIn >= previous.bytesIn
                     ? Double(current.bytesIn - previous.bytesIn)
-                    : Double(current.bytesIn) // 溢出处理
+                    : 0
                 let ulBytes = current.bytesOut >= previous.bytesOut
                     ? Double(current.bytesOut - previous.bytesOut)
-                    : Double(current.bytesOut)
+                    : 0
 
                 let dlSpeed = dlBytes / elapsed
                 let ulSpeed = ulBytes / elapsed

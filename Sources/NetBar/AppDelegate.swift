@@ -10,6 +10,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let networkInfoProvider = NetworkInfoProvider()
     let appIconResolver = AppIconResolver()
     let trafficStore = TrafficStore()
+    let vpsTrafficMonitor = VPSTrafficMonitor()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 关联持久化存储
@@ -20,7 +21,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             proxyDetector: proxyDetector,
             processTrafficMonitor: processTrafficMonitor,
             networkInfoProvider: networkInfoProvider,
-            appIconResolver: appIconResolver
+            appIconResolver: appIconResolver,
+            vpsTrafficMonitor: vpsTrafficMonitor
         )
 
         networkMonitor.start()
@@ -28,6 +30,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         processTrafficMonitor.start()
         networkInfoProvider.start()
         trafficStore.startPeriodicFlush()
+        vpsTrafficMonitor.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -36,5 +39,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         processTrafficMonitor.stop()
         networkInfoProvider.stop()
         trafficStore.stop()
+        vpsTrafficMonitor.stop()
     }
 }
