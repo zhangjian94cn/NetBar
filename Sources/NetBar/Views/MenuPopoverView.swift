@@ -210,7 +210,7 @@ struct MenuPopoverView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 180)
+                .frame(height: 120)
             }
         }
         .padding(.horizontal, 16)
