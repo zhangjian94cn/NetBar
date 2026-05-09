@@ -11,15 +11,18 @@ struct VPSTrafficCard: View {
                 Image(systemName: "cloud.fill")
                     .font(.system(size: 11))
                     .foregroundColor(.cyan)
-                Text("☁️ VPS 流量")
-                    .font(.system(size: 11, weight: .semibold))
-                Spacer()
                 Text(vps.name)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
                     .background(RoundedRectangle(cornerRadius: 3).fill(Color.cyan.opacity(0.1)))
+                
+                Spacer()
+                
+                Text("⟳ \(vps.lastUpdatedText)")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary.opacity(0.6))
             }
 
             // 流量统计
@@ -97,14 +100,6 @@ struct VPSTrafficCard: View {
                             .foregroundColor(.secondary)
                     }
                 }
-            }
-
-            // 更新时间
-            HStack {
-                Spacer()
-                Text("⟳ \(vps.lastUpdatedText)")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary.opacity(0.6))
             }
         }
         .padding(10)

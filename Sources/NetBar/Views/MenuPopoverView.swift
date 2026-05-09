@@ -4,8 +4,8 @@ import Cocoa
 /// 菜单栏弹出详细面板（容器视图）
 /// 子视图已拆分到 Views/Components/ 目录
 struct MenuPopoverView: View {
-    private let maxVisibleActiveApps = 30
-    private let maxVisibleRankingApps = 60
+    private let maxVisibleActiveApps = 5
+    private let maxVisibleRankingApps = 5
 
     @ObservedObject var networkMonitor: NetworkMonitor
     @ObservedObject var proxyDetector: ProxyDetector
@@ -13,7 +13,8 @@ struct MenuPopoverView: View {
     @ObservedObject var networkInfoProvider: NetworkInfoProvider
     @ObservedObject var vpsTrafficMonitor: VPSTrafficMonitor
     @ObservedObject var appIconResolver: AppIconResolver
-    let contentHeight: CGFloat
+
+    @State private var selectedTab: Int = 0
 
     private var visibleIconNames: [String] {
         let names = processTrafficMonitor.appSpeeds.prefix(maxVisibleActiveApps).map(\.name) +
@@ -23,22 +24,33 @@ struct MenuPopoverView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                headerSection
-                Divider().padding(.horizontal, 12)
-                speedSection
-                Divider().padding(.horizontal, 12)
-                activeAppsSection
-                Divider().padding(.horizontal, 12)
-                cumulativeSection
-                vpsSection
-                Divider().padding(.horizontal, 12)
-                footerSection
+        VStack(alignment: .leading, spacing: 0) {
+            headerSection
+            Divider().padding(.horizontal, 12)
+            speedSection
+            Divider().padding(.horizontal, 12)
+            
+            // Tab 切换区域
+            Picker("", selection: $selectedTab) {
+                Text("⚡ 实时活跃").tag(0)
+                Text("📊 累计流量").tag(1)
             }
-            .frame(width: 380)
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+
+            if selectedTab == 0 {
+                activeAppsSection
+            } else {
+                cumulativeSection
+            }
+            
+            vpsSection
+            
+            Divider().padding(.horizontal, 12)
+            footerSection
         }
-        .frame(width: 380, height: contentHeight)
+        .frame(width: 380)
         .onAppear {
             preloadVisibleIcons()
         }
@@ -131,16 +143,6 @@ struct MenuPopoverView: View {
 
     private var activeAppsSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("⚡ 实时活跃")
-                    .font(.system(size: 11, weight: .semibold))
-                Spacer()
-                Text("\(processTrafficMonitor.appSpeeds.count) 个")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-            }
-            .padding(.bottom, 2)
-
             if processTrafficMonitor.appSpeeds.isEmpty {
                 HStack {
                     Spacer()
@@ -149,20 +151,17 @@ struct MenuPopoverView: View {
                         .foregroundColor(.secondary)
                     Spacer()
                 }
-                .frame(height: 120)
+                .padding(.vertical, 20)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 3) {
-                        ForEach(processTrafficMonitor.appSpeeds.prefix(maxVisibleActiveApps)) { app in
-                            AppSpeedRow(app: app, iconResolver: appIconResolver)
-                        }
+                VStack(spacing: 3) {
+                    ForEach(processTrafficMonitor.appSpeeds.prefix(maxVisibleActiveApps)) { app in
+                        AppSpeedRow(app: app, iconResolver: appIconResolver)
                     }
                 }
-                .frame(height: 120)
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.bottom, 8)
     }
 
     // MARK: - 累计流量排行
@@ -170,8 +169,6 @@ struct MenuPopoverView: View {
     private var cumulativeSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("📊 累计流量")
-                    .font(.system(size: 11, weight: .semibold))
                 Spacer()
                 TimePeriodPopUpButton(selection: $processTrafficMonitor.selectedPeriod)
                     .frame(width: 94, height: 22)
@@ -186,7 +183,7 @@ struct MenuPopoverView: View {
                         .foregroundColor(.secondary)
                     Spacer()
                 }
-                .padding(.vertical, 8)
+                .padding(.vertical, 20)
             } else {
                 HStack(spacing: 4) {
                     Text("应用")
@@ -203,18 +200,15 @@ struct MenuPopoverView: View {
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 4)
 
-                ScrollView {
-                    LazyVStack(spacing: 3) {
-                        ForEach(processTrafficMonitor.cumulativeRanking.prefix(maxVisibleRankingApps)) { app in
-                            CumulativeRow(app: app, iconResolver: appIconResolver)
-                        }
+                VStack(spacing: 3) {
+                    ForEach(processTrafficMonitor.cumulativeRanking.prefix(maxVisibleRankingApps)) { app in
+                        CumulativeRow(app: app, iconResolver: appIconResolver)
                     }
                 }
-                .frame(height: 120)
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.bottom, 8)
     }
 
     // MARK: - VPS 流量
