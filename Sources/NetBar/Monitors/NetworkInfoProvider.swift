@@ -3,7 +3,7 @@ import SystemConfiguration
 import Network
 
 /// 网络环境信息提供器 — Wi-Fi 名称、IP 地址
-class NetworkInfoProvider: ObservableObject {
+class NetworkInfoProvider: ObservableObject, MonitorProtocol {
 
     @Published var wifiSSID: String = "—"
     @Published var localIP: String = "—"

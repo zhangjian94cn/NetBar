@@ -1,7 +1,7 @@
 import Foundation
 
 /// 持久化流量存储器 — 将每个应用的流量数据写入磁盘，支持长期统计
-class TrafficStore {
+class TrafficStore: MonitorProtocol {
 
     /// 每小时汇总的流量记录（持久化单位）
     struct HourlyRecord: Codable {
@@ -18,17 +18,9 @@ class TrafficStore {
         var totalOut: UInt64
         var total: UInt64 { totalIn + totalOut }
 
-        var formattedIn: String { formatBytes(totalIn) }
-        var formattedOut: String { formatBytes(totalOut) }
-        var formattedTotal: String { formatBytes(total) }
-
-        private func formatBytes(_ bytes: UInt64) -> String {
-            let b = Double(bytes)
-            if b < 1024 { return String(format: "%.0f B", b) }
-            else if b < 1024 * 1024 { return String(format: "%.1f KB", b / 1024) }
-            else if b < 1024 * 1024 * 1024 { return String(format: "%.2f MB", b / (1024 * 1024)) }
-            else { return String(format: "%.2f GB", b / (1024 * 1024 * 1024)) }
-        }
+        var formattedIn: String { Formatters.formatBytes(totalIn) }
+        var formattedOut: String { Formatters.formatBytes(totalOut) }
+        var formattedTotal: String { Formatters.formatBytes(total) }
     }
 
     private let storageDir: URL
@@ -47,6 +39,7 @@ class TrafficStore {
     private var currentHourKey: String = ""
     private var hourBuffer: [String: (bytesIn: UInt64, bytesOut: UInt64)] = [:]
     private var flushTimer: Timer?
+    private let queue = DispatchQueue(label: "com.zjah.NetBar.trafficStore")
 
     init() {
         // 存储在 ~/Library/Application Support/NetBar/
@@ -64,13 +57,18 @@ class TrafficStore {
     /// 记录一批流量增量（由 ProcessTrafficMonitor 调用）
     func record(appName: String, bytesIn: UInt64, bytesOut: UInt64) {
         guard bytesIn > 0 || bytesOut > 0 else { return }
+        queue.async {
+            self.recordOnQueue(appName: appName, bytesIn: bytesIn, bytesOut: bytesOut)
+        }
+    }
 
+    private func recordOnQueue(appName: String, bytesIn: UInt64, bytesOut: UInt64) {
         let now = Date()
         let hourKey = hourFormatter.string(from: now)
 
         // 如果跨小时了，先刷盘旧数据
         if hourKey != currentHourKey {
-            flushToDisk()
+            flushToDiskOnQueue()
             currentHourKey = hourKey
         }
 
@@ -79,6 +77,10 @@ class TrafficStore {
         } else {
             hourBuffer[appName] = (bytesIn, bytesOut)
         }
+    }
+
+    func start() {
+        startPeriodicFlush()
     }
 
     /// 启动定时刷盘（每 30 秒）
@@ -92,13 +94,21 @@ class TrafficStore {
     }
 
     func stop() {
-        flushToDisk()
         flushTimer?.invalidate()
         flushTimer = nil
+        queue.sync {
+            flushToDiskOnQueue()
+        }
     }
 
     /// 将内存缓冲写入磁盘（按日期分文件）
     func flushToDisk() {
+        queue.async {
+            self.flushToDiskOnQueue()
+        }
+    }
+
+    private func flushToDiskOnQueue() {
         guard !hourBuffer.isEmpty else { return }
 
         let dateKey = String(currentHourKey.prefix(10))  // "2026-03-21"
@@ -139,6 +149,12 @@ class TrafficStore {
 
     /// 查询指定时间范围内的 App 流量汇总
     func query(from startDate: Date, to endDate: Date = Date()) -> [AppSummary] {
+        queue.sync {
+            queryOnQueue(from: startDate, to: endDate)
+        }
+    }
+
+    private func queryOnQueue(from startDate: Date, to endDate: Date = Date()) -> [AppSummary] {
         var allRecords: [HourlyRecord] = []
 
         // 遍历日期范围内的所有文件

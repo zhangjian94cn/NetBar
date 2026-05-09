@@ -72,9 +72,14 @@ echo "✅ NetBar 已安装并打包为标准 macOS 应用！"
 echo "   应用位置: $APP_DIR"
 echo "   LaunchAgent: $PLIST_DST"
 echo ""
-echo "🚀 重新启动应用..."
-open "$APP_DIR"
-echo "   ✅ 已启动最新版本"
+echo "🚀 通过 LaunchAgent 启动应用..."
+sleep 1
+if pgrep -f "$BIN_DIR/NetBar" >/dev/null; then
+    echo "   ✅ 已启动最新版本"
+else
+    echo "   ⚠️  LaunchAgent 未立即启动，改用 open 启动"
+    open "$APP_DIR"
+fi
 echo ""
 echo "📌 常用命令:"
 echo "   手动启动: open $APP_DIR"

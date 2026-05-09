@@ -3,7 +3,7 @@ import Network
 import SystemConfiguration
 
 /// 代理/VPN 检测器 — 多策略综合判断
-class ProxyDetector: ObservableObject {
+class ProxyDetector: ObservableObject, MonitorProtocol {
 
     enum ProxyStatus: Equatable {
         case direct          // 直连

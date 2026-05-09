@@ -1,7 +1,7 @@
 import Foundation
 
 /// VPS 流量监控器 — 通过 3X-UI API 定时获取 VPS 流量统计
-class VPSTrafficMonitor: ObservableObject {
+class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
 
     /// 单个 VPS 的流量数据
     struct VPSTraffic: Identifiable {
@@ -18,24 +18,16 @@ class VPSTrafficMonitor: ObservableObject {
         var isOnline: Bool
         var error: String?
 
-        var formattedUpload: String { formatBytes(upload) }
-        var formattedDownload: String { formatBytes(download) }
-        var formattedTotal: String { formatBytes(total) }
-        var formattedLimit: String { totalLimit == 0 ? "∞" : formatBytes(totalLimit) }
+        var formattedUpload: String { Formatters.formatBytes(upload) }
+        var formattedDownload: String { Formatters.formatBytes(download) }
+        var formattedTotal: String { Formatters.formatBytes(total) }
+        var formattedLimit: String { totalLimit == 0 ? "∞" : Formatters.formatBytes(totalLimit) }
         var lastUpdatedText: String {
             guard let last = lastUpdated else { return "未连接" }
             let elapsed = Date().timeIntervalSince(last)
             if elapsed < 60 { return "\(Int(elapsed))s 前" }
             else if elapsed < 3600 { return "\(Int(elapsed / 60))m 前" }
             else { return "\(Int(elapsed / 3600))h 前" }
-        }
-
-        private func formatBytes(_ bytes: UInt64) -> String {
-            let b = Double(bytes)
-            if b < 1024 { return String(format: "%.0f B", b) }
-            else if b < 1024 * 1024 { return String(format: "%.1f KB", b / 1024) }
-            else if b < 1024 * 1024 * 1024 { return String(format: "%.2f MB", b / (1024 * 1024)) }
-            else { return String(format: "%.2f GB", b / (1024 * 1024 * 1024)) }
         }
     }
 
@@ -103,7 +95,11 @@ class VPSTrafficMonitor: ObservableObject {
         ]
     }
 
-    func start(interval: TimeInterval = 60.0) {
+    func start() {
+        start(interval: 60.0)
+    }
+
+    func start(interval: TimeInterval) {
         // 立即获取一次
         fetchAll()
         // 定时刷新

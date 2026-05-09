@@ -1,7 +1,9 @@
 import Foundation
 
 /// 按应用维度的流量监控器 — 通过长连接 nettop 流式解析
-class ProcessTrafficMonitor: ObservableObject {
+class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
+    private static let maxActiveApps = 30
+    private static let maxRankingApps = 60
 
     /// 时间窗口选项
     enum TimePeriod: String, CaseIterable {
@@ -48,36 +50,11 @@ class ProcessTrafficMonitor: ObservableObject {
         var totalSpeed: Double { downloadSpeed + uploadSpeed }
         var totalCumulative: UInt64 { cumulativeDownload + cumulativeUpload }
 
-        var formattedDownload: String { formatSpeed(downloadSpeed) }
-        var formattedUpload: String { formatSpeed(uploadSpeed) }
-        var formattedCumulativeDown: String { formatBytes(cumulativeDownload) }
-        var formattedCumulativeUp: String { formatBytes(cumulativeUpload) }
-        var formattedCumulativeTotal: String { formatBytes(totalCumulative) }
-
-        private func formatSpeed(_ bytesPerSec: Double) -> String {
-            if bytesPerSec < 1024 {
-                return String(format: "%.0f B/s", bytesPerSec)
-            } else if bytesPerSec < 1024 * 1024 {
-                return String(format: "%.1f KB/s", bytesPerSec / 1024)
-            } else if bytesPerSec < 1024 * 1024 * 1024 {
-                return String(format: "%.2f MB/s", bytesPerSec / (1024 * 1024))
-            } else {
-                return String(format: "%.2f GB/s", bytesPerSec / (1024 * 1024 * 1024))
-            }
-        }
-
-        private func formatBytes(_ bytes: UInt64) -> String {
-            let b = Double(bytes)
-            if b < 1024 {
-                return String(format: "%.0f B", b)
-            } else if b < 1024 * 1024 {
-                return String(format: "%.1f KB", b / 1024)
-            } else if b < 1024 * 1024 * 1024 {
-                return String(format: "%.2f MB", b / (1024 * 1024))
-            } else {
-                return String(format: "%.2f GB", b / (1024 * 1024 * 1024))
-            }
-        }
+        var formattedDownload: String { Formatters.formatSpeed(downloadSpeed) }
+        var formattedUpload: String { Formatters.formatSpeed(uploadSpeed) }
+        var formattedCumulativeDown: String { Formatters.formatBytes(cumulativeDownload) }
+        var formattedCumulativeUp: String { Formatters.formatBytes(cumulativeUpload) }
+        var formattedCumulativeTotal: String { Formatters.formatBytes(totalCumulative) }
     }
 
     enum AppProxyStatus {
@@ -136,13 +113,19 @@ class ProcessTrafficMonitor: ObservableObject {
     private var nettopPipe: Pipe?
     private var outputBuffer: String = ""
     private var timer: Timer?
+    private let updateQueue = DispatchQueue(label: "com.zjah.NetBar.processTrafficMonitor", qos: .utility)
+    private var updateInProgress = false
 
     /// 持久化存储器
     var trafficStore: TrafficStore?
 
     init() {}
 
-    func start(interval: TimeInterval = 2.0) {
+    func start() {
+        start(interval: 2.0)
+    }
+
+    func start(interval: TimeInterval) {
         // 先获取一次基线数据（同步方式）
         let (stats, interfaces) = fetchNettopOnce()
         previousStats = stats
@@ -166,8 +149,18 @@ class ProcessTrafficMonitor: ObservableObject {
     }
 
     private func update() {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        guard !updateInProgress else { return }
+        updateInProgress = true
+        let selectedPeriod = selectedPeriod
+
+        updateQueue.async { [weak self] in
             guard let self = self else { return }
+            defer {
+                DispatchQueue.main.async {
+                    self.updateInProgress = false
+                }
+            }
+
             let (currentStats, interfaces) = self.fetchNettopOnce()
             let now = Date()
             let elapsed = now.timeIntervalSince(self.previousTime)
@@ -226,9 +219,10 @@ class ProcessTrafficMonitor: ObservableObject {
             }
 
             speeds.sort { $0.totalSpeed > $1.totalSpeed }
+            speeds = Array(speeds.prefix(Self.maxActiveApps))
             let cutoff = now.addingTimeInterval(-3700)
             self.trafficHistory.removeAll { $0.timestamp < cutoff }
-            let cumulative = self.computeCumulativeRanking(period: self.selectedPeriod, now: now)
+            let cumulative = self.computeCumulativeRanking(period: selectedPeriod, now: now)
 
             DispatchQueue.main.async {
                 self.appSpeeds = speeds
@@ -280,6 +274,8 @@ class ProcessTrafficMonitor: ObservableObject {
                     proxyStatus: determineProxyStatus(for: s.appName)
                 )
             }
+            .prefix(Self.maxRankingApps)
+            .map { $0 }
         }
 
         // 短期查询走内存
@@ -304,7 +300,7 @@ class ProcessTrafficMonitor: ObservableObject {
             ))
         }
         result.sort { $0.totalCumulative > $1.totalCumulative }
-        return result
+        return Array(result.prefix(Self.maxRankingApps))
     }
 
     private func extractAppName(from processKey: String) -> String {

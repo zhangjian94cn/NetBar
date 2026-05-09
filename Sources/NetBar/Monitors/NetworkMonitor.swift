@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 /// 网络速度监控器 — 使用 sysctl + NET_RT_IFLIST2 读取网络接口 64 位字节统计
-class NetworkMonitor: ObservableObject {
+class NetworkMonitor: ObservableObject, MonitorProtocol {
 
     struct InterfaceStats {
         let name: String
@@ -16,36 +16,11 @@ class NetworkMonitor: ObservableObject {
 
         static let zero = Speed(download: 0, upload: 0)
 
-        var formattedDownload: String { Speed.formatSpeed(download) }
-        var formattedUpload: String { Speed.formatSpeed(upload) }
+        var formattedDownload: String { Formatters.formatSpeed(download) }
+        var formattedUpload: String { Formatters.formatSpeed(upload) }
 
-        static func formatSpeed(_ bytesPerSec: Double) -> String {
-            if bytesPerSec < 1024 {
-                return String(format: "%.0f B/s", bytesPerSec)
-            } else if bytesPerSec < 1024 * 1024 {
-                return String(format: "%.1f KB/s", bytesPerSec / 1024)
-            } else if bytesPerSec < 1024 * 1024 * 1024 {
-                return String(format: "%.2f MB/s", bytesPerSec / (1024 * 1024))
-            } else {
-                return String(format: "%.2f GB/s", bytesPerSec / (1024 * 1024 * 1024))
-            }
-        }
-
-        /// 菜单栏紧凑格式（无前导空格，完全靠系统右对齐）
-        static func formatSpeedCompact(_ bytesPerSec: Double) -> String {
-            if bytesPerSec < 1024 {
-                return String(format: "%.0fB/s", bytesPerSec)
-            } else if bytesPerSec < 1024 * 1024 {
-                return String(format: "%.0fK/s", bytesPerSec / 1024)
-            } else if bytesPerSec < 1024 * 1024 * 1024 {
-                return String(format: "%.1fM/s", bytesPerSec / (1024 * 1024))
-            } else {
-                return String(format: "%.1fG/s", bytesPerSec / (1024 * 1024 * 1024))
-            }
-        }
-
-        var compactDownload: String { Speed.formatSpeedCompact(download) }
-        var compactUpload: String { Speed.formatSpeedCompact(upload) }
+        var compactDownload: String { Formatters.formatSpeedCompact(download) }
+        var compactUpload: String { Formatters.formatSpeedCompact(upload) }
 
         /// 菜单栏紧凑格式
         var menuBarText: String {
@@ -65,7 +40,11 @@ class NetworkMonitor: ObservableObject {
 
     init() {}
 
-    func start(interval: TimeInterval = 1.0) {
+    func start() {
+        start(interval: 1.0)
+    }
+
+    func start(interval: TimeInterval) {
         // 先获取一次基线数据
         previousStats = fetchInterfaceStats()
         previousTime = Date()
