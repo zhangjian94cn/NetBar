@@ -57,17 +57,39 @@ NetBar/
 ├── Info.plist                            # macOS App Bundle 配置
 ├── install.sh                            # 一键安装脚本
 ├── com.netbar.agent.plist                # Launch Agent 配置
+├── Resources/
+│   └── AppIcon.icns                      # 应用图标
 └── Sources/NetBar/
-    ├── NetBarApp.swift                   # @main 入口
-    ├── AppDelegate.swift                 # 生命周期管理
-    ├── NetworkMonitor.swift              # 总网速监控 (sysctl)
-    ├── ProcessTrafficMonitor.swift       # 按应用流量 (nettop)
-    ├── ProxyDetector.swift               # 系统代理检测
-    ├── TrafficStore.swift                # 持久化流量存储
-    ├── AppIconResolver.swift             # 应用图标解析
-    ├── NetworkInfoProvider.swift         # Wi-Fi/IP 信息
-    ├── StatusBarController.swift         # 菜单栏控制 + 自定义绘制
-    └── Views/MenuPopoverView.swift       # 弹出面板 UI
+    ├── App/                              # 应用入口 & 基础设施
+    │   ├── NetBarApp.swift               # @main 入口
+    │   ├── AppDelegate.swift             # 生命周期管理
+    │   ├── MonitorCoordinator.swift      # 服务编排器
+    │   ├── MonitorProtocol.swift         # 统一生命周期协议
+    │   └── StatusBarController.swift     # 菜单栏控制 + 浮层面板管理
+    ├── Monitors/                         # 核心监控服务
+    │   ├── NetworkMonitor.swift          # 总网速 (sysctl)
+    │   ├── ProcessTrafficMonitor.swift   # 按应用流量（聚合 nettop + mihomo）
+    │   ├── NettopParser.swift            # nettop 命令执行与解析
+    │   ├── MihomoClient.swift            # Mihomo 代理 API 客户端
+    │   ├── ProxyDetector.swift           # 系统代理/VPN 检测
+    │   ├── VPSTrafficMonitor.swift       # VPS 流量 (3X-UI API)
+    │   └── NetworkInfoProvider.swift     # Wi-Fi/IP 信息
+    ├── Storage/
+    │   └── TrafficStore.swift            # 持久化流量存储
+    ├── Utilities/
+    │   ├── Formatters.swift              # 格式化工具
+    │   ├── AppIconResolver.swift         # 应用图标解析
+    │   └── InsecureURLSession.swift      # 忽略自签证书的 URLSession
+    └── Views/                            # SwiftUI UI 层
+        ├── MenuPopoverView.swift         # 弹出面板主视图
+        └── Components/                   # 可复用 UI 组件
+            ├── AppSpeedRow.swift
+            ├── CumulativeRow.swift
+            ├── ProxyBadge.swift
+            ├── StatusBarView.swift
+            ├── TimePeriodPopUpButton.swift
+            ├── TrafficTableRow.swift
+            └── VPSTrafficCard.swift
 ```
 
 ## 🏗 技术实现

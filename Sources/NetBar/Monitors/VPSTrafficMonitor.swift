@@ -62,37 +62,63 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
 
     private var configs: [VPSConfig] = []
     private var sessionCookies: [String: String] = [:]  // configId -> cookie
+    private let stateQueue = DispatchQueue(label: "com.zjah.NetBar.vpsTrafficMonitor.state")
     private var timer: Timer?
 
     init() {
-        loadDefaultConfig()
+        configs = Self.loadConfigsFromAppConfig()
+        logLoadedConfigs()
     }
 
-    /// 从 UserDefaults 加载 VPS 配置（无硬编码默认值）
-    /// 首次使用需通过 defaults write com.zjah.NetBar vps_bwg_host "x.x.x.x" 等命令配置
-    private func loadDefaultConfig() {
-        let defaults = UserDefaults.standard
-        guard let host = defaults.string(forKey: "vps_bwg_host"),
-              let username = defaults.string(forKey: "vps_bwg_user"),
-              let password = defaults.string(forKey: "vps_bwg_pass") else {
-            // 未配置 VPS 信息，跳过
-            return
+    /// 从 AppConfig 加载 VPS 配置
+    private static func loadConfigsFromAppConfig() -> [VPSConfig] {
+        let appConfigs = AppConfig.shared.vpsConfigs
+        guard !appConfigs.isEmpty else {
+            return []
         }
-        let port = defaults.integer(forKey: "vps_bwg_port") != 0 ? defaults.integer(forKey: "vps_bwg_port") : 2053
-        let basePath = defaults.string(forKey: "vps_bwg_path") ?? ""
 
-        configs = [
+        return appConfigs.map { cfg in
             VPSConfig(
-                id: "bwg-cn2gia",
-                name: "BWG-CN2GIA",
-                host: host,
-                port: port,
-                basePath: basePath,
-                username: username,
-                password: password,
-                useTLS: true
+                id: cfg.id,
+                name: cfg.name,
+                host: cfg.host,
+                port: cfg.port,
+                basePath: cfg.basePath,
+                username: cfg.username,
+                password: cfg.password,
+                useTLS: cfg.useTLS
             )
-        ]
+        }
+    }
+
+    private func logLoadedConfigs() {
+        let count = stateQueue.sync { configs.count }
+        if count == 0 {
+            Log.vps.info("未配置 VPS 信息，VPS 流量监控跳过")
+        } else {
+            Log.vps.info("已加载 \(count) 个 VPS 配置")
+        }
+    }
+
+    func reloadConfigs() {
+        let newConfigs = Self.loadConfigsFromAppConfig()
+        let validIDs = Set(newConfigs.map(\.id))
+
+        stateQueue.async {
+            self.configs = newConfigs
+            self.sessionCookies = self.sessionCookies.filter { validIDs.contains($0.key) }
+
+            DispatchQueue.main.async {
+                self.vpsList.removeAll { !validIDs.contains($0.id) }
+            }
+
+            if newConfigs.isEmpty {
+                Log.vps.info("未配置 VPS 信息，VPS 流量监控跳过")
+            } else {
+                Log.vps.info("已重新加载 \(newConfigs.count) 个 VPS 配置")
+            }
+            self.fetchAll(configs: newConfigs)
+        }
     }
 
     func start() {
@@ -123,16 +149,40 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
     // MARK: - 网络请求
 
     private func fetchAll() {
-        for config in configs {
+        let configsSnapshot = stateQueue.sync { configs }
+        fetchAll(configs: configsSnapshot)
+    }
+
+    private func fetchAll(configs configsSnapshot: [VPSConfig]) {
+        for config in configsSnapshot {
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 self?.fetchVPSTraffic(config: config)
             }
         }
     }
 
+    private func cookie(for configID: String) -> String? {
+        stateQueue.sync {
+            sessionCookies[configID]
+        }
+    }
+
+    private func setCookie(_ cookie: String, for configID: String) {
+        stateQueue.async {
+            guard self.configs.contains(where: { $0.id == configID }) else { return }
+            self.sessionCookies[configID] = cookie
+        }
+    }
+
+    private func containsConfig(id: String) -> Bool {
+        stateQueue.sync {
+            configs.contains { $0.id == id }
+        }
+    }
+
     private func fetchVPSTraffic(config: VPSConfig) {
         // 先尝试用已有 cookie 获取数据
-        if let cookie = sessionCookies[config.id] {
+        if let cookie = cookie(for: config.id) {
             if let traffic = fetchInbounds(config: config, cookie: cookie) {
                 updateTraffic(config: config, traffic: traffic)
                 return
@@ -144,7 +194,7 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
             updateError(config: config, error: "登录失败")
             return
         }
-        sessionCookies[config.id] = cookie
+        setCookie(cookie, for: config.id)
 
         if let traffic = fetchInbounds(config: config, cookie: cookie) {
             updateTraffic(config: config, traffic: traffic)
@@ -159,7 +209,7 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = "username=\(config.username)&password=\(config.password)".data(using: .utf8)
+        request.httpBody = Self.formEncodedBody(username: config.username, password: config.password)
         request.timeoutInterval = 10
 
         let session = createInsecureSession()
@@ -220,16 +270,30 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
         return result
     }
 
+    static func formEncodedBody(username: String, password: String) -> Data? {
+        let body = [
+            "username=\(formEncode(username))",
+            "password=\(formEncode(password))"
+        ].joined(separator: "&")
+        return body.data(using: .utf8)
+    }
+
+    private static func formEncode(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._* ")
+        return (value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value)
+            .replacingOccurrences(of: " ", with: "+")
+    }
+
     /// 创建忽略自签证书的 URLSession
     private func createInsecureSession() -> URLSession {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 10
-        return URLSession(configuration: config, delegate: InsecureDelegate(), delegateQueue: nil)
+        InsecureURLSession.create(timeout: 10)
     }
 
     // MARK: - 数据更新
 
     private func updateTraffic(config: VPSConfig, traffic: [InboundData]) {
+        guard containsConfig(id: config.id) else { return }
+
         let now = Date()
         var totalUp: UInt64 = 0
         var totalDown: UInt64 = 0
@@ -287,6 +351,8 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
     }
 
     private func updateError(config: VPSConfig, error: String) {
+        guard containsConfig(id: config.id) else { return }
+
         DispatchQueue.main.async {
             if let idx = self.vpsList.firstIndex(where: { $0.id == config.id }) {
                 self.vpsList[idx].error = error
@@ -345,20 +411,6 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
             self.down = (dict["down"] as? UInt64) ?? (dict["down"] as? Int).map({ UInt64($0) }) ?? 0
             self.allTime = (dict["allTime"] as? UInt64) ?? (dict["allTime"] as? Int).map({ UInt64($0) }) ?? 0
             self.lastOnline = (dict["lastOnline"] as? Int64) ?? (dict["lastOnline"] as? Int).map({ Int64($0) }) ?? 0
-        }
-    }
-}
-
-// MARK: - 忽略自签证书
-
-private class InsecureDelegate: NSObject, URLSessionDelegate {
-    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
-                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-           let trust = challenge.protectionSpace.serverTrust {
-            completionHandler(.useCredential, URLCredential(trust: trust))
-        } else {
-            completionHandler(.performDefaultHandling, nil)
         }
     }
 }

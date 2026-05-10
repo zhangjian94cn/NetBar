@@ -6,6 +6,11 @@ import Cocoa
 class StatusBarView: NSView {
     var uploadText: String = "0B/s"
     var downloadText: String = "0B/s"
+    var isPanelOpen: Bool = false {
+        didSet {
+            needsDisplay = true
+        }
+    }
 
     // 动态计算图标（每次绘制时根据深浅色模式采用 headerTextColor）
     private var icon: NSImage? {
@@ -41,6 +46,16 @@ class StatusBarView: NSView {
         super.draw(dirtyRect)
 
         let h = bounds.height  // 菜单栏默认通常是 22
+        if isPanelOpen {
+            let highlightRect = bounds.insetBy(dx: 2, dy: 2)
+            NSColor.labelColor.withAlphaComponent(0.14).setFill()
+            NSBezierPath(
+                roundedRect: highlightRect,
+                xRadius: highlightRect.height / 2,
+                yRadius: highlightRect.height / 2
+            ).fill()
+        }
+
         let textAttrs: [NSAttributedString.Key: Any] = [
             .font: textFont,
             .foregroundColor: NSColor.headerTextColor

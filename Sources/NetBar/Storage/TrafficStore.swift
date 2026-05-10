@@ -3,6 +3,13 @@ import Foundation
 /// 持久化流量存储器 — 将每个应用的流量数据写入磁盘，支持长期统计
 class TrafficStore: MonitorProtocol {
 
+    /// 采样增量，批量写入时用来减少队列切换
+    struct TrafficIncrement {
+        let appName: String
+        let bytesIn: UInt64
+        let bytesOut: UInt64
+    }
+
     /// 每小时汇总的流量记录（持久化单位）
     struct HourlyRecord: Codable {
         let hour: String          // "2026-03-21T14" 格式
@@ -38,6 +45,7 @@ class TrafficStore: MonitorProtocol {
     // 内存中当前小时的缓冲
     private var currentHourKey: String = ""
     private var hourBuffer: [String: (bytesIn: UInt64, bytesOut: UInt64)] = [:]
+    private var recordsByDateCache: [String: [HourlyRecord]] = [:]
     private var flushTimer: Timer?
     private let queue = DispatchQueue(label: "com.zjah.NetBar.trafficStore")
 
@@ -58,14 +66,29 @@ class TrafficStore: MonitorProtocol {
     func record(appName: String, bytesIn: UInt64, bytesOut: UInt64) {
         guard bytesIn > 0 || bytesOut > 0 else { return }
         queue.async {
-            self.recordOnQueue(appName: appName, bytesIn: bytesIn, bytesOut: bytesOut)
+            let hourKey = self.hourFormatter.string(from: Date())
+            self.recordOnQueue(appName: appName, bytesIn: bytesIn, bytesOut: bytesOut, hourKey: hourKey)
         }
     }
 
-    private func recordOnQueue(appName: String, bytesIn: UInt64, bytesOut: UInt64) {
-        let now = Date()
-        let hourKey = hourFormatter.string(from: now)
+    func recordBatch(_ increments: [TrafficIncrement]) {
+        let validIncrements = increments.filter { $0.bytesIn > 0 || $0.bytesOut > 0 }
+        guard !validIncrements.isEmpty else { return }
 
+        queue.async {
+            let hourKey = self.hourFormatter.string(from: Date())
+            for increment in validIncrements {
+                self.recordOnQueue(
+                    appName: increment.appName,
+                    bytesIn: increment.bytesIn,
+                    bytesOut: increment.bytesOut,
+                    hourKey: hourKey
+                )
+            }
+        }
+    }
+
+    private func recordOnQueue(appName: String, bytesIn: UInt64, bytesOut: UInt64, hourKey: String) {
         // 如果跨小时了，先刷盘旧数据
         if hourKey != currentHourKey {
             flushToDiskOnQueue()
@@ -112,10 +135,8 @@ class TrafficStore: MonitorProtocol {
         guard !hourBuffer.isEmpty else { return }
 
         let dateKey = String(currentHourKey.prefix(10))  // "2026-03-21"
-        let fileURL = storageDir.appendingPathComponent("traffic-\(dateKey).json")
-
-        // 读取已有数据
-        var records = loadRecords(from: fileURL)
+        let fileURL = fileURL(for: dateKey)
+        var records = cachedRecords(for: dateKey)
 
         // 合并缓冲
         for (appName, data) in hourBuffer {
@@ -132,14 +153,15 @@ class TrafficStore: MonitorProtocol {
             }
         }
 
+        recordsByDateCache[dateKey] = records
+
         // 写回文件
         do {
             let encoder = JSONEncoder()
-            encoder.outputFormatting = .prettyPrinted
             let data = try encoder.encode(records)
             try data.write(to: fileURL, options: .atomic)
         } catch {
-            print("TrafficStore: 写入失败 \(error)")
+            Log.storage.error("流量数据写入失败: \(fileURL.path) — \(error.localizedDescription)")
         }
 
         hourBuffer.removeAll()
@@ -155,7 +177,23 @@ class TrafficStore: MonitorProtocol {
     }
 
     private func queryOnQueue(from startDate: Date, to endDate: Date = Date()) -> [AppSummary] {
-        var allRecords: [HourlyRecord] = []
+        var summaries: [String: AppSummary] = [:]
+        let startHourKey = hourFormatter.string(from: startDate)
+        let endHourKey = hourFormatter.string(from: endDate)
+
+        func addSummary(appName: String, bytesIn: UInt64, bytesOut: UInt64) {
+            if var summary = summaries[appName] {
+                summary.totalIn += bytesIn
+                summary.totalOut += bytesOut
+                summaries[appName] = summary
+            } else {
+                summaries[appName] = AppSummary(
+                    appName: appName,
+                    totalIn: bytesIn,
+                    totalOut: bytesOut
+                )
+            }
+        }
 
         // 遍历日期范围内的所有文件
         var date = Calendar.current.startOfDay(for: startDate)
@@ -163,15 +201,11 @@ class TrafficStore: MonitorProtocol {
 
         while date <= endDay {
             let dateKey = dateFormatter.string(from: date)
-            let fileURL = storageDir.appendingPathComponent("traffic-\(dateKey).json")
-            let records = loadRecords(from: fileURL)
-
-            let startHourKey = hourFormatter.string(from: startDate)
-            let endHourKey = hourFormatter.string(from: endDate)
+            let records = cachedRecords(for: dateKey)
 
             for record in records {
                 if record.hour >= startHourKey && record.hour <= endHourKey {
-                    allRecords.append(record)
+                    addSummary(appName: record.appName, bytesIn: record.bytesIn, bytesOut: record.bytesOut)
                 }
             }
 
@@ -179,30 +213,9 @@ class TrafficStore: MonitorProtocol {
         }
 
         // 合并当前内存缓冲
-        let currentStartHour = hourFormatter.string(from: startDate)
-        let currentEndHour = hourFormatter.string(from: endDate)
-        if currentHourKey >= currentStartHour && currentHourKey <= currentEndHour {
+        if currentHourKey >= startHourKey && currentHourKey <= endHourKey {
             for (appName, data) in hourBuffer {
-                allRecords.append(HourlyRecord(
-                    hour: currentHourKey, appName: appName,
-                    bytesIn: data.bytesIn, bytesOut: data.bytesOut
-                ))
-            }
-        }
-
-        // 汇总
-        var summaries: [String: AppSummary] = [:]
-        for record in allRecords {
-            if var s = summaries[record.appName] {
-                s.totalIn += record.bytesIn
-                s.totalOut += record.bytesOut
-                summaries[record.appName] = s
-            } else {
-                summaries[record.appName] = AppSummary(
-                    appName: record.appName,
-                    totalIn: record.bytesIn,
-                    totalOut: record.bytesOut
-                )
+                addSummary(appName: appName, bytesIn: data.bytesIn, bytesOut: data.bytesOut)
             }
         }
 
@@ -237,8 +250,22 @@ class TrafficStore: MonitorProtocol {
             let data = try Data(contentsOf: fileURL)
             return try JSONDecoder().decode([HourlyRecord].self, from: data)
         } catch {
-            print("TrafficStore: 读取失败 \(error)")
+            Log.storage.error("流量数据读取失败: \(fileURL.path) — \(error.localizedDescription)")
             return []
         }
+    }
+
+    private func fileURL(for dateKey: String) -> URL {
+        storageDir.appendingPathComponent("traffic-\(dateKey).json")
+    }
+
+    private func cachedRecords(for dateKey: String) -> [HourlyRecord] {
+        if let cached = recordsByDateCache[dateKey] {
+            return cached
+        }
+
+        let records = loadRecords(from: fileURL(for: dateKey))
+        recordsByDateCache[dateKey] = records
+        return records
     }
 }
