@@ -41,6 +41,9 @@ class NetworkInfoProvider: ObservableObject, MonitorProtocol {
 
     /// 获取当前 Wi-Fi SSID（通过 airport 命令）
     private func fetchWiFiSSID() -> String {
+        #if APP_STORE
+        return "—"
+        #else
         let process = Process()
         let pipe = Pipe()
 
@@ -71,6 +74,7 @@ class NetworkInfoProvider: ObservableObject, MonitorProtocol {
         } catch {}
 
         return "未连接"
+        #endif
     }
 
     /// 获取本机 IP 地址（en0 接口）

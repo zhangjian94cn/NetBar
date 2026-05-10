@@ -5,14 +5,14 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
 
     /// 单个 VPS 的流量数据
     struct VPSTraffic: Identifiable {
-        let id: String          // VPS 标识
-        let name: String        // 显示名称
-        var upload: UInt64      // 上传字节数
-        var download: UInt64    // 下载字节数
-        var total: UInt64       // 总计
-        var totalLimit: UInt64  // 流量限额（0 = 无限）
-        var protocol_: String   // 协议名称
-        var port: Int           // 端口
+        let id: String
+        let name: String
+        var upload: UInt64
+        var download: UInt64
+        var total: UInt64
+        var totalLimit: UInt64
+        var protocol_: String
+        var port: Int
         var clients: [ClientTraffic]
         var lastUpdated: Date?
         var isOnline: Bool
@@ -41,28 +41,12 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
         var isOnline: Bool
     }
 
-    /// VPS 连接配置
-    struct VPSConfig {
-        let id: String
-        let name: String
-        let host: String
-        let port: Int
-        let basePath: String
-        let username: String
-        let password: String
-        let useTLS: Bool
-
-        var baseURL: String {
-            let scheme = useTLS ? "https" : "http"
-            return "\(scheme)://\(host):\(port)/\(basePath)"
-        }
-    }
-
     @Published var vpsList: [VPSTraffic] = []
 
-    private var configs: [VPSConfig] = []
-    private var sessionCookies: [String: String] = [:]  // configId -> cookie
+    private var configs: [AppConfig.VPSConfig] = []
+    private var sessionCookies: [String: String] = [:]
     private let stateQueue = DispatchQueue(label: "com.zjah.NetBar.vpsTrafficMonitor.state")
+    private let client = ThreeXUIClient()
     private var timer: Timer?
 
     init() {
@@ -70,25 +54,8 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
         logLoadedConfigs()
     }
 
-    /// 从 AppConfig 加载 VPS 配置
-    private static func loadConfigsFromAppConfig() -> [VPSConfig] {
-        let appConfigs = AppConfig.shared.vpsConfigs
-        guard !appConfigs.isEmpty else {
-            return []
-        }
-
-        return appConfigs.map { cfg in
-            VPSConfig(
-                id: cfg.id,
-                name: cfg.name,
-                host: cfg.host,
-                port: cfg.port,
-                basePath: cfg.basePath,
-                username: cfg.username,
-                password: cfg.password,
-                useTLS: cfg.useTLS
-            )
-        }
+    private static func loadConfigsFromAppConfig() -> [AppConfig.VPSConfig] {
+        AppConfig.shared.vpsConfigs
     }
 
     private func logLoadedConfigs() {
@@ -126,9 +93,7 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
     }
 
     func start(interval: TimeInterval) {
-        // 立即获取一次
         fetchAll()
-        // 定时刷新
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.fetchAll()
         }
@@ -153,18 +118,16 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
         fetchAll(configs: configsSnapshot)
     }
 
-    private func fetchAll(configs configsSnapshot: [VPSConfig]) {
+    private func fetchAll(configs configsSnapshot: [AppConfig.VPSConfig]) {
         for config in configsSnapshot {
-            DispatchQueue.global(qos: .utility).async { [weak self] in
-                self?.fetchVPSTraffic(config: config)
+            Task.detached(priority: .utility) { [weak self] in
+                await self?.fetchVPSTraffic(config: config)
             }
         }
     }
 
     private func cookie(for configID: String) -> String? {
-        stateQueue.sync {
-            sessionCookies[configID]
-        }
+        stateQueue.sync { sessionCookies[configID] }
     }
 
     private func setCookie(_ cookie: String, for configID: String) {
@@ -174,124 +137,48 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
         }
     }
 
+    private func removeCookie(for configID: String) {
+        stateQueue.async {
+            self.sessionCookies.removeValue(forKey: configID)
+        }
+    }
+
     private func containsConfig(id: String) -> Bool {
         stateQueue.sync {
             configs.contains { $0.id == id }
         }
     }
 
-    private func fetchVPSTraffic(config: VPSConfig) {
-        // 先尝试用已有 cookie 获取数据
-        if let cookie = cookie(for: config.id) {
-            if let traffic = fetchInbounds(config: config, cookie: cookie) {
-                updateTraffic(config: config, traffic: traffic)
-                return
-            }
-        }
-
-        // Cookie 失效，重新登录
-        guard let cookie = login(config: config) else {
-            updateError(config: config, error: "登录失败")
+    private func fetchVPSTraffic(config: AppConfig.VPSConfig) async {
+        guard !config.password.isEmpty else {
+            updateError(config: config, error: VPSConnectionError.passwordRequired.localizedDescription)
             return
         }
-        setCookie(cookie, for: config.id)
 
-        if let traffic = fetchInbounds(config: config, cookie: cookie) {
+        if let cookie = cookie(for: config.id) {
+            do {
+                let traffic = try await client.fetchInbounds(config: config, cookie: cookie)
+                updateTraffic(config: config, traffic: traffic)
+                return
+            } catch {
+                removeCookie(for: config.id)
+            }
+        }
+
+        do {
+            let cookie = try await client.login(config: config, password: config.password)
+            setCookie(cookie, for: config.id)
+            let traffic = try await client.fetchInbounds(config: config, cookie: cookie)
             updateTraffic(config: config, traffic: traffic)
-        } else {
-            updateError(config: config, error: "获取数据失败")
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            updateError(config: config, error: message)
         }
-    }
-
-    /// 登录 3X-UI 面板
-    private func login(config: VPSConfig) -> String? {
-        let url = URL(string: "\(config.baseURL)/login")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Self.formEncodedBody(username: config.username, password: config.password)
-        request.timeoutInterval = 10
-
-        let session = createInsecureSession()
-        let semaphore = DispatchSemaphore(value: 0)
-
-        var responseCookie: String?
-
-        let task = session.dataTask(with: request) { data, response, error in
-            defer { semaphore.signal() }
-            guard error == nil,
-                  let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200,
-                  let data = data else { return }
-
-            // 检查登录是否成功
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let success = json["success"] as? Bool, success {
-                // 提取 Set-Cookie
-                if let cookies = httpResponse.allHeaderFields["Set-Cookie"] as? String {
-                    responseCookie = cookies.components(separatedBy: ";").first
-                }
-            }
-        }
-        task.resume()
-        semaphore.wait()
-
-        return responseCookie
-    }
-
-    /// 获取 inbound 列表（含流量数据）
-    private func fetchInbounds(config: VPSConfig, cookie: String) -> [InboundData]? {
-        let url = URL(string: "\(config.baseURL)/panel/api/inbounds/list")!
-        var request = URLRequest(url: url)
-        request.setValue(cookie, forHTTPHeaderField: "Cookie")
-        request.timeoutInterval = 10
-
-        let session = createInsecureSession()
-        let semaphore = DispatchSemaphore(value: 0)
-
-        var result: [InboundData]?
-
-        let task = session.dataTask(with: request) { data, response, error in
-            defer { semaphore.signal() }
-            guard error == nil,
-                  let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200,
-                  let data = data else { return }
-
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let success = json["success"] as? Bool, success,
-               let objs = json["obj"] as? [[String: Any]] {
-                result = objs.compactMap { InboundData(from: $0) }
-            }
-        }
-        task.resume()
-        semaphore.wait()
-
-        return result
-    }
-
-    static func formEncodedBody(username: String, password: String) -> Data? {
-        let body = [
-            "username=\(formEncode(username))",
-            "password=\(formEncode(password))"
-        ].joined(separator: "&")
-        return body.data(using: .utf8)
-    }
-
-    private static func formEncode(_ value: String) -> String {
-        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._* ")
-        return (value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value)
-            .replacingOccurrences(of: " ", with: "+")
-    }
-
-    /// 创建忽略自签证书的 URLSession
-    private func createInsecureSession() -> URLSession {
-        InsecureURLSession.create(timeout: 10)
     }
 
     // MARK: - 数据更新
 
-    private func updateTraffic(config: VPSConfig, traffic: [InboundData]) {
+    private func updateTraffic(config: AppConfig.VPSConfig, traffic: [ThreeXUIInboundData]) {
         guard containsConfig(id: config.id) else { return }
 
         let now = Date()
@@ -325,7 +212,6 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
         }
 
         let hasOnlineClient = allClients.contains { $0.isOnline }
-
         let vpsTraffic = VPSTraffic(
             id: config.id,
             name: config.name,
@@ -350,7 +236,7 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
         }
     }
 
-    private func updateError(config: VPSConfig, error: String) {
+    private func updateError(config: AppConfig.VPSConfig, error: String) {
         guard containsConfig(id: config.id) else { return }
 
         DispatchQueue.main.async {
@@ -359,58 +245,20 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
                 self.vpsList[idx].lastUpdated = Date()
             } else {
                 self.vpsList.append(VPSTraffic(
-                    id: config.id, name: config.name,
-                    upload: 0, download: 0, total: 0, totalLimit: 0,
-                    protocol_: "", port: 0, clients: [],
-                    lastUpdated: Date(), isOnline: false, error: error
+                    id: config.id,
+                    name: config.name,
+                    upload: 0,
+                    download: 0,
+                    total: 0,
+                    totalLimit: 0,
+                    protocol_: "",
+                    port: 0,
+                    clients: [],
+                    lastUpdated: Date(),
+                    isOnline: false,
+                    error: error
                 ))
             }
-        }
-    }
-
-    // MARK: - JSON 解析
-
-    private struct InboundData {
-        let up: UInt64
-        let down: UInt64
-        let allTime: UInt64
-        let total: UInt64
-        let protocol_: String
-        let port: Int
-        let clients: [ClientData]
-
-        init?(from dict: [String: Any]) {
-            guard let up = dict["up"] as? UInt64 ?? (dict["up"] as? Int).map({ UInt64($0) }),
-                  let down = dict["down"] as? UInt64 ?? (dict["down"] as? Int).map({ UInt64($0) }) else { return nil }
-            self.up = up
-            self.down = down
-            self.allTime = (dict["allTime"] as? UInt64) ?? (dict["allTime"] as? Int).map({ UInt64($0) }) ?? (up + down)
-            self.total = (dict["total"] as? UInt64) ?? (dict["total"] as? Int).map({ UInt64($0) }) ?? 0
-            self.protocol_ = dict["protocol"] as? String ?? ""
-            self.port = dict["port"] as? Int ?? 0
-
-            if let stats = dict["clientStats"] as? [[String: Any]] {
-                self.clients = stats.compactMap { ClientData(from: $0) }
-            } else {
-                self.clients = []
-            }
-        }
-    }
-
-    private struct ClientData {
-        let email: String
-        let up: UInt64
-        let down: UInt64
-        let allTime: UInt64
-        let lastOnline: Int64
-
-        init?(from dict: [String: Any]) {
-            guard let email = dict["email"] as? String else { return nil }
-            self.email = email
-            self.up = (dict["up"] as? UInt64) ?? (dict["up"] as? Int).map({ UInt64($0) }) ?? 0
-            self.down = (dict["down"] as? UInt64) ?? (dict["down"] as? Int).map({ UInt64($0) }) ?? 0
-            self.allTime = (dict["allTime"] as? UInt64) ?? (dict["allTime"] as? Int).map({ UInt64($0) }) ?? 0
-            self.lastOnline = (dict["lastOnline"] as? Int64) ?? (dict["lastOnline"] as? Int).map({ Int64($0) }) ?? 0
         }
     }
 }

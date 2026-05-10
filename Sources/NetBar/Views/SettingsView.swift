@@ -1,6 +1,8 @@
+import AppKit
+import ServiceManagement
 import SwiftUI
 
-/// 设置窗口 — 通用、代理、VPS 三个 Tab
+/// 设置窗口 — 通用、代理、服务器管理
 struct SettingsView: View {
     @ObservedObject var config = AppConfig.shared
     let coordinator: MonitorCoordinator
@@ -14,19 +16,27 @@ struct SettingsView: View {
                 }
                 .tag(0)
 
-            ProxySettingsTab()
+            if DistributionFlavor.current.supportsAdvancedProxyDetection {
+                ProxySettingsTab()
+                    .tabItem {
+                        Label("代理", systemImage: "network")
+                    }
+                    .tag(1)
+            }
+
+            IPDetectionSettingsTab(coordinator: coordinator)
                 .tabItem {
-                    Label("代理", systemImage: "network")
+                    Label("IP 检测", systemImage: "globe")
                 }
-                .tag(1)
+                .tag(2)
 
             VPSSettingsTab(coordinator: coordinator)
                 .tabItem {
-                    Label("VPS 监控", systemImage: "cloud")
+                    Label("服务器管理", systemImage: "cloud")
                 }
-                .tag(2)
+                .tag(3)
         }
-        .frame(width: 460, height: 340)
+        .frame(width: 560, height: 430)
     }
 }
 
@@ -34,7 +44,7 @@ struct SettingsView: View {
 
 private struct GeneralSettingsTab: View {
     let coordinator: MonitorCoordinator
-    @State private var launchAtLogin = LaunchAgentManager.isEnabled
+    @State private var launchAtLogin = StartupSetting.isEnabled
     @State private var suppressLaunchAtLoginChange = false
     @State private var refreshInterval: Double = AppConfig.shared.refreshInterval
 
@@ -44,10 +54,10 @@ private struct GeneralSettingsTab: View {
                 Toggle("开机自动启动", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { newValue in
                         guard !suppressLaunchAtLoginChange else { return }
-                        guard LaunchAgentManager.setEnabled(newValue) else {
-                            Log.config.error("开机自启设置失败: LaunchAgent 写入或 launchctl 更新失败")
+                        guard StartupSetting.setEnabled(newValue) else {
+                            Log.config.error("开机自启设置失败")
                             suppressLaunchAtLoginChange = true
-                            launchAtLogin = LaunchAgentManager.isEnabled
+                            launchAtLogin = StartupSetting.isEnabled
                             DispatchQueue.main.async {
                                 suppressLaunchAtLoginChange = false
                             }
@@ -76,6 +86,12 @@ private struct GeneralSettingsTab: View {
 
             Section {
                 HStack {
+                    Text("版本类型")
+                    Spacer()
+                    Text(DistributionFlavor.current.displayName)
+                        .foregroundColor(.secondary)
+                }
+                HStack {
                     Text("版本")
                     Spacer()
                     Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0")
@@ -94,8 +110,36 @@ private struct GeneralSettingsTab: View {
         .formStyle(.grouped)
         .padding()
         .onAppear {
-            launchAtLogin = LaunchAgentManager.isEnabled
+            launchAtLogin = StartupSetting.isEnabled
             refreshInterval = AppConfig.shared.refreshInterval
+        }
+    }
+}
+
+private enum StartupSetting {
+    static var isEnabled: Bool {
+        if DistributionFlavor.current.usesLaunchAgentStartup {
+            return LaunchAgentManager.isEnabled
+        }
+        return SMAppService.mainApp.status == .enabled
+    }
+
+    @discardableResult
+    static func setEnabled(_ enabled: Bool) -> Bool {
+        if DistributionFlavor.current.usesLaunchAgentStartup {
+            return LaunchAgentManager.setEnabled(enabled)
+        }
+
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            return true
+        } catch {
+            Log.config.error("SMAppService 开机自启设置失败: \(error.localizedDescription)")
+            return false
         }
     }
 }
@@ -121,7 +165,7 @@ private struct ProxySettingsTab: View {
             } header: {
                 Text("Mihomo / Clash Verge")
             } footer: {
-                Text("Mihomo 代理核心的本地连接信息。如果使用 Clash Verge，Socket 路径通常为 /tmp/verge/verge-mihomo.sock")
+                Text("Direct Full 用于读取本机代理核心连接信息，App Store Lite 不包含该能力。")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -131,79 +175,178 @@ private struct ProxySettingsTab: View {
     }
 }
 
+// MARK: - IP 检测设置
+
+private struct IPDetectionSettingsTab: View {
+    let coordinator: MonitorCoordinator
+    @ObservedObject private var egressIPMonitor: EgressIPMonitor
+    @State private var enabled = AppConfig.shared.ipCheckEnabled
+    @State private var version = AppConfig.shared.ipCheckVersion
+    @State private var refreshMinutes = AppConfig.shared.ipCheckRefreshMinutes
+    @State private var apiKey = AppConfig.shared.ping0APIKey
+    @State private var isTesting = false
+
+    init(coordinator: MonitorCoordinator) {
+        self.coordinator = coordinator
+        _egressIPMonitor = ObservedObject(initialValue: coordinator.egressIPMonitor)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("启用出口 IP 检测", isOn: $enabled)
+                    .onChange(of: enabled) { newValue in
+                        AppConfig.shared.ipCheckEnabled = newValue
+                        coordinator.reloadIPCheckSettingsAndRefresh()
+                    }
+
+                Picker("检测版本", selection: $version) {
+                    ForEach(IPVersion.allCases) { item in
+                        Text(item.displayName).tag(item)
+                    }
+                }
+                .onChange(of: version) { newValue in
+                    AppConfig.shared.ipCheckVersion = newValue
+                    coordinator.reloadIPCheckSettingsAndRefresh()
+                }
+
+                Picker("自动刷新", selection: $refreshMinutes) {
+                    Text("5 分钟").tag(5.0)
+                    Text("15 分钟").tag(15.0)
+                    Text("30 分钟").tag(30.0)
+                    Text("60 分钟").tag(60.0)
+                }
+                .onChange(of: refreshMinutes) { newValue in
+                    AppConfig.shared.ipCheckRefreshMinutes = newValue
+                    coordinator.reloadIPCheckSettingsAndRefresh()
+                }
+            } header: {
+                Text("出口 IP")
+            }
+
+            Section {
+                SecureField("ping0 API Key", text: $apiKey)
+                    .onChange(of: apiKey) { newValue in
+                        AppConfig.shared.ping0APIKey = newValue
+                    }
+
+                HStack {
+                    Button {
+                        apiKey = ""
+                        AppConfig.shared.ping0APIKey = ""
+                        coordinator.reloadIPCheckSettingsAndRefresh()
+                    } label: {
+                        Label("清空 Key", systemImage: "xmark.circle")
+                    }
+
+                    Spacer()
+
+                    Button {
+                        runTest()
+                    } label: {
+                        if isTesting {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 64)
+                        } else {
+                            Label("测试检测", systemImage: "checkmark.circle")
+                        }
+                    }
+                    .disabled(!enabled || isTesting)
+                }
+            } header: {
+                Text("纯净度")
+            } footer: {
+                Text("未填写 API Key 时只显示免费基础信息；填写后会请求 ping0 指定 IP API 显示风险值、IDC、原生 IP 等字段。检测会把当前公网出口 IP 发送给 ping0.cc。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Section {
+                if let info = egressIPMonitor.info {
+                    HStack {
+                        Text("当前出口")
+                        Spacer()
+                        Text(info.ip)
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                    HStack {
+                        Text("状态")
+                        Spacer()
+                        Text(info.riskLabel)
+                            .foregroundColor(riskColor(info))
+                    }
+                } else if let error = egressIPMonitor.errorMessage {
+                    Text(error)
+                        .foregroundColor(.orange)
+                } else {
+                    Text(enabled ? "尚未检测" : "已关闭")
+                        .foregroundColor(.secondary)
+                }
+            } header: {
+                Text("结果")
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .onAppear {
+            enabled = AppConfig.shared.ipCheckEnabled
+            version = AppConfig.shared.ipCheckVersion
+            refreshMinutes = AppConfig.shared.ipCheckRefreshMinutes
+            apiKey = AppConfig.shared.ping0APIKey
+        }
+    }
+
+    private func runTest() {
+        AppConfig.shared.ipCheckEnabled = enabled
+        AppConfig.shared.ipCheckVersion = version
+        AppConfig.shared.ipCheckRefreshMinutes = refreshMinutes
+        AppConfig.shared.ping0APIKey = apiKey
+
+        isTesting = true
+        Task {
+            _ = await coordinator.egressIPMonitor.refreshNow(force: true)
+            isTesting = false
+        }
+    }
+
+    private func riskColor(_ info: EgressIPInfo) -> Color {
+        guard let risk = info.ipRisk else {
+            return .secondary
+        }
+        if risk <= 25 { return .green }
+        if risk <= 50 { return .orange }
+        return .red
+    }
+}
+
 // MARK: - VPS 设置
 
 private struct VPSSettingsTab: View {
     let coordinator: MonitorCoordinator
     @State private var configs: [AppConfig.VPSConfig] = AppConfig.shared.vpsConfigs
     @State private var editingConfig: AppConfig.VPSConfig?
+    @State private var testingIDs: Set<String> = []
+    @State private var testMessages: [String: String] = [:]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+
             if configs.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "cloud.fill")
-                        .font(.system(size: 32))
-                        .foregroundColor(.secondary.opacity(0.5))
-                    Text("未配置 VPS 服务器")
-                        .foregroundColor(.secondary)
-                    Text("添加 VPS 后可在菜单栏查看流量统计")
-                        .font(.caption)
-                        .foregroundColor(.secondary.opacity(0.7))
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                emptyState
             } else {
                 List {
                     ForEach(configs) { config in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(config.name)
-                                    .font(.system(size: 13, weight: .medium))
-                                Text(verbatim: "\(config.host):\(config.port)")
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(.secondary)
-                            }
-                            Spacer()
-                            Button {
-                                editingConfig = config
-                            } label: {
-                                Image(systemName: "pencil")
-                            }
-                            .buttonStyle(.plain)
-
-                            Button {
-                                configs.removeAll { $0.id == config.id }
-                                AppConfig.shared.vpsConfigs = configs
-                                coordinator.reloadVPSConfigsAndRefresh()
-                            } label: {
-                                Image(systemName: "trash")
-                                    .foregroundColor(.red)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.vertical, 4)
+                        serverRow(config)
                     }
                 }
+                .listStyle(.inset)
             }
 
-            HStack {
-                Button {
-                    editingConfig = AppConfig.VPSConfig(
-                        id: UUID().uuidString,
-                        name: "New VPS",
-                        host: "",
-                        port: 2053,
-                        basePath: "",
-                        username: "",
-                        useTLS: true
-                    )
-                } label: {
-                    Label("添加 VPS", systemImage: "plus")
-                }
-                Spacer()
-            }
-            .padding(.horizontal)
-            .padding(.bottom, 8)
+            Divider()
+            bottomBar
         }
         .sheet(item: $editingConfig) { config in
             VPSEditSheet(config: config) { updated in
@@ -219,58 +362,307 @@ private struct VPSSettingsTab: View {
                 editingConfig = nil
             }
         }
+        .onAppear {
+            configs = AppConfig.shared.vpsConfigs
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("服务器管理")
+                    .font(.system(size: 15, weight: .semibold))
+                Text("添加 3X-UI 面板后，NetBar 会在菜单栏显示 VPS 流量。")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Button {
+                coordinator.reloadVPSConfigsAndRefresh()
+            } label: {
+                Label("立即刷新", systemImage: "arrow.clockwise")
+            }
+        }
+        .padding([.top, .horizontal], 18)
+        .padding(.bottom, 10)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "cloud.badge.plus")
+                .font(.system(size: 38, weight: .regular))
+                .foregroundColor(.secondary.opacity(0.55))
+            Text("还没有服务器")
+                .font(.system(size: 15, weight: .semibold))
+            Text("点击添加服务器，粘贴 3X-UI 面板地址并测试连接。")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+            Button {
+                editingConfig = newConfig()
+            } label: {
+                Label("添加服务器", systemImage: "plus")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var bottomBar: some View {
+        HStack {
+            Button {
+                editingConfig = newConfig()
+            } label: {
+                Label("添加服务器", systemImage: "plus")
+            }
+            Spacer()
+            Text("\(configs.count) 台服务器")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+    }
+
+    private func serverRow(_ config: AppConfig.VPSConfig) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "server.rack")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.accentColor)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(config.name)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(config.panelURL)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                if let message = testMessages[config.id] {
+                    Text(message)
+                        .font(.system(size: 11))
+                        .foregroundColor(message == ConnectionTestResult.success.message ? .green : .orange)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer()
+
+            Button {
+                testServer(config)
+            } label: {
+                if testingIDs.contains(config.id) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 16, height: 16)
+                } else {
+                    Image(systemName: "checkmark.circle")
+                }
+            }
+            .buttonStyle(.borderless)
+            .help("测试连接")
+
+            Button {
+                editingConfig = config
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.borderless)
+            .help("编辑")
+
+            Button {
+                configs.removeAll { $0.id == config.id }
+                AppConfig.shared.vpsConfigs = configs
+                coordinator.reloadVPSConfigsAndRefresh()
+            } label: {
+                Image(systemName: "trash")
+                    .foregroundColor(.red)
+            }
+            .buttonStyle(.borderless)
+            .help("删除")
+        }
+        .padding(.vertical, 6)
+    }
+
+    private func testServer(_ config: AppConfig.VPSConfig) {
+        guard !config.password.isEmpty else {
+            testMessages[config.id] = VPSConnectionError.passwordRequired.localizedDescription
+            return
+        }
+
+        testingIDs.insert(config.id)
+        Task {
+            let result = await ThreeXUIClient().testConnection(config: config, password: config.password)
+            testingIDs.remove(config.id)
+            testMessages[config.id] = result.message
+            if result.success {
+                coordinator.reloadVPSConfigsAndRefresh()
+            }
+        }
+    }
+
+    private func newConfig() -> AppConfig.VPSConfig {
+        AppConfig.VPSConfig(
+            id: UUID().uuidString,
+            name: "",
+            provider: .threeXUI,
+            host: "",
+            port: 443,
+            basePath: "",
+            username: "",
+            useTLS: true,
+            allowSelfSignedCertificate: false
+        )
     }
 }
 
 // MARK: - VPS 编辑表单
 
 private struct VPSEditSheet: View {
-    @State var config: AppConfig.VPSConfig
-    @State private var password: String = ""
     let onSave: (AppConfig.VPSConfig) -> Void
     let onCancel: () -> Void
 
-    private static let portFormatter: NumberFormatter = {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .none
-        formatter.usesGroupingSeparator = false
-        formatter.minimum = 1
-        formatter.maximum = 65535
-        return formatter
-    }()
+    @State private var config: AppConfig.VPSConfig
+    @State private var displayName: String
+    @State private var panelURL: String
+    @State private var username: String
+    @State private var password: String
+    @State private var allowSelfSignedCertificate: Bool
+    @State private var isTesting = false
+    @State private var testResult: ConnectionTestResult?
+    @State private var hasSuccessfulTest = false
+
+    init(
+        config: AppConfig.VPSConfig,
+        onSave: @escaping (AppConfig.VPSConfig) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _config = State(initialValue: config)
+        _displayName = State(initialValue: config.name)
+        _panelURL = State(initialValue: config.host.isEmpty ? "" : config.panelURL)
+        _username = State(initialValue: config.username)
+        _password = State(initialValue: config.password)
+        _allowSelfSignedCertificate = State(initialValue: config.allowSelfSignedCertificate)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                TextField("名称", text: $config.name)
-                TextField("主机", text: $config.host)
-                    .font(.system(.body, design: .monospaced))
-                TextField("端口", value: $config.port, formatter: Self.portFormatter)
-                TextField("Base Path", text: $config.basePath)
-                    .font(.system(.body, design: .monospaced))
-                TextField("用户名", text: $config.username)
-                SecureField("密码", text: $password)
-                Toggle("使用 TLS (HTTPS)", isOn: $config.useTLS)
+                Section {
+                    TextField("显示名称", text: $displayName)
+                        .onChange(of: displayName) { _ in resetTestState() }
+                    TextField("面板地址", text: $panelURL)
+                        .font(.system(.body, design: .monospaced))
+                        .onChange(of: panelURL) { _ in resetTestState() }
+                    TextField("用户名", text: $username)
+                        .onChange(of: username) { _ in resetTestState() }
+                    SecureField("密码", text: $password)
+                        .onChange(of: password) { _ in resetTestState() }
+                    Toggle("允许自签证书", isOn: $allowSelfSignedCertificate)
+                        .onChange(of: allowSelfSignedCertificate) { _ in resetTestState() }
+                } footer: {
+                    Text("面板地址可直接粘贴完整 3X-UI URL，例如 https://example.com:2053/panel-path。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                if let testResult {
+                    Section {
+                        HStack(spacing: 8) {
+                            Image(systemName: testResult.success ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                .foregroundColor(testResult.success ? .green : .orange)
+                            Text(testResult.message)
+                                .foregroundColor(testResult.success ? .green : .orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
             }
             .formStyle(.grouped)
+
+            Divider()
 
             HStack {
                 Button("取消") { onCancel() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
+                Button {
+                    runConnectionTest()
+                } label: {
+                    if isTesting {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 58)
+                    } else {
+                        Text("测试连接")
+                    }
+                }
+                .disabled(isTesting || !hasRequiredFields)
+
                 Button("保存") {
-                    config.password = password
-                    onSave(config)
+                    do {
+                        let updated = try buildConfig()
+                        updated.password = password
+                        onSave(updated)
+                    } catch {
+                        testResult = .failure(error)
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(config.host.isEmpty || config.username.isEmpty)
+                .disabled(!canSave)
             }
             .padding()
         }
-        .frame(width: 380, height: 360)
-        .onAppear {
-            password = config.password
+        .frame(width: 460, height: 420)
+    }
+
+    private var hasRequiredFields: Bool {
+        !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !panelURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !password.isEmpty
+    }
+
+    private var canSave: Bool {
+        hasRequiredFields && hasSuccessfulTest && !isTesting
+    }
+
+    private func runConnectionTest() {
+        isTesting = true
+        testResult = nil
+
+        Task {
+            do {
+                let candidate = try buildConfig()
+                let result = await ThreeXUIClient().testConnection(config: candidate, password: password)
+                testResult = result
+                hasSuccessfulTest = result.success
+            } catch {
+                testResult = .failure(error)
+                hasSuccessfulTest = false
+            }
+            isTesting = false
         }
+    }
+
+    private func buildConfig() throws -> AppConfig.VPSConfig {
+        let parsed = try VPSPanelURLParser.parse(panelURL)
+        return AppConfig.VPSConfig(
+            id: config.id,
+            name: displayName.trimmingCharacters(in: .whitespacesAndNewlines),
+            provider: .threeXUI,
+            host: parsed.host,
+            port: parsed.port,
+            basePath: parsed.basePath,
+            username: username.trimmingCharacters(in: .whitespacesAndNewlines),
+            useTLS: parsed.useTLS,
+            allowSelfSignedCertificate: allowSelfSignedCertificate
+        )
+    }
+
+    private func resetTestState() {
+        hasSuccessfulTest = false
+        testResult = nil
     }
 }
 
@@ -298,7 +690,7 @@ final class SettingsWindowController {
         newWindow.setFrameAutosaveName("SettingsWindow")
         newWindow.isReleasedWhenClosed = false
 
-        self.window = newWindow
+        window = newWindow
         newWindow.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

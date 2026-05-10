@@ -38,28 +38,7 @@ else
     echo "警告: 未找到 Resources/AppIcon.icns"
 fi
 
-# 从 .env 导入 VPS 配置到 UserDefaults
-if [ -f "$SCRIPT_DIR/.env" ]; then
-    echo "🔑 从 .env 导入 VPS 配置..."
-    while IFS='=' read -r key value; do
-        # 跳过注释和空行
-        [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
-        # 去除可能的空格
-        key=$(echo "$key" | xargs)
-        value=$(echo "$value" | xargs)
-        case "$key" in
-            VPS_BWG_HOST) defaults write com.zjah.NetBar vps_bwg_host "$value" ;;
-            VPS_BWG_PORT) defaults write com.zjah.NetBar vps_bwg_port -int "$value" ;;
-            VPS_BWG_PATH) defaults write com.zjah.NetBar vps_bwg_path "$value" ;;
-            VPS_BWG_USER) defaults write com.zjah.NetBar vps_bwg_user "$value" ;;
-            VPS_BWG_PASS) defaults write com.zjah.NetBar vps_bwg_pass "$value" ;;
-        esac
-    done < "$SCRIPT_DIR/.env"
-    echo "   ✅ VPS 配置已写入 UserDefaults"
-else
-    echo "⚠️  未找到 .env，VPS 流量监控将不可用"
-    echo "   请创建 .env 文件，参考 .env.example"
-fi
+echo "🔑 VPS 配置入口已改为应用内设置 > 服务器管理。"
 
 echo "⚙️  配置开机自启..."
 # 先卸载旧的（如果存在）

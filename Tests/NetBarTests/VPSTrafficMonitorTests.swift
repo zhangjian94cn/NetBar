@@ -3,7 +3,7 @@ import XCTest
 
 final class VPSTrafficMonitorTests: XCTestCase {
     func testLoginFormBodyIsPercentEncoded() throws {
-        let data = try XCTUnwrap(VPSTrafficMonitor.formEncodedBody(
+        let data = try XCTUnwrap(ThreeXUIClient.formEncodedBody(
             username: "a+b&c=中文",
             password: "p q+&="
         ))

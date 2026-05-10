@@ -52,6 +52,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
             proxyDetector: coordinator.proxyDetector,
             processTrafficMonitor: coordinator.processTrafficMonitor,
             networkInfoProvider: coordinator.networkInfoProvider,
+            egressIPMonitor: coordinator.egressIPMonitor,
             vpsTrafficMonitor: coordinator.vpsTrafficMonitor,
             appIconResolver: coordinator.appIconResolver,
             coordinator: coordinator
