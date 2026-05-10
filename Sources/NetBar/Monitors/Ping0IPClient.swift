@@ -19,7 +19,7 @@ final class Ping0IPClient: IPIntelligenceClient {
         return EgressIPInfo(
             ip: detailedInfo.ip,
             ipVersion: baseInfo.ipVersion,
-            location: detailedInfo.location ?? baseInfo.location,
+            locationRaw: detailedInfo.locationRaw ?? baseInfo.locationRaw,
             country: detailedInfo.country,
             province: detailedInfo.province,
             city: detailedInfo.city,
@@ -82,7 +82,7 @@ final class Ping0IPClient: IPIntelligenceClient {
         return EgressIPInfo(
             ip: ip,
             ipVersion: ip.contains(":") ? .ipv6 : .ipv4,
-            location: lines[1],
+            locationRaw: lines[1],
             country: nil,
             province: nil,
             city: nil,
@@ -107,7 +107,7 @@ final class Ping0IPClient: IPIntelligenceClient {
         return EgressIPInfo(
             ip: ip,
             ipVersion: ip.contains(":") ? .ipv6 : .ipv4,
-            location: json["location"] as? String,
+            locationRaw: json["location"] as? String,
             country: json["country"] as? String,
             province: json["province"] as? String,
             city: json["city"] as? String,

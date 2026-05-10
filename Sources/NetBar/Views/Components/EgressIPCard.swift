@@ -9,7 +9,7 @@ struct EgressIPCard: View {
                 Image(systemName: "globe")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.indigo)
-                Text("出口 IP")
+                Text("公网出口 IP")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 5)
@@ -48,17 +48,11 @@ struct EgressIPCard: View {
                     riskBadge(info)
                 }
 
-                HStack(spacing: 6) {
-                    if let location = info.location, !location.isEmpty {
-                        Text(location)
-                    }
-                    if let asn = info.asn, !asn.isEmpty {
-                        Text(asn)
-                    }
+                VStack(alignment: .leading, spacing: 3) {
+                    infoLine(label: "位置", value: info.locationDisplay)
+                    infoLine(label: "ASN", value: info.asn)
+                    infoLine(label: "组织", value: info.org)
                 }
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-                .lineLimit(1)
 
                 if info.ipRisk != nil || info.isIDC != nil || info.isNative != nil {
                     HStack(spacing: 6) {
@@ -73,6 +67,15 @@ struct EgressIPCard: View {
                         }
                     }
                 }
+
+                Text("地理位置来自 IP 数据库，可能与真实物理位置不一致。")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary.opacity(0.75))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("来源: \(info.source)")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary.opacity(0.65))
             } else if let error = monitor.errorMessage {
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -101,6 +104,22 @@ struct EgressIPCard: View {
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
             .background(RoundedRectangle(cornerRadius: 4).fill(riskColor(info).opacity(0.12)))
+    }
+
+    @ViewBuilder
+    private func infoLine(label: String, value: String?) -> some View {
+        if let value, !value.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text("\(label):")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                Text(value)
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
     }
 
     private func propertyBadge(_ text: String, color: Color) -> some View {

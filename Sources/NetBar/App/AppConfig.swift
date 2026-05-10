@@ -43,7 +43,10 @@ final class AppConfig: ObservableObject {
             }
             return defaults.bool(forKey: Keys.ipCheckEnabled)
         }
-        set { defaults.set(newValue, forKey: Keys.ipCheckEnabled) }
+        set {
+            objectWillChange.send()
+            defaults.set(newValue, forKey: Keys.ipCheckEnabled)
+        }
     }
 
     var ipCheckVersion: IPVersion {
@@ -54,7 +57,10 @@ final class AppConfig: ObservableObject {
             }
             return version
         }
-        set { defaults.set(newValue.rawValue, forKey: Keys.ipCheckVersion) }
+        set {
+            objectWillChange.send()
+            defaults.set(newValue.rawValue, forKey: Keys.ipCheckVersion)
+        }
     }
 
     var ipCheckRefreshMinutes: TimeInterval {
@@ -62,7 +68,23 @@ final class AppConfig: ObservableObject {
             let value = defaults.double(forKey: Keys.ipCheckRefreshMinutes)
             return value > 0 ? max(5, value) : 5
         }
-        set { defaults.set(max(5, newValue), forKey: Keys.ipCheckRefreshMinutes) }
+        set {
+            objectWillChange.send()
+            defaults.set(max(5, newValue), forKey: Keys.ipCheckRefreshMinutes)
+        }
+    }
+
+    var hideWiFiName: Bool {
+        get {
+            guard defaults.object(forKey: Keys.hideWiFiName) != nil else {
+                return true
+            }
+            return defaults.bool(forKey: Keys.hideWiFiName)
+        }
+        set {
+            objectWillChange.send()
+            defaults.set(newValue, forKey: Keys.hideWiFiName)
+        }
     }
 
     var ping0APIKey: String {
@@ -271,6 +293,7 @@ final class AppConfig: ObservableObject {
         static let ipCheckEnabled = "ip_check_enabled"
         static let ipCheckVersion = "ip_check_version"
         static let ipCheckRefreshMinutes = "ip_check_refresh_minutes"
+        static let hideWiFiName = "hide_wifi_name"
         static let ping0APIKey = "ping0_api_key"
         static let vpsConfigs = "vps_configs_v2"
         static let refreshInterval = "refresh_interval"

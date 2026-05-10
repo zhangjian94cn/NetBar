@@ -12,6 +12,7 @@ class MonitorCoordinator {
     let appIconResolver = AppIconResolver()
     let trafficStore = TrafficStore()
     let vpsTrafficMonitor = VPSTrafficMonitor()
+    private let egressIdentityRefreshScheduler = DebouncedRefreshScheduler(delay: 3)
 
     /// 所有遵循 MonitorProtocol 的服务（按启动顺序）
     private var allMonitors: [MonitorProtocol] {
@@ -40,6 +41,7 @@ class MonitorCoordinator {
 
     /// 停止所有监控服务
     func stopAll() {
+        egressIdentityRefreshScheduler.cancel()
         for monitor in allMonitors {
             monitor.stop()
         }
@@ -61,5 +63,13 @@ class MonitorCoordinator {
     /// 应用出口 IP 检测设置并立即刷新。
     func reloadIPCheckSettingsAndRefresh() {
         egressIPMonitor.reloadSettingsAndRefresh()
+    }
+
+    /// 网络身份变化后延迟刷新出口 IP，避免代理/TUN 刚切换时拿到旧出口。
+    func scheduleEgressIPRefreshAfterIdentityChange() {
+        guard AppConfig.shared.ipCheckEnabled else { return }
+        egressIdentityRefreshScheduler.schedule { [weak self] in
+            self?.egressIPMonitor.refresh(force: true)
+        }
     }
 }

@@ -23,10 +23,12 @@ final class Ping0IPClientTests: XCTestCase {
 
         XCTAssertEqual(info.ip, "45.150.165.158")
         XCTAssertEqual(info.ipVersion, .ipv4)
-        XCTAssertEqual(info.location, "美国 华盛顿州 西雅图")
+        XCTAssertEqual(info.locationRaw, "美国 华盛顿州 西雅图")
         XCTAssertEqual(info.asn, "AS201106")
         XCTAssertEqual(info.org, "Spartan Host Ltd")
         XCTAssertNil(info.ipRisk)
+        XCTAssertEqual(info.locationDisplay, "美国 华盛顿州 西雅图")
+        XCTAssertEqual(info.riskLabel, "基础归属地")
     }
 
     func testParseDetailJSON() throws {
@@ -52,6 +54,8 @@ final class Ping0IPClientTests: XCTestCase {
         XCTAssertEqual(info.isNative, true)
         XCTAssertEqual(info.asnType, "isp")
         XCTAssertEqual(info.orgType, "isp")
+        XCTAssertEqual(info.locationRaw, "中国 宁夏回族自治区固原市中国电信")
+        XCTAssertEqual(info.locationDisplay, "中国 / 宁夏回族自治区 / 固原市")
     }
 
     func testLookupCurrentIPDoesNotCallPaidAPIWithoutKey() async throws {
@@ -82,6 +86,26 @@ final class Ping0IPClientTests: XCTestCase {
         XCTAssertEqual(info.ipRisk, 5)
         XCTAssertEqual(paths.count, 2)
         XCTAssertTrue(paths[1].contains("/apiloc/apikey(key123)/ip(45.150.165.158)"))
+    }
+
+    func testPaidJSONStructuredLocationOverridesFreeRawLocationButMissingFieldsFallback() async throws {
+        Ping0URLProtocolStub.handler = { request in
+            if request.url?.path == "/geo" {
+                return (Self.response(for: request, statusCode: 200), Self.geoData)
+            }
+            let detailWithoutRawLocation = Data("""
+            {"ip":"45.150.165.158","country":"美国","province":"华盛顿州","city":"西雅图","iprisk":10}
+            """.utf8)
+            return (Self.response(for: request, statusCode: 200), detailWithoutRawLocation)
+        }
+
+        let info = try await makeClient().lookupCurrentIP(version: .auto, apiKey: "key123")
+
+        XCTAssertEqual(info.locationRaw, "美国 华盛顿州 西雅图")
+        XCTAssertEqual(info.locationDisplay, "美国 / 华盛顿州 / 西雅图")
+        XCTAssertEqual(info.asn, "AS201106")
+        XCTAssertEqual(info.org, "Spartan Host Ltd")
+        XCTAssertEqual(info.riskLabel, "纯净度: 风险值 10")
     }
 
     func testHTTPStatusError() async {

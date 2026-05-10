@@ -67,14 +67,17 @@ final class AppConfigTests: XCTestCase {
         XCTAssertTrue(configStore.ipCheckEnabled)
         XCTAssertEqual(configStore.ipCheckVersion, .auto)
         XCTAssertEqual(configStore.ipCheckRefreshMinutes, 5)
+        XCTAssertTrue(configStore.hideWiFiName)
 
         configStore.ipCheckEnabled = false
         configStore.ipCheckVersion = .ipv6
         configStore.ipCheckRefreshMinutes = 15
+        configStore.hideWiFiName = false
 
         XCTAssertFalse(configStore.ipCheckEnabled)
         XCTAssertEqual(configStore.ipCheckVersion, .ipv6)
         XCTAssertEqual(configStore.ipCheckRefreshMinutes, 15)
+        XCTAssertFalse(configStore.hideWiFiName)
     }
 
     func testPing0APIKeyStoresAndClearsKeychainValue() {

@@ -13,6 +13,7 @@ struct MenuPopoverView: View {
     @ObservedObject var egressIPMonitor: EgressIPMonitor
     @ObservedObject var vpsTrafficMonitor: VPSTrafficMonitor
     @ObservedObject var appIconResolver: AppIconResolver
+    @ObservedObject private var appConfig = AppConfig.shared
     let coordinator: MonitorCoordinator
 
     @State private var selectedTab: Int = 0
@@ -66,6 +67,15 @@ struct MenuPopoverView: View {
         }
         .onChange(of: visibleIconNames) { _ in
             preloadVisibleIcons()
+        }
+        .onChange(of: networkInfoProvider.wifiSSID) { _ in
+            coordinator.scheduleEgressIPRefreshAfterIdentityChange()
+        }
+        .onChange(of: networkInfoProvider.localIP) { _ in
+            coordinator.scheduleEgressIPRefreshAfterIdentityChange()
+        }
+        .onChange(of: proxyDetector.status) { _ in
+            coordinator.scheduleEgressIPRefreshAfterIdentityChange()
         }
     }
 
@@ -136,18 +146,24 @@ struct MenuPopoverView: View {
                     Image(systemName: "wifi")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
-                    Text(networkInfoProvider.wifiSSID)
+                    Text(NetworkIdentityFormatter.wifiText(
+                        ssid: networkInfoProvider.wifiSSID,
+                        hideWiFiName: appConfig.hideWiFiName
+                    ))
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                 }
+                .help("Wi-Fi 名称可能被隐私设置隐藏，不影响代理或公网出口 IP 判断。")
+
                 HStack(spacing: 4) {
                     Image(systemName: "pc")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
-                    Text(networkInfoProvider.localIP)
+                    Text(NetworkIdentityFormatter.lanText(ip: networkInfoProvider.localIP))
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.secondary)
                 }
+                .help("这是本机局域网地址，不是代理后的公网出口 IP。")
                 Spacer()
             }
         }
@@ -321,7 +337,7 @@ struct MenuPopoverView: View {
 
     @ViewBuilder
     private var egressIPSection: some View {
-        if AppConfig.shared.ipCheckEnabled {
+        if appConfig.ipCheckEnabled {
             EgressIPCard(monitor: egressIPMonitor)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)

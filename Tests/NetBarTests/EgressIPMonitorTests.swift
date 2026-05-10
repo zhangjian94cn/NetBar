@@ -92,7 +92,7 @@ private final class StubIPClient: IPIntelligenceClient {
         self.result = EgressIPInfo(
             ip: "45.150.165.158",
             ipVersion: .ipv4,
-            location: "美国 华盛顿州 西雅图",
+            locationRaw: "美国 华盛顿州 西雅图",
             country: nil,
             province: nil,
             city: nil,

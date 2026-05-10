@@ -183,6 +183,7 @@ private struct IPDetectionSettingsTab: View {
     @State private var enabled = AppConfig.shared.ipCheckEnabled
     @State private var version = AppConfig.shared.ipCheckVersion
     @State private var refreshMinutes = AppConfig.shared.ipCheckRefreshMinutes
+    @State private var hideWiFiName = AppConfig.shared.hideWiFiName
     @State private var apiKey = AppConfig.shared.ping0APIKey
     @State private var isTesting = false
 
@@ -220,8 +221,17 @@ private struct IPDetectionSettingsTab: View {
                     AppConfig.shared.ipCheckRefreshMinutes = newValue
                     coordinator.reloadIPCheckSettingsAndRefresh()
                 }
+
+                Toggle("隐藏 Wi-Fi 名称", isOn: $hideWiFiName)
+                    .onChange(of: hideWiFiName) { newValue in
+                        AppConfig.shared.hideWiFiName = newValue
+                    }
             } header: {
                 Text("出口 IP")
+            } footer: {
+                Text("开启后顶部网络信息会显示“Wi-Fi: 已隐藏”。这是隐私显示设置，不影响公网出口 IP 或代理状态判断。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             Section {
@@ -294,6 +304,7 @@ private struct IPDetectionSettingsTab: View {
             enabled = AppConfig.shared.ipCheckEnabled
             version = AppConfig.shared.ipCheckVersion
             refreshMinutes = AppConfig.shared.ipCheckRefreshMinutes
+            hideWiFiName = AppConfig.shared.hideWiFiName
             apiKey = AppConfig.shared.ping0APIKey
         }
     }

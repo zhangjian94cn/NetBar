@@ -22,7 +22,7 @@ enum IPVersion: String, Codable, CaseIterable, Identifiable, Sendable {
 struct EgressIPInfo: Equatable, Sendable {
     let ip: String
     let ipVersion: IPVersion
-    let location: String?
+    let locationRaw: String?
     let country: String?
     let province: String?
     let city: String?
@@ -38,8 +38,21 @@ struct EgressIPInfo: Equatable, Sendable {
     let fetchedAt: Date
 
     var riskLabel: String {
-        guard let ipRisk else { return "基础信息" }
-        return "风险值 \(ipRisk)"
+        guard let ipRisk else { return "基础归属地" }
+        return "纯净度: 风险值 \(ipRisk)"
+    }
+
+    var locationDisplay: String? {
+        let structuredParts = [country, province, city]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if !structuredParts.isEmpty {
+            return structuredParts.joined(separator: " / ")
+        }
+
+        let normalizedLocation = locationRaw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return normalizedLocation.isEmpty ? nil : normalizedLocation
     }
 
     var lastUpdatedText: String {
