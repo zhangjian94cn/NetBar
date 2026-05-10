@@ -156,9 +156,14 @@ class ProxyDetector: ObservableObject, MonitorProtocol {
         }
 
         // --- 策略 2: 检查是否有默认/大网段路由被 TUN 接管 ---
-        let tunnelRoutes = TunnelRouteDetector.activeTunnelRouteDescriptions()
-        for route in tunnelRoutes {
-            detailInfo.append("TUN 路由: \(route)")
+        let tunnelRoutes: [String]
+        if DistributionFlavor.current.supportsAdvancedProxyDetection {
+            tunnelRoutes = TunnelRouteDetector.activeTunnelRouteDescriptions()
+            for route in tunnelRoutes {
+                detailInfo.append("TUN 路由: \(route)")
+            }
+        } else {
+            tunnelRoutes = []
         }
 
         // --- 更新状态 ---

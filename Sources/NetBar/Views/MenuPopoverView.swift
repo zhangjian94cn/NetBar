@@ -10,6 +10,7 @@ struct MenuPopoverView: View {
     @ObservedObject var proxyDetector: ProxyDetector
     @ObservedObject var processTrafficMonitor: ProcessTrafficMonitor
     @ObservedObject var networkInfoProvider: NetworkInfoProvider
+    @ObservedObject var egressIPMonitor: EgressIPMonitor
     @ObservedObject var vpsTrafficMonitor: VPSTrafficMonitor
     @ObservedObject var appIconResolver: AppIconResolver
     let coordinator: MonitorCoordinator
@@ -17,6 +18,9 @@ struct MenuPopoverView: View {
     @State private var selectedTab: Int = 0
 
     private var visibleIconNames: [String] {
+        guard DistributionFlavor.current.supportsProcessTraffic else {
+            return []
+        }
         let names = processTrafficMonitor.appSpeeds.prefix(maxTableApps).map(\.name) +
             processTrafficMonitor.cumulativeRanking.prefix(maxTableApps).map(\.name)
         var seen: Set<String> = []
@@ -27,19 +31,23 @@ struct MenuPopoverView: View {
         VStack(alignment: .leading, spacing: 0) {
             headerSection
             Divider().padding(.horizontal, 12)
+            egressIPSection
+            Divider().padding(.horizontal, 12)
             speedSection
             Divider().padding(.horizontal, 12)
-            
-            tabSelector
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
 
-            if selectedTab == 0 {
-                activeAppsSection
-            } else {
-                cumulativeSection
+            if DistributionFlavor.current.supportsProcessTraffic {
+                tabSelector
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+
+                if selectedTab == 0 {
+                    activeAppsSection
+                } else {
+                    cumulativeSection
+                }
             }
-            
+
             vpsSection
             
             Divider().padding(.horizontal, 12)
@@ -257,8 +265,11 @@ struct MenuPopoverView: View {
             Button(action: {
                 proxyDetector.checkProxySettings()
                 networkInfoProvider.refresh()
+                egressIPMonitor.refresh(force: true)
                 vpsTrafficMonitor.refresh()
-                processTrafficMonitor.requestCumulativeRefresh()
+                if DistributionFlavor.current.supportsProcessTraffic {
+                    processTrafficMonitor.requestCumulativeRefresh()
+                }
             }) {
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.clockwise")
@@ -306,5 +317,14 @@ struct MenuPopoverView: View {
 
     private func preloadVisibleIcons() {
         appIconResolver.preloadIcons(for: visibleIconNames)
+    }
+
+    @ViewBuilder
+    private var egressIPSection: some View {
+        if AppConfig.shared.ipCheckEnabled {
+            EgressIPCard(monitor: egressIPMonitor)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+        }
     }
 }
