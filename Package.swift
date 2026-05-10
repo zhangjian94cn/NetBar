@@ -14,6 +14,11 @@ let package = Package(
                 .unsafeFlags(["-framework", "Cocoa"]),
                 .unsafeFlags(["-framework", "SwiftUI"]),
             ]
+        ),
+        .testTarget(
+            name: "NetBarTests",
+            dependencies: ["NetBar"],
+            path: "Tests/NetBarTests"
         )
     ]
 )

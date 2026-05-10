@@ -41,7 +41,7 @@ class NetworkMonitor: ObservableObject, MonitorProtocol {
     init() {}
 
     func start() {
-        start(interval: 1.0)
+        start(interval: AppConfig.shared.refreshInterval)
     }
 
     func start(interval: TimeInterval) {
@@ -61,6 +61,11 @@ class NetworkMonitor: ObservableObject, MonitorProtocol {
     func stop() {
         timer?.invalidate()
         timer = nil
+    }
+
+    func restart(interval: TimeInterval) {
+        stop()
+        start(interval: interval)
     }
 
     private func update() {

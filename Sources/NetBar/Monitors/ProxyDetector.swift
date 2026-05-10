@@ -6,27 +6,66 @@ import SystemConfiguration
 class ProxyDetector: ObservableObject, MonitorProtocol {
 
     enum ProxyStatus: Equatable {
-        case direct          // 直连
-        case proxied(String) // 代理中，附带代理类型描述
+        case direct
+        case systemProxy(String)
+        case vpn(String)
+        case systemProxyAndVPN(String, String)
 
         var isProxied: Bool {
-            if case .proxied = self { return true }
-            return false
+            self != .direct
+        }
+
+        var isSystemProxyEnabled: Bool {
+            switch self {
+            case .systemProxy, .systemProxyAndVPN:
+                return true
+            case .direct, .vpn:
+                return false
+            }
+        }
+
+        var isVPNActive: Bool {
+            switch self {
+            case .vpn, .systemProxyAndVPN:
+                return true
+            case .direct, .systemProxy:
+                return false
+            }
+        }
+
+        var headerText: String {
+            switch self {
+            case .direct:
+                return L10n.Proxy.systemDirect
+            case .systemProxy, .systemProxyAndVPN:
+                if case .systemProxyAndVPN = self {
+                    return L10n.Proxy.systemProxyAndTUN
+                }
+                return L10n.Proxy.systemProxyOn
+            case .vpn:
+                return L10n.Proxy.tunActive
+            }
         }
 
         var displayText: String {
             switch self {
             case .direct:
                 return "直连"
-            case .proxied(let type):
-                return "代理中 (\(type))"
+            case .systemProxy(let type):
+                return "系统代理 (\(type))"
+            case .vpn(let type):
+                return "TUN 接管 (\(type))"
+            case .systemProxyAndVPN(let proxyType, let vpnType):
+                return "系统代理 + TUN 接管 (\(proxyType) + \(vpnType))"
             }
         }
 
         var emoji: String {
             switch self {
             case .direct: return "🟢"
-            case .proxied: return "🟡"
+            case .systemProxy: return "🟡"
+            case .vpn: return "🔵"
+            case .systemProxyAndVPN: return "🟣"
             }
         }
     }
@@ -78,92 +117,80 @@ class ProxyDetector: ObservableObject, MonitorProtocol {
 
     /// 综合检查代理/VPN 状态
     func checkProxySettings() {
-        var detectedProxies: [String] = []
+        var detectedSystemProxies: [String] = []
         var detailInfo: [String] = []
 
         // --- 策略 1: 检查系统代理配置 ---
         if let proxySettings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] {
 
             // HTTP 代理
-            if let httpEnabled = proxySettings[kCFNetworkProxiesHTTPEnable as String] as? Int, httpEnabled == 1 {
+            if isProxyEnabled(proxySettings, key: kCFNetworkProxiesHTTPEnable as String) {
                 let host = proxySettings[kCFNetworkProxiesHTTPProxy as String] as? String ?? "unknown"
                 let port = proxySettings[kCFNetworkProxiesHTTPPort as String] as? Int ?? 0
-                detectedProxies.append("HTTP")
+                detectedSystemProxies.append("HTTP")
                 detailInfo.append("HTTP 代理: \(host):\(port)")
             }
 
             // HTTPS 代理
-            if let httpsEnabled = proxySettings[kCFNetworkProxiesHTTPSEnable as String] as? Int, httpsEnabled == 1 {
+            if isProxyEnabled(proxySettings, key: kCFNetworkProxiesHTTPSEnable as String) {
                 let host = proxySettings[kCFNetworkProxiesHTTPSProxy as String] as? String ?? "unknown"
                 let port = proxySettings[kCFNetworkProxiesHTTPSPort as String] as? Int ?? 0
-                detectedProxies.append("HTTPS")
+                detectedSystemProxies.append("HTTPS")
                 detailInfo.append("HTTPS 代理: \(host):\(port)")
             }
 
             // SOCKS 代理
-            if let socksEnabled = proxySettings[kCFNetworkProxiesSOCKSEnable as String] as? Int, socksEnabled == 1 {
+            if isProxyEnabled(proxySettings, key: kCFNetworkProxiesSOCKSEnable as String) {
                 let host = proxySettings[kCFNetworkProxiesSOCKSProxy as String] as? String ?? "unknown"
                 let port = proxySettings[kCFNetworkProxiesSOCKSPort as String] as? Int ?? 0
-                detectedProxies.append("SOCKS")
+                detectedSystemProxies.append("SOCKS")
                 detailInfo.append("SOCKS 代理: \(host):\(port)")
             }
 
             // PAC 自动配置
-            if let pacEnabled = proxySettings[kCFNetworkProxiesProxyAutoConfigEnable as String] as? Int, pacEnabled == 1 {
+            if isProxyEnabled(proxySettings, key: kCFNetworkProxiesProxyAutoConfigEnable as String) {
                 let pacURL = proxySettings[kCFNetworkProxiesProxyAutoConfigURLString as String] as? String ?? ""
-                detectedProxies.append("PAC")
+                detectedSystemProxies.append("PAC")
                 detailInfo.append("PAC: \(pacURL)")
             }
         }
 
-        // --- 策略 2: 检查 VPN 网络接口 ---
-        let vpnInterfaces = detectVPNInterfaces()
-        if !vpnInterfaces.isEmpty {
-            detectedProxies.append("VPN")
-            for iface in vpnInterfaces {
-                detailInfo.append("VPN 接口: \(iface)")
-            }
+        // --- 策略 2: 检查是否有默认/大网段路由被 TUN 接管 ---
+        let tunnelRoutes = TunnelRouteDetector.activeTunnelRouteDescriptions()
+        for route in tunnelRoutes {
+            detailInfo.append("TUN 路由: \(route)")
         }
 
         // --- 更新状态 ---
         DispatchQueue.main.async {
             self.details = detailInfo
-            if detectedProxies.isEmpty {
+
+            if detectedSystemProxies.isEmpty && tunnelRoutes.isEmpty {
                 self.status = .direct
+            } else if detectedSystemProxies.isEmpty {
+                self.status = .vpn(tunnelRoutes.joined(separator: ", "))
+            } else if tunnelRoutes.isEmpty {
+                self.status = .systemProxy(detectedSystemProxies.joined(separator: " + "))
             } else {
-                self.status = .proxied(detectedProxies.joined(separator: " + "))
+                self.status = .systemProxyAndVPN(
+                    detectedSystemProxies.joined(separator: " + "),
+                    tunnelRoutes.joined(separator: ", ")
+                )
             }
         }
     }
 
-    /// 检测 VPN 类型的网络接口
-    private func detectVPNInterfaces() -> [String] {
-        let vpnPrefixes = ["utun", "ipsec", "ppp", "tap", "tun"]
-        var vpnInterfaces: [String] = []
-
-        var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else {
-            return []
+    private func isProxyEnabled(_ settings: [String: Any], key: String) -> Bool {
+        if let enabled = settings[key] as? Int {
+            return enabled == 1
         }
-        defer { freeifaddrs(ifaddr) }
-
-        var ptr = firstAddr
-        while true {
-            let name = String(cString: ptr.pointee.ifa_name)
-            let flags = Int32(ptr.pointee.ifa_flags)
-            let isUp = (flags & IFF_UP) != 0 && (flags & IFF_RUNNING) != 0
-
-            if isUp {
-                let isVPN = vpnPrefixes.contains { name.hasPrefix($0) }
-                if isVPN && !vpnInterfaces.contains(name) {
-                    vpnInterfaces.append(name)
-                }
-            }
-
-            guard let next = ptr.pointee.ifa_next else { break }
-            ptr = next
+        if let enabled = settings[key] as? Bool {
+            return enabled
         }
-
-        return vpnInterfaces
+        if let enabled = settings[key] as? NSNumber {
+            return enabled.intValue == 1
+        }
+        return false
     }
+
 }

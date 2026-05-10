@@ -34,4 +34,15 @@ class MonitorCoordinator {
             monitor.stop()
         }
     }
+
+    /// 应用新的采样间隔到正在运行的实时监控器。
+    func applyRefreshInterval(_ interval: TimeInterval) {
+        networkMonitor.restart(interval: interval)
+        processTrafficMonitor.restart(interval: interval)
+    }
+
+    /// 重新读取 VPS 设置并立即刷新，不需要重启应用。
+    func reloadVPSConfigsAndRefresh() {
+        vpsTrafficMonitor.reloadConfigs()
+    }
 }
