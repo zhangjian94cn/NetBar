@@ -9,6 +9,12 @@ struct NetBarApp {
     static let appDelegate = AppDelegate()
 
     static func main() {
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let existingApp = NSRunningApplication
+            .runningApplications(withBundleIdentifier: "com.zjah.NetBar")
+            .first { $0.processIdentifier != currentPID }
+        guard existingApp == nil else { return }
+
         let app = NSApplication.shared
         // 设置为 accessory 模式（不显示 Dock 图标）
         app.setActivationPolicy(.accessory)

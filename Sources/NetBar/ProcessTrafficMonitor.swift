@@ -2,6 +2,11 @@ import Foundation
 
 /// 按应用维度的流量监控器 — 通过长连接 nettop 流式解析
 class ProcessTrafficMonitor: ObservableObject {
+    private static let maxActiveApps = 30
+    private static let maxRankingApps = 60
+    private static let mihomoSocketPath = "/tmp/verge/verge-mihomo.sock"
+    private static let mihomoControllerURL = "http://127.0.0.1:9097/connections"
+    private static let mihomoSecret = "set-your-secret"
 
     /// 时间窗口选项
     enum TimePeriod: String, CaseIterable {
@@ -112,23 +117,67 @@ class ProcessTrafficMonitor: ObservableObject {
         let bytesOut: UInt64
     }
 
+    private enum RouteKind: Hashable {
+        case direct
+        case proxied
+    }
+
+    private struct AppDelta {
+        var bytesIn: UInt64 = 0
+        var bytesOut: UInt64 = 0
+        var routeKinds: Set<RouteKind> = []
+    }
+
+    private struct MihomoConnectionsResponse: Decodable {
+        let connections: [MihomoConnection]
+    }
+
+    private struct MihomoConnection: Decodable {
+        let id: String
+        let metadata: MihomoMetadata
+        let upload: UInt64
+        let download: UInt64
+        let start: String?
+        let chains: [String]?
+    }
+
+    private struct MihomoMetadata: Decodable {
+        let process: String?
+        let processPath: String?
+        let host: String?
+    }
+
+    private struct MihomoConnectionSnapshot {
+        let appName: String
+        let bytesIn: UInt64
+        let bytesOut: UInt64
+        let routeKind: RouteKind
+        let startDate: Date?
+    }
+
     @Published var appSpeeds: [AppTraffic] = []
     @Published var cumulativeRanking: [AppTraffic] = []
     @Published var selectedPeriod: TimePeriod = .fiveMinutes
 
     private let vpnPrefixes = ["utun", "ipsec", "ppp", "tap", "tun"]
+    private let proxyCoreProcesses: Set<String> = [
+        "clash", "Clash Verge", "clash-verge", "mihomo", "verge-mihomo"
+    ]
     private let hiddenProcesses: Set<String> = [
         "launchd", "configd", "syslogd", "kdc", "airportd",
         "wifianalyticsd", "identityserviced", "rapportd",
         "sharingd", "ControlCenter", "wifivelocityd",
         "netbiosd", "wifip2pd", "mDNSResponder", "apsd",
-        "identityservice", "trustd", "ARDAgent"
+        "identityservice", "trustd", "ARDAgent",
+        "clash", "Clash Verge", "clash-verge", "mihomo", "verge-mihomo"
     ]
 
     private var previousStats: [String: (bytesIn: UInt64, bytesOut: UInt64)] = [:]
+    private var previousMihomoConnections: [String: MihomoConnectionSnapshot] = [:]
     private var previousTime: Date = Date()
     private var trafficHistory: [TrafficRecord] = []
     private var appInterfaces: [String: Set<String>] = [:]
+    private var appRouteKinds: [String: Set<RouteKind>] = [:]
     private let startTime = Date()
 
     // 流式 nettop
@@ -136,6 +185,8 @@ class ProcessTrafficMonitor: ObservableObject {
     private var nettopPipe: Pipe?
     private var outputBuffer: String = ""
     private var timer: Timer?
+    private let updateQueue = DispatchQueue(label: "com.zjah.NetBar.processTrafficMonitor", qos: .utility)
+    private var updateInProgress = false
 
     /// 持久化存储器
     var trafficStore: TrafficStore?
@@ -148,6 +199,7 @@ class ProcessTrafficMonitor: ObservableObject {
         previousStats = stats
         previousTime = Date()
         appInterfaces = interfaces
+        previousMihomoConnections = fetchMihomoConnectionSnapshots() ?? [:]
 
         // 定期采样（仍然使用定时执行 nettop，但更轻量）
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
@@ -166,9 +218,20 @@ class ProcessTrafficMonitor: ObservableObject {
     }
 
     private func update() {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        guard !updateInProgress else { return }
+        updateInProgress = true
+        let selectedPeriod = selectedPeriod
+
+        updateQueue.async { [weak self] in
             guard let self = self else { return }
+            defer {
+                DispatchQueue.main.async {
+                    self.updateInProgress = false
+                }
+            }
+
             let (currentStats, interfaces) = self.fetchNettopOnce()
+            let currentMihomoConnections = self.fetchMihomoConnectionSnapshots()
             let now = Date()
             let elapsed = now.timeIntervalSince(self.previousTime)
             guard elapsed > 0.5 else { return }
@@ -183,52 +246,70 @@ class ProcessTrafficMonitor: ObservableObject {
                 }
             }
 
-            var appCurrent: [String: (bytesIn: UInt64, bytesOut: UInt64)] = [:]
-            var appPrevious: [String: (bytesIn: UInt64, bytesOut: UInt64)] = [:]
+            var appDeltas: [String: AppDelta] = [:]
 
             for (key, val) in currentStats {
-                let n = self.extractAppName(from: key)
-                if let e = appCurrent[n] { appCurrent[n] = (e.bytesIn + val.bytesIn, e.bytesOut + val.bytesOut) }
-                else { appCurrent[n] = val }
+                let appName = self.extractAppName(from: key)
+                guard !self.isHiddenProcess(appName),
+                      let previous = self.previousStats[key] else { continue }
+
+                let dlBytes = val.bytesIn >= previous.bytesIn ? val.bytesIn - previous.bytesIn : 0
+                let ulBytes = val.bytesOut >= previous.bytesOut ? val.bytesOut - previous.bytesOut : 0
+                self.addDelta(appName: appName, bytesIn: dlBytes, bytesOut: ulBytes, routeKind: nil, to: &appDeltas)
             }
-            for (key, val) in self.previousStats {
-                let n = self.extractAppName(from: key)
-                if let e = appPrevious[n] { appPrevious[n] = (e.bytesIn + val.bytesIn, e.bytesOut + val.bytesOut) }
-                else { appPrevious[n] = val }
+
+            if let currentMihomoConnections {
+                let mihomoDeltas = self.computeMihomoDeltas(
+                    current: currentMihomoConnections,
+                    since: self.previousTime
+                )
+                for (appName, delta) in mihomoDeltas {
+                    guard !self.isHiddenProcess(appName) else { continue }
+                    self.addDelta(
+                        appName: appName,
+                        bytesIn: delta.bytesIn,
+                        bytesOut: delta.bytesOut,
+                        routeKinds: delta.routeKinds,
+                        to: &appDeltas
+                    )
+                }
+                self.previousMihomoConnections = currentMihomoConnections
             }
 
             var speeds: [AppTraffic] = []
-            for (appName, current) in appCurrent {
-                guard !self.hiddenProcesses.contains(appName) else { continue }
-                if let previous = appPrevious[appName] {
-                    let dlBytes = current.bytesIn >= previous.bytesIn ? current.bytesIn - previous.bytesIn : 0
-                    let ulBytes = current.bytesOut >= previous.bytesOut ? current.bytesOut - previous.bytesOut : 0
-                    let dlSpeed = Double(dlBytes) / elapsed
-                    let ulSpeed = Double(ulBytes) / elapsed
+            for (appName, delta) in appDeltas {
+                guard !self.isHiddenProcess(appName) else { continue }
 
-                    if dlBytes > 0 || ulBytes > 0 {
-                        self.trafficHistory.append(TrafficRecord(
-                            timestamp: now, appName: appName, bytesIn: dlBytes, bytesOut: ulBytes
-                        ))
-                        // 持久化到磁盘
-                        self.trafficStore?.record(appName: appName, bytesIn: dlBytes, bytesOut: ulBytes)
-                    }
+                if !delta.routeKinds.isEmpty {
+                    self.appRouteKinds[appName, default: Set()].formUnion(delta.routeKinds)
+                }
 
-                    if dlSpeed > 10 || ulSpeed > 10 {
-                        speeds.append(AppTraffic(
-                            id: appName, name: appName,
-                            downloadSpeed: dlSpeed, uploadSpeed: ulSpeed,
-                            cumulativeDownload: 0, cumulativeUpload: 0,
-                            proxyStatus: self.determineProxyStatus(for: appName)
-                        ))
-                    }
+                let dlSpeed = Double(delta.bytesIn) / elapsed
+                let ulSpeed = Double(delta.bytesOut) / elapsed
+
+                if delta.bytesIn > 0 || delta.bytesOut > 0 {
+                    self.trafficHistory.append(TrafficRecord(
+                        timestamp: now, appName: appName, bytesIn: delta.bytesIn, bytesOut: delta.bytesOut
+                    ))
+                    // 持久化到磁盘
+                    self.trafficStore?.record(appName: appName, bytesIn: delta.bytesIn, bytesOut: delta.bytesOut)
+                }
+
+                if dlSpeed > 10 || ulSpeed > 10 {
+                    speeds.append(AppTraffic(
+                        id: appName, name: appName,
+                        downloadSpeed: dlSpeed, uploadSpeed: ulSpeed,
+                        cumulativeDownload: 0, cumulativeUpload: 0,
+                        proxyStatus: self.determineProxyStatus(for: appName)
+                    ))
                 }
             }
 
             speeds.sort { $0.totalSpeed > $1.totalSpeed }
+            speeds = Array(speeds.prefix(Self.maxActiveApps))
             let cutoff = now.addingTimeInterval(-3700)
             self.trafficHistory.removeAll { $0.timestamp < cutoff }
-            let cumulative = self.computeCumulativeRanking(period: self.selectedPeriod, now: now)
+            let cumulative = self.computeCumulativeRanking(period: selectedPeriod, now: now)
 
             DispatchQueue.main.async {
                 self.appSpeeds = speeds
@@ -241,6 +322,15 @@ class ProcessTrafficMonitor: ObservableObject {
     }
 
     private func determineProxyStatus(for appName: String) -> AppProxyStatus {
+        if let routeKinds = appRouteKinds[appName], !routeKinds.isEmpty {
+            let hasDirect = routeKinds.contains(.direct)
+            let hasProxied = routeKinds.contains(.proxied)
+
+            if hasDirect && hasProxied { return .mixed }
+            if hasProxied { return .proxied }
+            if hasDirect { return .direct }
+        }
+
         guard let interfaces = appInterfaces[appName] else { return .unknown }
         let nonLoopback = interfaces.filter { $0 != "lo0" && !$0.isEmpty }
         guard !nonLoopback.isEmpty else { return .unknown }
@@ -272,7 +362,7 @@ class ProcessTrafficMonitor: ObservableObject {
             default:
                 summaries = []
             }
-            return summaries.map { s in
+            return summaries.filter { !isHiddenProcess($0.appName) }.map { s in
                 AppTraffic(
                     id: s.appName, name: s.appName,
                     downloadSpeed: 0, uploadSpeed: 0,
@@ -280,6 +370,8 @@ class ProcessTrafficMonitor: ObservableObject {
                     proxyStatus: determineProxyStatus(for: s.appName)
                 )
             }
+            .prefix(Self.maxRankingApps)
+            .map { $0 }
         }
 
         // 短期查询走内存
@@ -296,6 +388,7 @@ class ProcessTrafficMonitor: ObservableObject {
 
         var result: [AppTraffic] = []
         for (name, totals) in appTotals {
+            guard !isHiddenProcess(name) else { continue }
             guard totals.bytesIn > 0 || totals.bytesOut > 0 else { continue }
             result.append(AppTraffic(
                 id: name, name: name, downloadSpeed: 0, uploadSpeed: 0,
@@ -304,7 +397,7 @@ class ProcessTrafficMonitor: ObservableObject {
             ))
         }
         result.sort { $0.totalCumulative > $1.totalCumulative }
-        return result
+        return Array(result.prefix(Self.maxRankingApps))
     }
 
     private func extractAppName(from processKey: String) -> String {
@@ -313,6 +406,76 @@ class ProcessTrafficMonitor: ObservableObject {
             return parts.dropLast().joined(separator: ".")
         }
         return processKey
+    }
+
+    private func isHiddenProcess(_ appName: String) -> Bool {
+        let name = appName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return hiddenProcesses.contains(name) ||
+            hiddenProcesses.contains(name.lowercased()) ||
+            proxyCoreProcesses.contains(name) ||
+            proxyCoreProcesses.contains(name.lowercased())
+    }
+
+    private func addDelta(
+        appName: String,
+        bytesIn: UInt64,
+        bytesOut: UInt64,
+        routeKind: RouteKind?,
+        to deltas: inout [String: AppDelta]
+    ) {
+        var delta = deltas[appName] ?? AppDelta()
+        delta.bytesIn += bytesIn
+        delta.bytesOut += bytesOut
+        if let routeKind {
+            delta.routeKinds.insert(routeKind)
+        }
+        deltas[appName] = delta
+    }
+
+    private func addDelta(
+        appName: String,
+        bytesIn: UInt64,
+        bytesOut: UInt64,
+        routeKinds: Set<RouteKind>,
+        to deltas: inout [String: AppDelta]
+    ) {
+        var delta = deltas[appName] ?? AppDelta()
+        delta.bytesIn += bytesIn
+        delta.bytesOut += bytesOut
+        delta.routeKinds.formUnion(routeKinds)
+        deltas[appName] = delta
+    }
+
+    private func computeMihomoDeltas(
+        current: [String: MihomoConnectionSnapshot],
+        since previousSampleTime: Date
+    ) -> [String: AppDelta] {
+        var deltas: [String: AppDelta] = [:]
+
+        for (id, snapshot) in current {
+            let dlBytes: UInt64
+            let ulBytes: UInt64
+
+            if let previous = previousMihomoConnections[id], previous.appName == snapshot.appName {
+                dlBytes = snapshot.bytesIn >= previous.bytesIn ? snapshot.bytesIn - previous.bytesIn : snapshot.bytesIn
+                ulBytes = snapshot.bytesOut >= previous.bytesOut ? snapshot.bytesOut - previous.bytesOut : snapshot.bytesOut
+            } else if let startDate = snapshot.startDate, startDate >= previousSampleTime.addingTimeInterval(-1) {
+                dlBytes = snapshot.bytesIn
+                ulBytes = snapshot.bytesOut
+            } else {
+                continue
+            }
+
+            addDelta(
+                appName: snapshot.appName,
+                bytesIn: dlBytes,
+                bytesOut: ulBytes,
+                routeKind: snapshot.routeKind,
+                to: &deltas
+            )
+        }
+
+        return deltas
     }
 
     /// 同步执行一次 nettop 并解析
@@ -337,12 +500,128 @@ class ProcessTrafficMonitor: ObservableObject {
         return parseNettopOutput(output)
     }
 
+    private func fetchMihomoConnectionSnapshots() -> [String: MihomoConnectionSnapshot]? {
+        guard let data = fetchMihomoConnectionsData() else { return nil }
+
+        do {
+            let response = try JSONDecoder().decode(MihomoConnectionsResponse.self, from: data)
+            var snapshots: [String: MihomoConnectionSnapshot] = [:]
+
+            for connection in response.connections {
+                let appName = appNameFromMihomoMetadata(connection.metadata)
+                guard !appName.isEmpty, !isHiddenProcess(appName) else { continue }
+
+                snapshots[connection.id] = MihomoConnectionSnapshot(
+                    appName: appName,
+                    bytesIn: connection.download,
+                    bytesOut: connection.upload,
+                    routeKind: routeKind(for: connection),
+                    startDate: parseMihomoDate(connection.start)
+                )
+            }
+
+            return snapshots
+        } catch {
+            return nil
+        }
+    }
+
+    private func fetchMihomoConnectionsData() -> Data? {
+        if FileManager.default.fileExists(atPath: Self.mihomoSocketPath),
+           let data = runCurl(arguments: [
+                "-sS", "--max-time", "1",
+                "--unix-socket", Self.mihomoSocketPath,
+                "-H", "Authorization: Bearer \(Self.mihomoSecret)",
+                "http://unix/connections"
+           ]) {
+            return data
+        }
+
+        return runCurl(arguments: [
+            "-sS", "--max-time", "1",
+            "-H", "Authorization: Bearer \(Self.mihomoSecret)",
+            Self.mihomoControllerURL
+        ])
+    }
+
+    private func runCurl(arguments: [String]) -> Data? {
+        let process = Process()
+        let pipe = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+        process.arguments = arguments
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0, !data.isEmpty else { return nil }
+        return data
+    }
+
+    private func appNameFromMihomoMetadata(_ metadata: MihomoMetadata) -> String {
+        if let processPath = metadata.processPath,
+           let appName = appBundleName(from: processPath) {
+            return appName
+        }
+
+        if let process = metadata.process?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !process.isEmpty {
+            return extractAppName(from: process)
+        }
+
+        if let host = metadata.host?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !host.isEmpty {
+            return host
+        }
+
+        return "未知代理应用"
+    }
+
+    private func appBundleName(from processPath: String) -> String? {
+        for component in processPath.split(separator: "/") {
+            guard component.hasSuffix(".app") else { continue }
+            return String(component.dropLast(4))
+        }
+        return nil
+    }
+
+    private func routeKind(for connection: MihomoConnection) -> RouteKind {
+        if connection.chains?.contains(where: { $0.localizedCaseInsensitiveContains("DIRECT") }) == true {
+            return .direct
+        }
+        return .proxied
+    }
+
+    private func parseMihomoDate(_ value: String?) -> Date? {
+        guard let value else { return nil }
+
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) {
+            return date
+        }
+
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: value)
+    }
+
     /// 解析 nettop 输出
     private func parseNettopOutput(_ output: String) -> (
         stats: [String: (bytesIn: UInt64, bytesOut: UInt64)],
         interfaces: [String: Set<String>]
     ) {
-        var stats: [String: (bytesIn: UInt64, bytesOut: UInt64)] = [:]
+        var summaryStats: [String: (bytesIn: UInt64, bytesOut: UInt64)] = [:]
+        var connectionStats: [String: (bytesIn: UInt64, bytesOut: UInt64)] = [:]
+        var processesWithConnectionStats: Set<String> = []
         var interfaces: [String: Set<String>] = [:]
         var currentProcess: String? = nil
 
@@ -369,21 +648,77 @@ class ProcessTrafficMonitor: ObservableObject {
                 }
 
                 currentProcess = processName
-                stats[processName] = (bytesIn: bytesIn, bytesOut: bytesOut)
+                summaryStats[processName] = (bytesIn: bytesIn, bytesOut: bytesOut)
 
             } else if let proc = currentProcess {
-                let components = trimmed.split(separator: " ").map { String($0) }
-                for component in components {
-                    let comp = component.trimmingCharacters(in: .whitespaces)
-                    if comp == "lo0" || comp.hasPrefix("en") || comp.hasPrefix("utun") ||
-                       comp.hasPrefix("ipsec") || comp.hasPrefix("ppp") ||
-                       comp.hasPrefix("tap") || comp.hasPrefix("tun") || comp.hasPrefix("bridge") {
-                        let appName = extractAppName(from: proc)
-                        interfaces[appName, default: Set()].insert(comp)
-                    }
+                guard let parsed = parseConnectionTrafficLine(trimmed) else { continue }
+
+                processesWithConnectionStats.insert(proc)
+                if let iface = parsed.interface {
+                    let appName = extractAppName(from: proc)
+                    interfaces[appName, default: Set()].insert(iface)
+                }
+
+                guard shouldCountRawConnection(processName: proc, line: trimmed, interface: parsed.interface) else {
+                    continue
+                }
+
+                if let existing = connectionStats[proc] {
+                    connectionStats[proc] = (
+                        existing.bytesIn + parsed.bytesIn,
+                        existing.bytesOut + parsed.bytesOut
+                    )
+                } else {
+                    connectionStats[proc] = (parsed.bytesIn, parsed.bytesOut)
                 }
             }
         }
+
+        var stats = connectionStats
+        for (processName, summary) in summaryStats where !processesWithConnectionStats.contains(processName) {
+            guard !isHiddenProcess(extractAppName(from: processName)) else { continue }
+            stats[processName] = summary
+        }
+
         return (stats, interfaces)
+    }
+
+    private func parseConnectionTrafficLine(_ line: String) -> (
+        interface: String?,
+        bytesIn: UInt64,
+        bytesOut: UInt64
+    )? {
+        let components = line.split(separator: " ").map { String($0) }
+        guard components.count >= 3,
+              let bytesOut = UInt64(components[components.count - 1]),
+              let bytesIn = UInt64(components[components.count - 2]) else {
+            return nil
+        }
+
+        let interfaceCandidate = components[components.count - 3]
+        let interface = isInterfaceName(interfaceCandidate) ? interfaceCandidate : nil
+        return (interface, bytesIn, bytesOut)
+    }
+
+    private func shouldCountRawConnection(processName: String, line: String, interface: String?) -> Bool {
+        let appName = extractAppName(from: processName)
+        guard !isHiddenProcess(appName) else { return false }
+        guard interface != "lo0" else { return false }
+        guard !line.contains("198.18.") else { return false }
+        guard !line.contains("fdfe:dcba:9876") else { return false }
+        return true
+    }
+
+    private func isInterfaceName(_ value: String) -> Bool {
+        value == "lo0" ||
+            value.hasPrefix("en") ||
+            value.hasPrefix("awdl") ||
+            value.hasPrefix("llw") ||
+            value.hasPrefix("utun") ||
+            value.hasPrefix("ipsec") ||
+            value.hasPrefix("ppp") ||
+            value.hasPrefix("tap") ||
+            value.hasPrefix("tun") ||
+            value.hasPrefix("bridge")
     }
 }

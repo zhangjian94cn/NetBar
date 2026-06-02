@@ -47,6 +47,7 @@ class TrafficStore {
     private var currentHourKey: String = ""
     private var hourBuffer: [String: (bytesIn: UInt64, bytesOut: UInt64)] = [:]
     private var flushTimer: Timer?
+    private let queue = DispatchQueue(label: "com.zjah.NetBar.trafficStore")
 
     init() {
         // 存储在 ~/Library/Application Support/NetBar/
@@ -64,13 +65,18 @@ class TrafficStore {
     /// 记录一批流量增量（由 ProcessTrafficMonitor 调用）
     func record(appName: String, bytesIn: UInt64, bytesOut: UInt64) {
         guard bytesIn > 0 || bytesOut > 0 else { return }
+        queue.async {
+            self.recordOnQueue(appName: appName, bytesIn: bytesIn, bytesOut: bytesOut)
+        }
+    }
 
+    private func recordOnQueue(appName: String, bytesIn: UInt64, bytesOut: UInt64) {
         let now = Date()
         let hourKey = hourFormatter.string(from: now)
 
         // 如果跨小时了，先刷盘旧数据
         if hourKey != currentHourKey {
-            flushToDisk()
+            flushToDiskOnQueue()
             currentHourKey = hourKey
         }
 
@@ -92,13 +98,21 @@ class TrafficStore {
     }
 
     func stop() {
-        flushToDisk()
         flushTimer?.invalidate()
         flushTimer = nil
+        queue.sync {
+            flushToDiskOnQueue()
+        }
     }
 
     /// 将内存缓冲写入磁盘（按日期分文件）
     func flushToDisk() {
+        queue.async {
+            self.flushToDiskOnQueue()
+        }
+    }
+
+    private func flushToDiskOnQueue() {
         guard !hourBuffer.isEmpty else { return }
 
         let dateKey = String(currentHourKey.prefix(10))  // "2026-03-21"
@@ -139,6 +153,12 @@ class TrafficStore {
 
     /// 查询指定时间范围内的 App 流量汇总
     func query(from startDate: Date, to endDate: Date = Date()) -> [AppSummary] {
+        queue.sync {
+            queryOnQueue(from: startDate, to: endDate)
+        }
+    }
+
+    private func queryOnQueue(from startDate: Date, to endDate: Date = Date()) -> [AppSummary] {
         var allRecords: [HourlyRecord] = []
 
         // 遍历日期范围内的所有文件

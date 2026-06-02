@@ -76,7 +76,11 @@ class StatusBarView: NSView {
 // MARK: - 菜单栏控制器
 
 /// 菜单栏控制器 — 管理 NSStatusItem 和 Popover
-class StatusBarController: NSObject {
+class StatusBarController: NSObject, NSPopoverDelegate {
+    private let popoverWidth: CGFloat = 380
+    private let popoverPreferredHeight: CGFloat = 520
+    private let popoverVerticalMargin: CGFloat = 96
+
     private var statusItem: NSStatusItem!
     private var statusBarView: StatusBarView!
     private var popover: NSPopover!
@@ -129,19 +133,34 @@ class StatusBarController: NSObject {
 
     private func setupPopover() {
         popover = NSPopover()
-        popover.contentSize = NSSize(width: 380, height: 620)
+        popover.contentSize = NSSize(width: popoverWidth, height: popoverPreferredHeight)
         popover.behavior = .transient
-        popover.animates = true
+        popover.animates = false
+        popover.delegate = self
+    }
 
+    private func makePopoverContentViewController(height: CGFloat) -> NSViewController {
         let contentView = MenuPopoverView(
             networkMonitor: networkMonitor,
             proxyDetector: proxyDetector,
             processTrafficMonitor: processTrafficMonitor,
             networkInfoProvider: networkInfoProvider,
             vpsTrafficMonitor: vpsTrafficMonitor,
-            appIconResolver: appIconResolver
+            appIconResolver: appIconResolver,
+            contentHeight: height
         )
-        popover.contentViewController = NSHostingController(rootView: contentView)
+        let controller = NSHostingController(rootView: contentView)
+        controller.view.frame = NSRect(x: 0, y: 0, width: popoverWidth, height: height)
+        controller.view.layoutSubtreeIfNeeded()
+        return controller
+    }
+
+    private func currentPopoverHeight(relativeTo button: NSStatusBarButton) -> CGFloat {
+        guard let screen = button.window?.screen else {
+            return popoverPreferredHeight
+        }
+        let availableHeight = screen.visibleFrame.height - popoverVerticalMargin
+        return min(popoverPreferredHeight, max(360, availableHeight))
     }
 
     private func startUpdatingTitle() {
@@ -174,11 +193,22 @@ class StatusBarController: NSObject {
 
     private func showPopover() {
         guard let button = statusItem.button else { return }
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        let height = currentPopoverHeight(relativeTo: button)
+        popover.contentSize = NSSize(width: popoverWidth, height: height)
+        popover.contentViewController = makePopoverContentViewController(height: height)
+
+        DispatchQueue.main.async { [weak self, weak button] in
+            guard let self = self, let button = button, !self.popover.isShown else { return }
+            self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
     }
 
     private func closePopover() {
         popover.performClose(nil)
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        popover.contentViewController = nil
     }
 
     private func setupEventMonitor() {
