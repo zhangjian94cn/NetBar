@@ -7,10 +7,12 @@ final class DistributionFlavorTests: XCTestCase {
         XCTAssertEqual(DistributionFlavor.current, .appStoreLite)
         XCTAssertFalse(DistributionFlavor.current.supportsProcessTraffic)
         XCTAssertFalse(DistributionFlavor.current.usesLaunchAgentStartup)
+        XCTAssertFalse(DistributionFlavor.current.supportsNetworkModeSwitch)
         #else
         XCTAssertEqual(DistributionFlavor.current, .directFull)
         XCTAssertTrue(DistributionFlavor.current.supportsProcessTraffic)
         XCTAssertTrue(DistributionFlavor.current.usesLaunchAgentStartup)
+        XCTAssertTrue(DistributionFlavor.current.supportsNetworkModeSwitch)
         #endif
     }
 }

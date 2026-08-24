@@ -13,6 +13,7 @@ struct MenuPopoverView: View {
     @ObservedObject var egressIPMonitor: EgressIPMonitor
     @ObservedObject var vpsTrafficMonitor: VPSTrafficMonitor
     @ObservedObject var appIconResolver: AppIconResolver
+    @ObservedObject var networkModeController: NetworkModeController
     @ObservedObject private var appConfig = AppConfig.shared
     let coordinator: MonitorCoordinator
 
@@ -31,6 +32,12 @@ struct MenuPopoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             headerSection
+
+            if DistributionFlavor.current.supportsNetworkModeSwitch {
+                Divider().padding(.horizontal, 12)
+                NetworkModeCard(controller: networkModeController)
+            }
+
             Divider().padding(.horizontal, 12)
             egressIPSection
             Divider().padding(.horizontal, 12)
@@ -64,6 +71,12 @@ struct MenuPopoverView: View {
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .onAppear {
             preloadVisibleIcons()
+            if DistributionFlavor.current.supportsNetworkModeSwitch {
+                networkModeController.beginObserving()
+            }
+        }
+        .onDisappear {
+            networkModeController.endObserving()
         }
         .onChange(of: visibleIconNames) { _ in
             preloadVisibleIcons()

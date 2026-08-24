@@ -13,6 +13,9 @@ class MonitorCoordinator {
     let trafficStore = TrafficStore()
     let vpsTrafficMonitor = VPSTrafficMonitor()
     private let egressIdentityRefreshScheduler = DebouncedRefreshScheduler(delay: 3)
+    lazy var networkModeController = NetworkModeController { [weak self] in
+        self?.refreshAfterNetworkModeChange()
+    }
 
     /// 所有遵循 MonitorProtocol 的服务（按启动顺序）
     private var allMonitors: [MonitorProtocol] {
@@ -71,5 +74,11 @@ class MonitorCoordinator {
         egressIdentityRefreshScheduler.schedule { [weak self] in
             self?.egressIPMonitor.refresh(force: true)
         }
+    }
+
+    private func refreshAfterNetworkModeChange() {
+        proxyDetector.checkProxySettings()
+        networkInfoProvider.refresh()
+        scheduleEgressIPRefreshAfterIdentityChange()
     }
 }

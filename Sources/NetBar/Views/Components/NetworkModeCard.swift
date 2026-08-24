@@ -1,0 +1,155 @@
+import AppKit
+import SwiftUI
+
+struct NetworkModeCard: View {
+    @ObservedObject var controller: NetworkModeController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "bolt.horizontal.circle.fill")
+                    .foregroundColor(statusColor)
+                Text("Mac mini 链路")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                if controller.isSwitching {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在切换")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                } else {
+                    Text(modeText)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(statusColor)
+                }
+            }
+
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 6, height: 6)
+                Text(linkText)
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(addressText)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            HStack(spacing: 8) {
+                modeButton(.localWiFi, icon: "wifi")
+                modeButton(.macMiniGateway, icon: "desktopcomputer")
+            }
+
+            if let message = controller.errorMessage, !message.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: controller.requiresManualRecovery ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
+                    Text(message)
+                        .lineLimit(3)
+                    Spacer(minLength: 4)
+                    if controller.requiresManualRecovery {
+                        Button("打开网络设置") {
+                            openNetworkSettings()
+                        }
+                        .buttonStyle(.link)
+                    }
+                }
+                .font(.system(size: 9))
+                .foregroundColor(controller.requiresManualRecovery ? .red : .orange)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .help("切换的是 Wi-Fi 与雷雳网桥的物理出口优先级，不会关闭 Clash、aTrust、Tailscale 或其他 VPN。")
+    }
+
+    private func modeButton(_ mode: NetworkRouteMode, icon: String) -> some View {
+        let isSelected = controller.snapshot?.isConsistent == true &&
+            controller.snapshot?.effectiveMode == mode
+        let isEnabled = canSwitch(to: mode)
+
+        return Button {
+            controller.switchMode(to: mode)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .semibold))
+                Text(mode.displayName)
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundColor(isSelected ? .white : .primary)
+            .frame(maxWidth: .infinity, minHeight: 25)
+            .background {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isSelected ? Color.accentColor : Color.primary.opacity(0.08))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
+    }
+
+    private func canSwitch(to mode: NetworkRouteMode) -> Bool {
+        guard !controller.isSwitching,
+              let snapshot = controller.snapshot,
+              snapshot.wifiServiceName != nil,
+              snapshot.thunderboltServiceName != nil else {
+            return false
+        }
+        if mode == .macMiniGateway {
+            return snapshot.linkState == .connected
+        }
+        return true
+    }
+
+    private var statusColor: Color {
+        if controller.requiresManualRecovery {
+            return .red
+        }
+        guard let snapshot = controller.snapshot else {
+            return .secondary
+        }
+        switch snapshot.linkState {
+        case .unavailable, .disconnected:
+            return .red
+        case .connected:
+            return snapshot.isConsistent ? .green : .orange
+        case .missingIPv4, .missingGateway, .miniUnreachable:
+            return .orange
+        }
+    }
+
+    private var modeText: String {
+        guard let snapshot = controller.snapshot else { return "正在检测" }
+        if controller.requiresManualRecovery {
+            return "需要手动恢复"
+        }
+        if snapshot.isConsistent, let mode = snapshot.effectiveMode {
+            return mode.displayName
+        }
+        return "配置不一致"
+    }
+
+    private var linkText: String {
+        controller.snapshot?.linkState.displayName ?? "正在检测雷雳链路"
+    }
+
+    private var addressText: String {
+        guard let snapshot = controller.snapshot else { return "—" }
+        let local = snapshot.bridgeIPv4 ?? "—"
+        let mini = snapshot.miniGateway ?? "—"
+        return "本机 \(local) · Mini \(mini)"
+    }
+
+    private func openNetworkSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Network-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        } else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+        }
+    }
+}

@@ -18,6 +18,7 @@
 | 💾 持久化存储 | 流量数据写入磁盘，支持长期统计 |
 | 📅 多时间维度 | 1分钟 / 5分钟 / 1小时 / 今天 / 7天 / 30天 / 本月 |
 | 🌐 网络信息 | Wi-Fi 名称 + 本机 IP 地址 |
+| ⚡ Mac mini 链路 | 检测 IP over Thunderbolt 状态，并切换本机 Wi-Fi / Mac mini 物理出口（Direct Full） |
 | 🖼 应用图标 | 自动识别进程对应的 macOS 应用图标 |
 | 🚀 开机自启 | 支持 Launch Agent 自动启动 |
 
@@ -68,6 +69,7 @@ NetBar/
     │   └── StatusBarController.swift     # 菜单栏控制 + 浮层面板管理
     ├── Monitors/                         # 核心监控服务
     │   ├── NetworkMonitor.swift          # 总网速 (sysctl)
+    │   ├── NetworkModeController.swift   # Wi-Fi / 雷雳物理出口检测、切换与回滚
     │   ├── ProcessTrafficMonitor.swift   # 按应用流量（聚合 nettop + mihomo）
     │   ├── NettopParser.swift            # nettop 命令执行与解析
     │   ├── MihomoClient.swift            # Mihomo 代理 API 客户端
@@ -97,6 +99,7 @@ NetBar/
 - **网速监控**：通过 `sysctl` + `NET_RT_IFLIST2` 读取 64 位网络接口计数器
 - **进程流量**：解析 `nettop` 命令输出，按进程聚合
 - **代理检测**：分析每个连接的网络接口（`en0` = 直连，`utun*` = VPN/代理）
+- **雷雳模式切换**：读取完整网络服务顺序、`bridge0` 链路、Mac mini 网关及默认物理路由；只交换 Wi-Fi 与雷雳服务，失败自动恢复
 - **持久化**：JSON 文件按天存储，每小时汇总，存放在 `~/Library/Application Support/NetBar/`
 - **菜单栏渲染**：自定义 `NSView` 子类，CoreGraphics 逐像素绘制，确保像素级完美对齐
 - **应用图标**：`NSRunningApplication` + `mdfind` 双策略查找，带内存缓存
@@ -105,6 +108,17 @@ NetBar/
 
 - macOS 13.0 (Ventura) 或更高版本
 - Swift 5.9+
+
+## ⚡ Mac mini 雷雳链路
+
+Direct Full 版本会在弹出面板中显示“Mac mini 链路”卡片：
+
+- **本机 Wi-Fi**：Wi-Fi 是物理上网出口，雷雳仍可访问 Mac mini。
+- **经 Mac mini**：雷雳网桥是物理上网出口；切换前必须确认 Mac mini 网关可达。
+
+该功能不关闭或重启 Clash、aTrust、Tailscale、Amnezia 等 VPN，也不修改 Clash 配置。VPN 开启时公网 IP 仍可能显示 VPN 出口；卡片展示的是 VPN 下层的物理出口。系统设置即使仍显示黄色“未知状态”，也不影响 NetBar 根据载波、IP、网关、Ping 和默认路由给出的实测结果。
+
+App Store Lite 受沙盒限制，不包含网络模式切换能力。
 
 ## 🗑 卸载
 
