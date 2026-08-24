@@ -47,4 +47,13 @@ enum DistributionFlavor: String {
             return true
         }
     }
+
+    var supportsNetworkModeSwitch: Bool {
+        switch self {
+        case .appStoreLite:
+            return false
+        case .directFull:
+            return true
+        }
+    }
 }
