@@ -3,6 +3,39 @@ import XCTest
 @testable import NetBar
 
 final class NetworkStaticLinkTests: XCTestCase {
+    func testInstalledAppResolvesSwiftPMResourceBundleFromContentsResources() throws {
+        let appURL = temporaryDirectory().appendingPathComponent("NetBar.app", isDirectory: true)
+        let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
+        let resourcesURL = contentsURL.appendingPathComponent("Resources", isDirectory: true)
+        let installedBundleURL = resourcesURL.appendingPathComponent(
+            "NetBar_NetBar.bundle",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: Bundle.module.bundleURL, to: installedBundleURL)
+
+        let info: [String: Any] = [
+            "CFBundleIdentifier": "com.zjah.NetBar.ResourceResolutionTest",
+            "CFBundleName": "NetBar",
+            "CFBundlePackageType": "APPL"
+        ]
+        let infoData = try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: .xml,
+            options: 0
+        )
+        try infoData.write(to: contentsURL.appendingPathComponent("Info.plist"))
+
+        let appBundle = try XCTUnwrap(Bundle(url: appURL))
+        let resolved = try XCTUnwrap(NetBarResourceBundle.installedBundle(in: appBundle))
+        XCTAssertEqual(resolved.bundleURL.standardizedFileURL, installedBundleURL.standardizedFileURL)
+        XCTAssertNotNil(resolved.url(
+            forResource: "netbar-mini-link-helper",
+            withExtension: nil,
+            subdirectory: "MiniLinkHelper"
+        ))
+    }
+
     func testLiveSnapshotDistinguishesFixedLinkAndBoundGateway() throws {
         let runner = SnapshotCommandRunner(
             bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
@@ -99,6 +132,17 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertEqual(manual.dnsServers, ["1.1.1.1", "114.114.114.114"])
     }
 
+    func testProvisionerRejectsMissingMalformedAndOldHelperProtocol() {
+        XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.failure("missing")))
+        XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success("{}")))
+        XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
+            "{\"protocolVersion\":0}"
+        )))
+        XCTAssertTrue(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
+            "{\"protocolVersion\":1}"
+        )))
+    }
+
     func testSSHArgumentsRequireRegisteredHostIdentity() {
         let arguments = NetworkLinkProvisioner.sshArguments(
             profile: .defaults,
@@ -190,12 +234,22 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertNotEqual(run("/bin/zsh", [helper.path, "status", "extra"]).exitCode, 0)
 
         let installerSource = try String(contentsOf: installer)
+        let helperSource = try String(contentsOf: helper)
         let sudoersSource = try String(contentsOf: sudoers)
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper status"))
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper apply"))
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper rollback"))
         XCTAssertFalse(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper *"))
         XCTAssertTrue(installerSource.contains("visudo -cf"))
+        XCTAssertTrue(installerSource.contains(
+            "SUDOERS_TARGET=/etc/sudoers.d/netbar-mini-link-helper"
+        ))
+        XCTAssertTrue(installerSource.contains(
+            "LEGACY_SUDOERS_TARGET=/etc/sudoers.d/com.zjah.NetBarMiniLinkHelper"
+        ))
+        XCTAssertTrue(installerSource.contains("/bin/rm -f \"$LEGACY_SUDOERS_TARGET\""))
+        XCTAssertTrue(helperSource.contains("NAT.SharingDevices.$index"))
+        XCTAssertFalse(helperSource.contains("NAT.SharingDevices json"))
     }
 
     private func makeProvisioner(
@@ -339,7 +393,11 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
             }
             if let action = arguments.last, ["status", "apply", "rollback"].contains(action) {
                 remoteActions.append(action)
-                if action == "status" { return remoteHelperInstalled ? .success("{}") : .failure("missing") }
+                if action == "status" {
+                    return remoteHelperInstalled
+                        ? .success("{\"protocolVersion\":1}")
+                        : .failure("missing")
+                }
                 if action == "rollback" { return remoteRollbackSucceeds ? .success("{}") : .failure("rollback failed") }
                 return .success("{}")
             }

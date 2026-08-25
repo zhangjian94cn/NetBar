@@ -28,6 +28,7 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
 #else
 final class NetworkLinkProvisioner: NetworkLinkProvisioning {
     static let miniHelperPath = "/Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper"
+    static let miniHelperProtocolVersion = 1
 
     private let runner: NetworkModeCommandRunning
     private let profile: MacMiniLinkProfile
@@ -41,7 +42,7 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
     init(
         runner: NetworkModeCommandRunning = DefaultNetworkModeCommandRunner(),
         profile: MacMiniLinkProfile = .bundled,
-        bundle: Bundle = .module,
+        bundle: Bundle = NetBarResourceBundle.current,
         fileManager: FileManager = .default,
         pollAttempts: Int = 60,
         pollInterval: TimeInterval = 2,
@@ -81,7 +82,7 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
             return .init(kind: .failed, message: "Mac mini SSH 主机密钥变化、身份验证失败或主机不可达，已拒绝初始化")
         }
 
-        if !remoteHelperStatus().succeeded {
+        if !Self.isCompatibleHelperStatus(remoteHelperStatus()) {
             let installResult = installRemoteHelper()
             guard installResult.succeeded else { return installResult }
         }
@@ -158,6 +159,16 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
             router: LiveNetworkModeSystemProvider.parseNetworkInfoValue("Router", from: info),
             dnsServers: dnsServers
         )
+    }
+
+    static func isCompatibleHelperStatus(_ result: NetworkModeCommandResult) -> Bool {
+        guard result.succeeded,
+              let data = result.standardOutput.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = object["protocolVersion"] as? Int else {
+            return false
+        }
+        return version == miniHelperProtocolVersion
     }
 
     static func sshArguments(profile: MacMiniLinkProfile, host: String, remoteArguments: [String]) -> [String] {
@@ -292,7 +303,7 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
         }
 
         for attempt in 0..<pollAttempts {
-            if remoteHelperStatus().succeeded {
+            if Self.isCompatibleHelperStatus(remoteHelperStatus()) {
                 return .init(kind: .success, message: "Mac mini Helper 已安装")
             }
             if attempt < pollAttempts - 1 {

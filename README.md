@@ -154,7 +154,7 @@ rm -rf ~/Library/Application\ Support/NetBar/
 
 ```bash
 sudo -n /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper rollback
-sudo rm /etc/sudoers.d/com.zjah.NetBarMiniLinkHelper
+sudo rm -f /etc/sudoers.d/netbar-mini-link-helper /etc/sudoers.d/com.zjah.NetBarMiniLinkHelper
 sudo rm /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper
 sudo rm -rf /Library/Application\ Support/NetBar
 ```
