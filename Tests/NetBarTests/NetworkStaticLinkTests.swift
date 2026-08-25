@@ -80,6 +80,19 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertEqual(snapshot.gatewayState, .unknown)
     }
 
+    func testLiveSnapshotTreatsMissingMiniDNSAsNotProvisioned() throws {
+        let runner = SnapshotCommandRunner(
+            bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
+            router: "192.168.2.1",
+            dnsConfigured: false
+        )
+
+        let snapshot = try LiveNetworkModeSystemProvider(commandRunner: runner).readSnapshot()
+
+        XCTAssertEqual(snapshot.linkState, .addressNotProvisioned)
+        XCTAssertEqual(snapshot.gatewayState, .unknown)
+    }
+
     func testLiveSnapshotReportsNoCarrierAndUnreachablePeer() throws {
         let inactive = SnapshotCommandRunner(
             bridgeOutput: Self.bridge(address: "192.168.2.2", active: false),
@@ -336,6 +349,7 @@ private final class SnapshotCommandRunner: NetworkModeCommandRunning {
     let peerReachable: Bool
     let boundEgressReachable: Bool
     let manualConfiguration: Bool
+    let dnsConfigured: Bool
     private(set) var invocations: [Invocation] = []
 
     init(
@@ -343,13 +357,15 @@ private final class SnapshotCommandRunner: NetworkModeCommandRunning {
         router: String?,
         peerReachable: Bool = true,
         boundEgressReachable: Bool = true,
-        manualConfiguration: Bool = true
+        manualConfiguration: Bool = true,
+        dnsConfigured: Bool = true
     ) {
         self.bridgeOutput = bridgeOutput
         self.router = router
         self.peerReachable = peerReachable
         self.boundEgressReachable = boundEgressReachable
         self.manualConfiguration = manualConfiguration
+        self.dnsConfigured = dnsConfigured
     }
 
     func run(executable: String, arguments: [String]) -> NetworkModeCommandResult {
@@ -361,6 +377,11 @@ private final class SnapshotCommandRunner: NetworkModeCommandRunning {
         if executable == "/usr/sbin/networksetup", arguments.first == "-getinfo" {
             let method = manualConfiguration ? "Manual Configuration" : "DHCP Configuration"
             return .success("\(method)\nIP address: 192.168.2.2\nSubnet mask: 255.255.255.0\nRouter: \(router ?? "none")")
+        }
+        if executable == "/usr/sbin/networksetup", arguments.first == "-getdnsservers" {
+            return .success(dnsConfigured
+                ? "192.168.2.1"
+                : "There aren't any DNS Servers set on Thunderbolt Bridge.")
         }
         if executable == "/sbin/route" { return .success("interface: en0") }
         if executable == "/sbin/ping" {
