@@ -28,7 +28,7 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
 #else
 final class NetworkLinkProvisioner: NetworkLinkProvisioning {
     static let miniHelperPath = "/Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper"
-    static let miniHelperProtocolVersion = 1
+    static let miniHelperProtocolVersion = 2
 
     private let runner: NetworkModeCommandRunning
     private let profile: MacMiniLinkProfile
@@ -36,6 +36,8 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
     private let fileManager: FileManager
     private let pollAttempts: Int
     private let pollInterval: TimeInterval
+    private let verificationAttempts: Int
+    private let verificationInterval: TimeInterval
     private let sleeper: (TimeInterval) -> Void
     private let backupDirectory: URL?
 
@@ -46,6 +48,8 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
         fileManager: FileManager = .default,
         pollAttempts: Int = 60,
         pollInterval: TimeInterval = 2,
+        verificationAttempts: Int = 12,
+        verificationInterval: TimeInterval = 1,
         backupDirectory: URL? = nil,
         sleeper: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
     ) {
@@ -55,6 +59,8 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
         self.fileManager = fileManager
         self.pollAttempts = max(1, pollAttempts)
         self.pollInterval = max(0, pollInterval)
+        self.verificationAttempts = max(1, verificationAttempts)
+        self.verificationInterval = max(0, verificationInterval)
         self.backupDirectory = backupDirectory
         self.sleeper = sleeper
     }
@@ -357,16 +363,21 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
     }
 
     private func verifyFixedLink() -> Bool {
-        let ifconfig = runner.run(executable: "/sbin/ifconfig", arguments: ["bridge0"])
-        guard ifconfig.succeeded,
-              LiveNetworkModeSystemProvider.parseInterfaceIPv4s(ifconfig.standardOutput).contains(profile.localAddress) else {
-            return false
+        for attempt in 0..<verificationAttempts {
+            let ifconfig = runner.run(executable: "/sbin/ifconfig", arguments: ["bridge0"])
+            if ifconfig.succeeded,
+               LiveNetworkModeSystemProvider.parseInterfaceIPv4s(ifconfig.standardOutput).contains(profile.localAddress) {
+                let ping = runner.run(
+                    executable: "/sbin/ping",
+                    arguments: ["-b", "bridge0", "-S", profile.localAddress, "-c", "1", "-W", "800", profile.gatewayAddress]
+                )
+                if ping.succeeded { return true }
+            }
+            if attempt < verificationAttempts - 1 {
+                sleeper(verificationInterval)
+            }
         }
-        let ping = runner.run(
-            executable: "/sbin/ping",
-            arguments: ["-b", "bridge0", "-S", profile.localAddress, "-c", "1", "-W", "800", profile.gatewayAddress]
-        )
-        return ping.succeeded
+        return false
     }
 }
 #endif

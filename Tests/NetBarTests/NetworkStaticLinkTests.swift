@@ -136,10 +136,10 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.failure("missing")))
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success("{}")))
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
-            "{\"protocolVersion\":0}"
+            "{\"protocolVersion\":1}"
         )))
         XCTAssertTrue(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
-            "{\"protocolVersion\":1}"
+            "{\"protocolVersion\":2}"
         )))
     }
 
@@ -201,6 +201,19 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(runner.remoteActions.contains("rollback"))
     }
 
+    func testProvisionerWaitsForAddressAndPeerToSettle() {
+        let runner = ProvisioningCommandRunner()
+        runner.addressVerificationFailuresRemaining = 1
+        runner.pingVerificationFailuresRemaining = 1
+
+        let outcome = makeProvisioner(runner: runner).provision()
+
+        XCTAssertEqual(outcome.kind, .success)
+        XCTAssertEqual(runner.addressVerificationChecks, 3)
+        XCTAssertEqual(runner.pingVerificationChecks, 2)
+        XCTAssertFalse(runner.remoteActions.contains("rollback"))
+    }
+
     func testProvisionerReportsRecoveryRequiredWhenRollbackFails() {
         let runner = ProvisioningCommandRunner()
         runner.localApplySucceeds = false
@@ -250,6 +263,10 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(installerSource.contains("/bin/rm -f \"$LEGACY_SUDOERS_TARGET\""))
         XCTAssertTrue(helperSource.contains("NAT.SharingDevices.$index"))
         XCTAssertFalse(helperSource.contains("NAT.SharingDevices json"))
+        XCTAssertTrue(helperSource.contains("protocolVersion\\\":2"))
+        XCTAssertTrue(helperSource.contains("SLEEP=/bin/sleep"))
+        XCTAssertTrue(helperSource.contains("wait_for_gateway_address"))
+        XCTAssertTrue(helperSource.contains("for attempt in {1..10}"))
     }
 
     private func makeProvisioner(
@@ -262,6 +279,8 @@ final class NetworkStaticLinkTests: XCTestCase {
             bundle: .module,
             pollAttempts: 2,
             pollInterval: 0,
+            verificationAttempts: 3,
+            verificationInterval: 0,
             backupDirectory: backupDirectory ?? temporaryDirectory(),
             sleeper: { _ in }
         )
@@ -365,9 +384,13 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
     var localApplySucceeds = true
     var remoteRollbackSucceeds = true
     var fixedLinkVerificationSucceeds = true
+    var addressVerificationFailuresRemaining = 0
+    var pingVerificationFailuresRemaining = 0
     var localInfo = "DHCP Configuration\nIP address: 169.254.2.4\nSubnet mask: 255.255.0.0\nRouter: none"
     private(set) var privilegedConfigurations: [(serviceName: String, configuration: NetworkServiceConfiguration)] = []
     private(set) var remoteActions: [String] = []
+    private(set) var addressVerificationChecks = 0
+    private(set) var pingVerificationChecks = 0
 
     func run(executable: String, arguments: [String]) -> NetworkModeCommandResult {
         if executable == "/usr/sbin/networksetup", arguments == ["-listnetworkserviceorder"] {
@@ -383,6 +406,11 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
         }
         if executable == "/sbin/ping" {
             if arguments.contains("-b") {
+                pingVerificationChecks += 1
+                if pingVerificationFailuresRemaining > 0 {
+                    pingVerificationFailuresRemaining -= 1
+                    return .failure("timeout")
+                }
                 return fixedLinkVerificationSucceeds ? .success() : .failure("timeout")
             }
             return .success()
@@ -395,7 +423,7 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
                 remoteActions.append(action)
                 if action == "status" {
                     return remoteHelperInstalled
-                        ? .success("{\"protocolVersion\":1}")
+                        ? .success("{\"protocolVersion\":2}")
                         : .failure("missing")
                 }
                 if action == "rollback" { return remoteRollbackSucceeds ? .success("{}") : .failure("rollback failed") }
@@ -410,6 +438,11 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
             return .success("There aren't any DNS Servers set on Thunderbolt Bridge.")
         }
         if executable == "/sbin/ifconfig" {
+            addressVerificationChecks += 1
+            if addressVerificationFailuresRemaining > 0 {
+                addressVerificationFailuresRemaining -= 1
+                return .success("inet 169.254.2.4 netmask 0xffff0000\nstatus: active")
+            }
             return fixedLinkVerificationSucceeds
                 ? .success("inet 192.168.2.2 netmask 0xffffff00\nstatus: active")
                 : .success("inet 169.254.2.4 netmask 0xffff0000\nstatus: active")
