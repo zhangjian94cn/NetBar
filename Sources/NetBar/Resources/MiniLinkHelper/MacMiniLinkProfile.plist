@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>localAddress</key>
+    <string>192.168.2.2</string>
+    <key>gatewayAddress</key>
+    <string>192.168.2.1</string>
+    <key>subnetMask</key>
+    <string>255.255.255.0</string>
+    <key>miniUpstreamDevice</key>
+    <string>en0</string>
+    <key>miniSSHUser</key>
+    <string>zhangjian</string>
+    <key>miniBonjourHost</key>
+    <string>zhangjiandemac-mini.local</string>
+    <key>probeTargets</key>
+    <array>
+        <string>1.1.1.1</string>
+        <string>114.114.114.114</string>
+    </array>
+</dict>
+</plist>

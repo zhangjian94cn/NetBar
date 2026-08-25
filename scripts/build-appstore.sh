@@ -19,6 +19,15 @@ cp "$ROOT_DIR/.build/release/NetBar" "$BIN_DIR/NetBar"
 cp "$ROOT_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$RES_DIR/AppIcon.icns"
 
+if find "$APP_DIR" -name 'netbar-mini-link-helper' -o -name 'install-netbar-mini-link-helper.command' | grep -q .; then
+    echo "App Store Lite artifact must not contain Mini Helper resources" >&2
+    exit 1
+fi
+if strings "$BIN_DIR/NetBar" | grep -Fq '/usr/bin/ssh'; then
+    echo "App Store Lite binary must not contain SSH provisioning capability" >&2
+    exit 1
+fi
+
 if [[ -n "${NETBAR_APPSTORE_IDENTITY:-}" ]]; then
     echo "Signing with App Store identity..."
     codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign "$NETBAR_APPSTORE_IDENTITY" "$APP_DIR"

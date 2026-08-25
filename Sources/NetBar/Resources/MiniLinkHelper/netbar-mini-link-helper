@@ -1,0 +1,158 @@
+#!/bin/zsh
+set -euo pipefail
+
+NETWORKSETUP=/usr/sbin/networksetup
+IFCONFIG=/sbin/ifconfig
+PLUTIL=/usr/bin/plutil
+GREP=/usr/bin/grep
+AWK=/usr/bin/awk
+SED=/usr/bin/sed
+MKDIR=/bin/mkdir
+CHMOD=/bin/chmod
+
+PROFILE=/Library/Application\ Support/NetBar/MacMiniLinkProfile.plist
+NAT_PROFILE=/Library/Preferences/SystemConfiguration/com.apple.nat.plist
+STATE_DIR=/Library/Application\ Support/NetBar/ThunderboltLink
+BACKUP_PLIST="$STATE_DIR/mini-network-backup.plist"
+BACKUP_DNS="$STATE_DIR/mini-dns-backup.txt"
+
+fail() {
+    print -u2 -- "$1"
+    exit 1
+}
+
+[[ "$#" -eq 1 ]] || fail "usage: netbar-mini-link-helper status|apply|rollback"
+case "$1" in
+    status|apply|rollback) ACTION="$1" ;;
+    *) fail "unsupported command" ;;
+esac
+
+[[ -r "$PROFILE" ]] || fail "profile missing"
+
+profile_value() {
+    "$PLUTIL" -extract "$1" raw -o - "$PROFILE"
+}
+
+GATEWAY_ADDRESS="$(profile_value gatewayAddress)"
+SUBNET_MASK="$(profile_value subnetMask)"
+UPSTREAM_DEVICE="$(profile_value miniUpstreamDevice)"
+
+find_bridge_service() {
+    "$NETWORKSETUP" -listnetworkserviceorder | "$AWK" '
+        /^\([0-9]+\) / {
+            name=$0
+            sub(/^\([0-9]+\) /, "", name)
+            sub(/^\*/, "", name)
+        }
+        /Device: bridge0\)$/ { print name; exit }
+    '
+}
+
+network_value() {
+    local key="$1"
+    local info="$2"
+    print -r -- "$info" | "$AWK" -v prefix="$key:" '
+        index($0, prefix) == 1 {
+            sub(prefix, "")
+            sub(/^[[:space:]]+/, "")
+            print
+            exit
+        }
+    '
+}
+
+json_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    print -rn -- "$value"
+}
+
+BRIDGE_SERVICE="$(find_bridge_service)"
+[[ -n "$BRIDGE_SERVICE" ]] || fail "Thunderbolt Bridge service not found"
+
+save_backup_once() {
+    [[ -f "$BACKUP_PLIST" ]] && return
+    "$MKDIR" -p "$STATE_DIR"
+    "$CHMOD" 700 "$STATE_DIR"
+
+    local info method ip subnet router
+    info="$($NETWORKSETUP -getinfo "$BRIDGE_SERVICE")"
+    method="DHCP"
+    print -r -- "$info" | "$GREP" -q '^Manual Configuration' && method="Manual"
+    ip="$(network_value "IP address" "$info")"
+    subnet="$(network_value "Subnet mask" "$info")"
+    router="$(network_value "Router" "$info")"
+
+    "$PLUTIL" -create xml1 "$BACKUP_PLIST"
+    "$PLUTIL" -insert method -string "$method" "$BACKUP_PLIST"
+    "$PLUTIL" -insert service -string "$BRIDGE_SERVICE" "$BACKUP_PLIST"
+    "$PLUTIL" -insert ip -string "${ip:-}" "$BACKUP_PLIST"
+    "$PLUTIL" -insert subnet -string "${subnet:-}" "$BACKUP_PLIST"
+    "$PLUTIL" -insert router -string "${router:-}" "$BACKUP_PLIST"
+    "$NETWORKSETUP" -getdnsservers "$BRIDGE_SERVICE" > "$BACKUP_DNS"
+    "$CHMOD" 600 "$BACKUP_PLIST" "$BACKUP_DNS"
+}
+
+restore_dns() {
+    [[ -r "$BACKUP_DNS" ]] || return
+    if "$GREP" -q "There aren't any DNS Servers" "$BACKUP_DNS"; then
+        "$NETWORKSETUP" -setdnsservers "$BRIDGE_SERVICE" Empty
+        return
+    fi
+    local dns_values
+    dns_values=("${(@f)$(<"$BACKUP_DNS")}")
+    "$NETWORKSETUP" -setdnsservers "$BRIDGE_SERVICE" "${dns_values[@]}"
+}
+
+emit_status() {
+    local info ip upstream_active sharing_running sharing_configured configured primary_device sharing_devices
+    info="$($NETWORKSETUP -getinfo "$BRIDGE_SERVICE")"
+    ip="$(network_value "IP address" "$info")"
+    "$IFCONFIG" bridge0 | "$GREP" -q "inet $GATEWAY_ADDRESS " && configured=true || configured=false
+    "$IFCONFIG" "$UPSTREAM_DEVICE" | "$GREP" -q 'status: active' && upstream_active=true || upstream_active=false
+    /bin/ps -axo command | "$GREP" -q '[/]usr/libexec/InternetSharing' && sharing_running=true || sharing_running=false
+    primary_device="$($PLUTIL -extract NAT.PrimaryInterface.Device raw -o - "$NAT_PROFILE" 2>/dev/null || true)"
+    sharing_devices="$($PLUTIL -extract NAT.SharingDevices json -o - "$NAT_PROFILE" 2>/dev/null || true)"
+    [[ "$primary_device" == "$UPSTREAM_DEVICE" && "$sharing_devices" == *'"bridge0"'* ]] && sharing_configured=true || sharing_configured=false
+    print -r -- "{\"service\":\"$(json_escape "$BRIDGE_SERVICE")\",\"configured\":$configured,\"serviceIPv4\":\"$(json_escape "${ip:-}")\",\"gatewayIPv4\":\"$GATEWAY_ADDRESS\",\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"internetSharingRunning\":$sharing_running}"
+}
+
+validate_sharing_configuration() {
+    local primary_device sharing_devices
+    [[ -r "$NAT_PROFILE" ]] || fail "Internet Sharing configuration missing"
+    primary_device="$($PLUTIL -extract NAT.PrimaryInterface.Device raw -o - "$NAT_PROFILE")"
+    sharing_devices="$($PLUTIL -extract NAT.SharingDevices json -o - "$NAT_PROFILE")"
+    [[ "$primary_device" == "$UPSTREAM_DEVICE" ]] || fail "Internet Sharing source must be $UPSTREAM_DEVICE"
+    [[ "$sharing_devices" == *'"bridge0"'* ]] || fail "Internet Sharing target must include bridge0"
+}
+
+case "$ACTION" in
+    status)
+        emit_status
+        ;;
+    apply)
+        validate_sharing_configuration
+        save_backup_once
+        "$NETWORKSETUP" -setmanual "$BRIDGE_SERVICE" "$GATEWAY_ADDRESS" "$SUBNET_MASK" 0.0.0.0
+        "$IFCONFIG" bridge0 | "$GREP" -q "inet $GATEWAY_ADDRESS " || fail "fixed gateway address verification failed"
+        emit_status
+        ;;
+    rollback)
+        [[ -r "$BACKUP_PLIST" ]] || fail "backup missing"
+        method="$($PLUTIL -extract method raw -o - "$BACKUP_PLIST")"
+        if [[ "$method" == "DHCP" ]]; then
+            "$NETWORKSETUP" -setdhcp "$BRIDGE_SERVICE"
+        elif [[ "$method" == "Manual" ]]; then
+            ip="$($PLUTIL -extract ip raw -o - "$BACKUP_PLIST")"
+            subnet="$($PLUTIL -extract subnet raw -o - "$BACKUP_PLIST")"
+            router="$($PLUTIL -extract router raw -o - "$BACKUP_PLIST")"
+            [[ -n "$ip" && -n "$subnet" ]] || fail "manual backup incomplete"
+            "$NETWORKSETUP" -setmanual "$BRIDGE_SERVICE" "$ip" "$subnet" "${router:-0.0.0.0}"
+        else
+            fail "unsupported backup method"
+        fi
+        restore_dns
+        emit_status
+        ;;
+esac
