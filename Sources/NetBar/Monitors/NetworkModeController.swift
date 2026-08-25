@@ -302,6 +302,7 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
 
         var gateway: String?
         var bridgeConfigurationIsManual = false
+        var bridgeDNSIncludesGateway = false
         if let thunderboltService {
             let infoResult = commandRunner.run(
                 executable: "/usr/sbin/networksetup",
@@ -311,6 +312,14 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
                 gateway = Self.parseNetworkInfoValue("Router", from: infoResult.standardOutput)
                 bridgeConfigurationIsManual = infoResult.standardOutput.contains("Manual Configuration")
             }
+            let dnsResult = commandRunner.run(
+                executable: "/usr/sbin/networksetup",
+                arguments: ["-getdnsservers", thunderboltService.name]
+            )
+            bridgeDNSIncludesGateway = dnsResult.succeeded && dnsResult.standardOutput
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .contains(profile.gatewayAddress)
         }
 
         let routeResult = commandRunner.run(
@@ -346,7 +355,8 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             linkState = .disconnected
         } else if !bridgeConfigurationIsManual ||
                     !bridgeAddresses.contains(profile.localAddress) ||
-                    gateway != profile.gatewayAddress {
+                    gateway != profile.gatewayAddress ||
+                    !bridgeDNSIncludesGateway {
             linkState = .addressNotProvisioned
         } else if !miniReachable {
             linkState = .miniUnreachable
