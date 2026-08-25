@@ -41,7 +41,7 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
     init(
         runner: NetworkModeCommandRunning = DefaultNetworkModeCommandRunner(),
         profile: MacMiniLinkProfile = .bundled,
-        bundle: Bundle = .module,
+        bundle: Bundle = NetBarResourceBundle.current,
         fileManager: FileManager = .default,
         pollAttempts: Int = 60,
         pollInterval: TimeInterval = 2,

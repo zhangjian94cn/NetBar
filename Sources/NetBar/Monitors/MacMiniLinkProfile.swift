@@ -20,7 +20,7 @@ struct MacMiniLinkProfile: Codable, Equatable {
     )
 
     static let bundled: MacMiniLinkProfile = {
-        guard let url = Bundle.module.url(
+        guard let url = NetBarResourceBundle.current.url(
             forResource: "MacMiniLinkProfile",
             withExtension: "plist",
             subdirectory: "MiniLinkHelper"

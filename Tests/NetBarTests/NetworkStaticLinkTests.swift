@@ -3,6 +3,39 @@ import XCTest
 @testable import NetBar
 
 final class NetworkStaticLinkTests: XCTestCase {
+    func testInstalledAppResolvesSwiftPMResourceBundleFromContentsResources() throws {
+        let appURL = temporaryDirectory().appendingPathComponent("NetBar.app", isDirectory: true)
+        let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
+        let resourcesURL = contentsURL.appendingPathComponent("Resources", isDirectory: true)
+        let installedBundleURL = resourcesURL.appendingPathComponent(
+            "NetBar_NetBar.bundle",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: Bundle.module.bundleURL, to: installedBundleURL)
+
+        let info: [String: Any] = [
+            "CFBundleIdentifier": "com.zjah.NetBar.ResourceResolutionTest",
+            "CFBundleName": "NetBar",
+            "CFBundlePackageType": "APPL"
+        ]
+        let infoData = try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: .xml,
+            options: 0
+        )
+        try infoData.write(to: contentsURL.appendingPathComponent("Info.plist"))
+
+        let appBundle = try XCTUnwrap(Bundle(url: appURL))
+        let resolved = try XCTUnwrap(NetBarResourceBundle.installedBundle(in: appBundle))
+        XCTAssertEqual(resolved.bundleURL.standardizedFileURL, installedBundleURL.standardizedFileURL)
+        XCTAssertNotNil(resolved.url(
+            forResource: "netbar-mini-link-helper",
+            withExtension: nil,
+            subdirectory: "MiniLinkHelper"
+        ))
+    }
+
     func testLiveSnapshotDistinguishesFixedLinkAndBoundGateway() throws {
         let runner = SnapshotCommandRunner(
             bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
