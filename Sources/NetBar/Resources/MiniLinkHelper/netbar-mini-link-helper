@@ -9,6 +9,7 @@ AWK=/usr/bin/awk
 SED=/usr/bin/sed
 MKDIR=/bin/mkdir
 CHMOD=/bin/chmod
+SLEEP=/bin/sleep
 
 PROFILE=/Library/Application\ Support/NetBar/MacMiniLinkProfile.plist
 NAT_PROFILE=/Library/Preferences/SystemConfiguration/com.apple.nat.plist
@@ -125,7 +126,20 @@ emit_status() {
     /bin/ps -axo command | "$GREP" -q '[/]usr/libexec/InternetSharing' && sharing_running=true || sharing_running=false
     primary_device="$($PLUTIL -extract NAT.PrimaryInterface.Device raw -o - "$NAT_PROFILE" 2>/dev/null || true)"
     [[ "$primary_device" == "$UPSTREAM_DEVICE" ]] && sharing_includes_bridge && sharing_configured=true || sharing_configured=false
-    print -r -- "{\"protocolVersion\":1,\"service\":\"$(json_escape "$BRIDGE_SERVICE")\",\"configured\":$configured,\"serviceIPv4\":\"$(json_escape "${ip:-}")\",\"gatewayIPv4\":\"$GATEWAY_ADDRESS\",\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"internetSharingRunning\":$sharing_running}"
+    print -r -- "{\"protocolVersion\":2,\"service\":\"$(json_escape "$BRIDGE_SERVICE")\",\"configured\":$configured,\"serviceIPv4\":\"$(json_escape "${ip:-}")\",\"gatewayIPv4\":\"$GATEWAY_ADDRESS\",\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"internetSharingRunning\":$sharing_running}"
+}
+
+wait_for_gateway_address() {
+    local attempt
+    for attempt in {1..10}; do
+        if "$IFCONFIG" bridge0 | "$GREP" -q "inet $GATEWAY_ADDRESS "; then
+            return 0
+        fi
+        if [[ "$attempt" -lt 10 ]]; then
+            "$SLEEP" 1
+        fi
+    done
+    return 1
 }
 
 validate_sharing_configuration() {
@@ -144,7 +158,7 @@ case "$ACTION" in
         validate_sharing_configuration
         save_backup_once
         "$NETWORKSETUP" -setmanual "$BRIDGE_SERVICE" "$GATEWAY_ADDRESS" "$SUBNET_MASK" 0.0.0.0
-        "$IFCONFIG" bridge0 | "$GREP" -q "inet $GATEWAY_ADDRESS " || fail "fixed gateway address verification failed"
+        wait_for_gateway_address || fail "fixed gateway address verification failed after waiting for link settlement"
         emit_status
         ;;
     rollback)
