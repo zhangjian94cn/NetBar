@@ -185,6 +185,9 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertEqual(backup.method, .dhcp)
         XCTAssertEqual(runner.privilegedConfigurations.count, 2)
         XCTAssertTrue(runner.privilegedConfigurations.allSatisfy { $0.configuration.method == .manual })
+        XCTAssertTrue(runner.privilegedConfigurations.allSatisfy {
+            $0.configuration.dnsServers == ["192.168.2.1"]
+        })
     }
 
     func testProvisionerRollsBackBothEndsAndUsesSavedOriginalConfiguration() throws {
@@ -387,6 +390,7 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
     var addressVerificationFailuresRemaining = 0
     var pingVerificationFailuresRemaining = 0
     var localInfo = "DHCP Configuration\nIP address: 169.254.2.4\nSubnet mask: 255.255.0.0\nRouter: none"
+    var localDNSOutput = "There aren't any DNS Servers set on Thunderbolt Bridge."
     private(set) var privilegedConfigurations: [(serviceName: String, configuration: NetworkServiceConfiguration)] = []
     private(set) var remoteActions: [String] = []
     private(set) var addressVerificationChecks = 0
@@ -435,7 +439,7 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
             return .success(localInfo)
         }
         if executable == "/usr/sbin/networksetup", arguments.first == "-getdnsservers" {
-            return .success("There aren't any DNS Servers set on Thunderbolt Bridge.")
+            return .success(localDNSOutput)
         }
         if executable == "/sbin/ifconfig" {
             addressVerificationChecks += 1
@@ -457,6 +461,9 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
         configuration: NetworkServiceConfiguration
     ) -> NetworkModeCommandResult {
         privilegedConfigurations.append((serviceName, configuration))
+        localDNSOutput = configuration.dnsServers.isEmpty
+            ? "There aren't any DNS Servers set on Thunderbolt Bridge."
+            : configuration.dnsServers.joined(separator: "\n")
         return localApplySucceeds ? .success() : .failure("本机固定链路配置失败")
     }
 }
