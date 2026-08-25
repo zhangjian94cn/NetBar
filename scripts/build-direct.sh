@@ -17,6 +17,7 @@ swift build -c release -Xswiftc -DDIRECT_FULL
 rm -rf "$DIST_DIR"
 mkdir -p "$BIN_DIR" "$RES_DIR"
 cp "$ROOT_DIR/.build/release/NetBar" "$BIN_DIR/NetBar"
+cp -R "$ROOT_DIR/.build/release/NetBar_NetBar.bundle" "$RES_DIR/NetBar_NetBar.bundle"
 cp "$ROOT_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$RES_DIR/AppIcon.icns"
 

@@ -21,5 +21,26 @@ jobs:
       - name: Test
         run: swift test
 
-      - name: Build Release
-        run: swift build -c release
+      - name: Validate helper and installer contracts
+        run: |
+          zsh -n Sources/NetBar/Resources/MiniLinkHelper/netbar-mini-link-helper
+          zsh -n Sources/NetBar/Resources/MiniLinkHelper/install-netbar-mini-link-helper.command
+          plutil -lint Sources/NetBar/Resources/MiniLinkHelper/MacMiniLinkProfile.plist
+          /usr/sbin/visudo -cf Sources/NetBar/Resources/MiniLinkHelper/com.zjah.NetBarMiniLinkHelper.sudoers
+
+      - name: Build Direct Full
+        run: ./scripts/build-direct.sh
+
+      - name: Verify Direct Full resources
+        run: |
+          test -x dist/direct/NetBar.app/Contents/MacOS/NetBar
+          test -f dist/direct/NetBar.app/Contents/Resources/NetBar_NetBar.bundle/MiniLinkHelper/netbar-mini-link-helper
+
+      - name: Build App Store Lite
+        run: ./scripts/build-appstore.sh
+
+      - name: Verify App Store Lite excludes helper
+        run: |
+          test -x dist/appstore/NetBar.app/Contents/MacOS/NetBar
+          ! find dist/appstore/NetBar.app -type f \( -name 'netbar-mini-link-helper' -o -name 'install-netbar-mini-link-helper.command' \) | grep -q .
+          ! strings dist/appstore/NetBar.app/Contents/MacOS/NetBar | grep -Fq '/usr/bin/ssh'

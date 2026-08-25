@@ -18,8 +18,7 @@ enum NetworkRouteMode: String, CaseIterable, Equatable {
 enum ThunderboltLinkState: Equatable {
     case connected
     case disconnected
-    case missingIPv4
-    case missingGateway
+    case addressNotProvisioned
     case miniUnreachable
     case unavailable
 
@@ -29,10 +28,8 @@ enum ThunderboltLinkState: Equatable {
             return "雷雳已连接"
         case .disconnected:
             return "雷雳未连接"
-        case .missingIPv4:
-            return "雷雳缺少 IPv4 地址"
-        case .missingGateway:
-            return "未发现 Mac mini 网关"
+        case .addressNotProvisioned:
+            return "需要初始化固定链路"
         case .miniUnreachable:
             return "Mac mini 不可达"
         case .unavailable:
@@ -58,6 +55,7 @@ struct NetworkModeSnapshot: Equatable {
     let miniGateway: String?
     let physicalDefaultInterface: String?
     let linkState: ThunderboltLinkState
+    let gatewayState: MacMiniGatewayState
 
     var serviceNames: [String] {
         services.map(\.name)
@@ -114,7 +112,7 @@ struct NetworkModeSnapshot: Equatable {
     func verifies(_ mode: NetworkRouteMode) -> Bool {
         guard intendedMode == mode, effectiveMode == mode else { return false }
         if mode == .macMiniGateway {
-            return linkState == .connected
+            return linkState == .connected && gatewayState == .ready
         }
         return true
     }
@@ -157,6 +155,23 @@ protocol NetworkModeSystemProviding {
 protocol NetworkModeCommandRunning {
     func run(executable: String, arguments: [String]) -> NetworkModeCommandResult
     func runPrivilegedNetworkServiceOrder(_ serviceNames: [String]) -> NetworkModeCommandResult
+    func runPrivilegedNetworkConfiguration(
+        serviceName: String,
+        configuration: NetworkServiceConfiguration
+    ) -> NetworkModeCommandResult
+}
+
+extension NetworkModeCommandRunning {
+    func runPrivilegedNetworkConfiguration(
+        serviceName: String,
+        configuration: NetworkServiceConfiguration
+    ) -> NetworkModeCommandResult {
+        NetworkModeCommandResult(
+            exitCode: -1,
+            standardOutput: "",
+            standardError: "当前命令运行器不支持管理员网络配置"
+        )
+    }
 }
 
 final class DefaultNetworkModeCommandRunner: NetworkModeCommandRunning {
@@ -206,13 +221,56 @@ final class DefaultNetworkModeCommandRunner: NetworkModeCommandRunning {
             arguments: ["-e", script] + serviceNames
         )
     }
+
+    func runPrivilegedNetworkConfiguration(
+        serviceName: String,
+        configuration: NetworkServiceConfiguration
+    ) -> NetworkModeCommandResult {
+        let script = """
+        on run argv
+            set serviceName to item 1 of argv
+            set methodName to item 2 of argv
+            if methodName is "manual" then
+                set commandText to "/usr/sbin/networksetup -setmanual " & quoted form of serviceName & " " & quoted form of (item 3 of argv) & " " & quoted form of (item 4 of argv) & " " & quoted form of (item 5 of argv)
+            else
+                set commandText to "/usr/sbin/networksetup -setdhcp " & quoted form of serviceName
+            end if
+            do shell script commandText with administrator privileges
+
+            set dnsCount to (item 6 of argv) as integer
+            set dnsCommand to "/usr/sbin/networksetup -setdnsservers " & quoted form of serviceName
+            if dnsCount is 0 then
+                set dnsCommand to dnsCommand & " Empty"
+            else
+                repeat with indexValue from 1 to dnsCount
+                    set dnsCommand to dnsCommand & " " & quoted form of (item (6 + indexValue) of argv)
+                end repeat
+            end if
+            do shell script dnsCommand with administrator privileges
+        end run
+        """
+        let arguments = [
+            serviceName,
+            configuration.method.rawValue,
+            configuration.ipAddress ?? "",
+            configuration.subnetMask ?? "",
+            configuration.router ?? "0.0.0.0",
+            String(configuration.dnsServers.count)
+        ] + configuration.dnsServers
+        return run(executable: "/usr/bin/osascript", arguments: ["-e", script] + arguments)
+    }
 }
 
 final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
     private let commandRunner: NetworkModeCommandRunning
+    private let profile: MacMiniLinkProfile
 
-    init(commandRunner: NetworkModeCommandRunning = DefaultNetworkModeCommandRunner()) {
+    init(
+        commandRunner: NetworkModeCommandRunning = DefaultNetworkModeCommandRunner(),
+        profile: MacMiniLinkProfile = .bundled
+    ) {
         self.commandRunner = commandRunner
+        self.profile = profile
     }
 
     func readSnapshot() throws -> NetworkModeSnapshot {
@@ -237,9 +295,13 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             arguments: [thunderboltService?.device ?? "bridge0"]
         )
         let bridgeActive = bridgeResult.succeeded && Self.parseInterfaceActive(bridgeResult.standardOutput)
-        let bridgeIPv4 = bridgeResult.succeeded ? Self.parseInterfaceIPv4(bridgeResult.standardOutput) : nil
+        let bridgeAddresses = bridgeResult.succeeded ? Self.parseInterfaceIPv4s(bridgeResult.standardOutput) : []
+        let bridgeIPv4 = bridgeAddresses.contains(profile.localAddress)
+            ? profile.localAddress
+            : bridgeAddresses.first
 
         var gateway: String?
+        var bridgeConfigurationIsManual = false
         if let thunderboltService {
             let infoResult = commandRunner.run(
                 executable: "/usr/sbin/networksetup",
@@ -247,6 +309,7 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             )
             if infoResult.succeeded {
                 gateway = Self.parseNetworkInfoValue("Router", from: infoResult.standardOutput)
+                bridgeConfigurationIsManual = infoResult.standardOutput.contains("Manual Configuration")
             }
         }
 
@@ -259,10 +322,17 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             : nil
 
         let miniReachable: Bool
-        if bridgeActive, bridgeIPv4 != nil, let gateway, !gateway.isEmpty {
+        if bridgeActive,
+           bridgeConfigurationIsManual,
+           bridgeAddresses.contains(profile.localAddress),
+           gateway == profile.gatewayAddress {
             let pingResult = commandRunner.run(
                 executable: "/sbin/ping",
-                arguments: ["-c", "1", "-W", "500", gateway]
+                arguments: [
+                    "-b", thunderboltService?.device ?? "bridge0",
+                    "-S", profile.localAddress,
+                    "-c", "1", "-W", "500", profile.gatewayAddress
+                ]
             )
             miniReachable = pingResult.succeeded
         } else {
@@ -274,14 +344,31 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             linkState = .unavailable
         } else if !bridgeActive {
             linkState = .disconnected
-        } else if bridgeIPv4 == nil {
-            linkState = .missingIPv4
-        } else if gateway == nil || gateway?.isEmpty == true {
-            linkState = .missingGateway
+        } else if !bridgeConfigurationIsManual ||
+                    !bridgeAddresses.contains(profile.localAddress) ||
+                    gateway != profile.gatewayAddress {
+            linkState = .addressNotProvisioned
         } else if !miniReachable {
             linkState = .miniUnreachable
         } else {
             linkState = .connected
+        }
+
+        let gatewayState: MacMiniGatewayState
+        if linkState != .connected {
+            gatewayState = .unknown
+        } else {
+            let hasBoundEgress = profile.probeTargets.contains { target in
+                commandRunner.run(
+                    executable: "/sbin/ping",
+                    arguments: [
+                        "-b", thunderboltService?.device ?? "bridge0",
+                        "-S", profile.localAddress,
+                        "-c", "1", "-W", "700", target
+                    ]
+                ).succeeded
+            }
+            gatewayState = hasBoundEgress ? .ready : .upstreamUnavailable
         }
 
         return NetworkModeSnapshot(
@@ -291,9 +378,10 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             thunderboltServiceName: thunderboltService?.name,
             thunderboltDevice: thunderboltService?.device,
             bridgeIPv4: bridgeIPv4,
-            miniGateway: gateway,
+            miniGateway: profile.gatewayAddress,
             physicalDefaultInterface: physicalDefaultInterface,
-            linkState: linkState
+            linkState: linkState,
+            gatewayState: gatewayState
         )
     }
 
@@ -359,13 +447,18 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
     }
 
     static func parseInterfaceIPv4(_ output: String) -> String? {
+        parseInterfaceIPv4s(output).first
+    }
+
+    static func parseInterfaceIPv4s(_ output: String) -> [String] {
+        var addresses: [String] = []
         for line in output.components(separatedBy: .newlines) {
             let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
             if parts.count >= 2, parts[0] == "inet" {
-                return parts[1]
+                addresses.append(parts[1])
             }
         }
-        return nil
+        return addresses
     }
 
     static func parseNetworkInfoValue(_ key: String, from output: String) -> String? {
@@ -456,12 +549,21 @@ final class NetworkModeSwitchEngine {
             )
         }
 
-        if target == .macMiniGateway, initial.linkState != .connected {
-            return NetworkModeSwitchOutcome(
-                kind: .failed,
-                snapshot: initial,
-                message: initial.linkState.displayName
-            )
+        if target == .macMiniGateway {
+            guard initial.linkState == .connected else {
+                return NetworkModeSwitchOutcome(
+                    kind: .failed,
+                    snapshot: initial,
+                    message: initial.linkState.displayName
+                )
+            }
+            guard initial.gatewayState == .ready else {
+                return NetworkModeSwitchOutcome(
+                    kind: .failed,
+                    snapshot: initial,
+                    message: initial.gatewayState.displayName
+                )
+            }
         }
 
         if initial.verifies(target) {
@@ -524,21 +626,25 @@ final class NetworkModeSwitchEngine {
 final class NetworkModeController: ObservableObject {
     @Published private(set) var snapshot: NetworkModeSnapshot?
     @Published private(set) var isSwitching = false
+    @Published private(set) var isProvisioning = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var requiresManualRecovery = false
 
     private let provider: NetworkModeSystemProviding
     private let switchEngine: NetworkModeSwitchEngine
+    private let provisioner: NetworkLinkProvisioning
     private let workQueue = DispatchQueue(label: "com.zjah.NetBar.network-mode", qos: .utility)
     private let onNetworkChanged: () -> Void
     private var refreshTimer: Timer?
 
     init(
         provider: NetworkModeSystemProviding = LiveNetworkModeSystemProvider(),
+        provisioner: NetworkLinkProvisioning = NetworkLinkProvisioner(),
         onNetworkChanged: @escaping () -> Void = {}
     ) {
         self.provider = provider
         self.switchEngine = NetworkModeSwitchEngine(provider: provider)
+        self.provisioner = provisioner
         self.onNetworkChanged = onNetworkChanged
     }
 
@@ -558,7 +664,7 @@ final class NetworkModeController: ObservableObject {
     }
 
     func refresh() {
-        guard !isSwitching else { return }
+        guard !isSwitching, !isProvisioning else { return }
         workQueue.async { [weak self] in
             guard let self else { return }
             let result = Result { try self.provider.readSnapshot() }
@@ -577,7 +683,7 @@ final class NetworkModeController: ObservableObject {
     }
 
     func switchMode(to target: NetworkRouteMode) {
-        guard !isSwitching else { return }
+        guard !isSwitching, !isProvisioning else { return }
         isSwitching = true
         errorMessage = nil
         requiresManualRecovery = false
@@ -596,6 +702,60 @@ final class NetworkModeController: ObservableObject {
                     self.onNetworkChanged()
                 } else {
                     Log.network.error("物理网络出口切换未完成: \(outcome.message ?? "未知错误", privacy: .public)")
+                }
+            }
+        }
+    }
+
+    func initializeFixedLink() {
+        guard !isSwitching, !isProvisioning else { return }
+        isProvisioning = true
+        errorMessage = "正在确保本机 Wi-Fi 为物理出口…"
+        requiresManualRecovery = false
+
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            let originalSnapshot = try? self.provider.readSnapshot()
+
+            let wifiOutcome = self.switchEngine.switchMode(to: .localWiFi)
+            guard wifiOutcome.succeeded else {
+                DispatchQueue.main.async {
+                    self.snapshot = wifiOutcome.snapshot ?? self.snapshot
+                    self.errorMessage = wifiOutcome.message ?? "无法先切换到本机 Wi-Fi"
+                    self.requiresManualRecovery = wifiOutcome.kind == .recoveryRequired
+                    self.isProvisioning = false
+                }
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.errorMessage = "请在 Mac mini 终端完成一次管理员授权；随后本机会请求一次授权"
+            }
+
+            let outcome = self.provisioner.provision()
+            var finalOutcome = outcome
+            if !outcome.succeeded,
+               let originalSnapshot,
+               wifiOutcome.snapshot?.serviceNames != originalSnapshot.serviceNames {
+                let orderRollback = self.provider.setServiceOrder(originalSnapshot.serviceNames)
+                if !orderRollback.succeeded {
+                    finalOutcome = NetworkLinkProvisioningOutcome(
+                        kind: .recoveryRequired,
+                        message: "\(outcome.message)；恢复原网络服务顺序失败"
+                    )
+                }
+            }
+            let refreshedSnapshot = try? self.provider.readSnapshot()
+            DispatchQueue.main.async {
+                self.snapshot = refreshedSnapshot ?? wifiOutcome.snapshot ?? self.snapshot
+                self.errorMessage = finalOutcome.message
+                self.requiresManualRecovery = finalOutcome.kind == .recoveryRequired
+                self.isProvisioning = false
+                if finalOutcome.succeeded {
+                    Log.network.info("固定雷雳链路初始化成功")
+                    self.onNetworkChanged()
+                } else {
+                    Log.network.error("固定雷雳链路初始化失败: \(finalOutcome.message, privacy: .public)")
                 }
             }
         }

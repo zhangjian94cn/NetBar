@@ -1,7 +1,7 @@
 # ADR: NetBar 管理 Wi-Fi 与雷雳网桥物理出口优先级
 
 - 日期: 2026-08-24
-- 状态: accepted
+- 状态: accepted（固定链路前置条件由 [2026-08-25-thunderbolt-static-link-adr.md](2026-08-25-thunderbolt-static-link-adr.md) 扩展）
 - 范围: NetBar Direct Full / 本机网络服务控制
 - 相关源码: [NetworkModeController.swift](../Sources/NetBar/Monitors/NetworkModeController.swift)、[NetworkModeCard.swift](../Sources/NetBar/Views/Components/NetworkModeCard.swift)
 - 上位原则: [engineering-principles.md](../../../docs/engineering-principles.md)
@@ -34,7 +34,7 @@ MacBook Pro 通过 IP over Thunderbolt 连接 Mac mini 后，系统同时存在 
 
 - 正面：所有 VPN 服务保持原配置；切换范围小、可回读、可恢复；NetBar 状态不再依赖系统设置中的模糊黄点。
 - 代价：服务优先级变化可能让既有连接短暂重收敛；权限策略严格的机器可能在切换时弹出管理员授权。
-- 限制：NetBar 不保证 macOS 网络设置的状态点变绿，也不远程修改 Mac mini 的互联网共享配置。
+- 限制：NetBar 不保证 macOS 网络设置的状态点变绿。Mini 固定地址初始化与受限 Helper 的新增边界见 [2026-08-25-thunderbolt-static-link-adr.md](2026-08-25-thunderbolt-static-link-adr.md)；NetBar 仍不修改私有 Internet Sharing/NAT 配置。
 - 恢复：验证失败自动恢复原顺序；恢复无法确认时，UI 进入“需要手动恢复”并打开系统网络设置，不宣称切换成功。
 
 ## Verification

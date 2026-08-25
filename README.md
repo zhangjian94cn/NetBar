@@ -18,7 +18,7 @@
 | 💾 持久化存储 | 流量数据写入磁盘，支持长期统计 |
 | 📅 多时间维度 | 1分钟 / 5分钟 / 1小时 / 今天 / 7天 / 30天 / 本月 |
 | 🌐 网络信息 | Wi-Fi 名称 + 本机 IP 地址 |
-| ⚡ Mac mini 链路 | 检测 IP over Thunderbolt 状态，并切换本机 Wi-Fi / Mac mini 物理出口（Direct Full） |
+| ⚡ Mac mini 链路 | 固定双端 IP、检测并修复 IP over Thunderbolt，切换本机 Wi-Fi / Mac mini 物理出口（Direct Full） |
 | 🖼 应用图标 | 自动识别进程对应的 macOS 应用图标 |
 | 🚀 开机自启 | 支持 Launch Agent 自动启动 |
 
@@ -40,7 +40,7 @@ chmod +x install.sh
 ```
 
 安装脚本会自动：
-1. 编译 Release 版本
+1. 编译 Direct Full Release 版本
 2. 打包为 `NetBar.app` 并安装到 `~/Applications/`
 3. 配置 Launch Agent 实现开机自启
 
@@ -114,11 +114,28 @@ NetBar/
 Direct Full 版本会在弹出面板中显示“Mac mini 链路”卡片：
 
 - **本机 Wi-Fi**：Wi-Fi 是物理上网出口，雷雳仍可访问 Mac mini。
-- **经 Mac mini**：雷雳网桥是物理上网出口；切换前必须确认 Mac mini 网关可达。
+- **经 Mac mini**：雷雳网桥是物理上网出口；切换前必须确认 Mac mini 网关可达，并且绑定 `bridge0` 的公网探测成功。
+- **初始化/修复链路**：把 Mac mini 固定为 `192.168.2.1/24`、本机固定为 `192.168.2.2/24`。两端 `bridge0` 包含全部雷雳口，因此换到任意 Thunderbolt/USB4 口后不再依赖 DHCP。
+
+首次初始化需要在 Mac mini 终端和本机各完成一次管理员授权。Mini 端安装的是非驻留受限 Helper，仅允许 `status`、`apply`、`rollback` 三个固定命令；NetBar 不接收或保存管理员密码。SSH 连接严格复用 `192.168.2.1` 已登记的主机密钥，不自动接受未知或变化的密钥。
+
+Mac mini 的上游固定为内置以太网 `en0`。`en0` 断开时，雷雳本地链路和 `192.168.2.1` 访问仍保持可用，但“经 Mac mini”会被禁用；NetBar 不自动改用 Mini 的 USB 网卡或 Wi-Fi。原生 macOS Internet Sharing 继续唯一管理 NAT/DHCP，Helper 只读校验其共享源和目标，不修改私有 NAT 配置。
 
 该功能不关闭或重启 Clash、aTrust、Tailscale、Amnezia 等 VPN，也不修改 Clash 配置。VPN 开启时公网 IP 仍可能显示 VPN 出口；卡片展示的是 VPN 下层的物理出口。系统设置即使仍显示黄色“未知状态”，也不影响 NetBar 根据载波、IP、网关、Ping 和默认路由给出的实测结果。
 
-App Store Lite 受沙盒限制，不包含网络模式切换能力。
+App Store Lite 受沙盒限制，不包含网络模式切换、SSH 写入、初始化按钮或 Mini Helper 资源。
+
+Direct Full 构建产物：
+
+```bash
+./scripts/build-direct.sh
+```
+
+App Store Lite 构建会额外验证产物不包含 Helper：
+
+```bash
+./scripts/build-appstore.sh
+```
 
 ## 🗑 卸载
 
@@ -131,6 +148,15 @@ rm -rf ~/Applications/NetBar.app
 
 # 清除数据
 rm -rf ~/Library/Application\ Support/NetBar/
+```
+
+如果安装过 Mini Helper，请先在 Mac mini 上恢复初始化前配置，再删除权限文件和 Helper：
+
+```bash
+sudo -n /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper rollback
+sudo rm /etc/sudoers.d/com.zjah.NetBarMiniLinkHelper
+sudo rm /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper
+sudo rm -rf /Library/Application\ Support/NetBar
 ```
 
 ## 📄 许可证

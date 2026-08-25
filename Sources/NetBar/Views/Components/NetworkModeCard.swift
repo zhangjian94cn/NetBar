@@ -12,10 +12,10 @@ struct NetworkModeCard: View {
                 Text("Mac mini 链路")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
-                if controller.isSwitching {
+                if controller.isSwitching || controller.isProvisioning {
                     ProgressView()
                         .controlSize(.small)
-                    Text("正在切换")
+                    Text(controller.isProvisioning ? "正在初始化" : "正在切换")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.secondary)
                 } else {
@@ -42,6 +42,19 @@ struct NetworkModeCard: View {
             HStack(spacing: 8) {
                 modeButton(.localWiFi, icon: "wifi")
                 modeButton(.macMiniGateway, icon: "desktopcomputer")
+            }
+
+            if shouldOfferProvisioning {
+                Button {
+                    controller.initializeFixedLink()
+                } label: {
+                    Label("初始化/修复链路", systemImage: "wrench.and.screwdriver")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(maxWidth: .infinity, minHeight: 23)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(controller.isSwitching || controller.isProvisioning)
             }
 
             if let message = controller.errorMessage, !message.isEmpty {
@@ -94,14 +107,14 @@ struct NetworkModeCard: View {
     }
 
     private func canSwitch(to mode: NetworkRouteMode) -> Bool {
-        guard !controller.isSwitching,
+        guard !controller.isSwitching, !controller.isProvisioning,
               let snapshot = controller.snapshot,
               snapshot.wifiServiceName != nil,
               snapshot.thunderboltServiceName != nil else {
             return false
         }
         if mode == .macMiniGateway {
-            return snapshot.linkState == .connected
+            return snapshot.linkState == .connected && snapshot.gatewayState == .ready
         }
         return true
     }
@@ -117,8 +130,8 @@ struct NetworkModeCard: View {
         case .unavailable, .disconnected:
             return .red
         case .connected:
-            return snapshot.isConsistent ? .green : .orange
-        case .missingIPv4, .missingGateway, .miniUnreachable:
+            return snapshot.gatewayState == .ready && snapshot.isConsistent ? .green : .orange
+        case .addressNotProvisioned, .miniUnreachable:
             return .orange
         }
     }
@@ -128,6 +141,12 @@ struct NetworkModeCard: View {
         if controller.requiresManualRecovery {
             return "需要手动恢复"
         }
+        if snapshot.linkState == .addressNotProvisioned {
+            return "需要初始化"
+        }
+        if snapshot.gatewayState == .upstreamUnavailable {
+            return "上游不可用"
+        }
         if snapshot.isConsistent, let mode = snapshot.effectiveMode {
             return mode.displayName
         }
@@ -135,7 +154,11 @@ struct NetworkModeCard: View {
     }
 
     private var linkText: String {
-        controller.snapshot?.linkState.displayName ?? "正在检测雷雳链路"
+        guard let snapshot = controller.snapshot else { return "正在检测雷雳链路" }
+        if snapshot.linkState == .connected, snapshot.gatewayState == .upstreamUnavailable {
+            return "雷雳可用 · Mac mini 上游不可用"
+        }
+        return snapshot.linkState.displayName
     }
 
     private var addressText: String {
@@ -143,6 +166,16 @@ struct NetworkModeCard: View {
         let local = snapshot.bridgeIPv4 ?? "—"
         let mini = snapshot.miniGateway ?? "—"
         return "本机 \(local) · Mini \(mini)"
+    }
+
+    private var shouldOfferProvisioning: Bool {
+        guard let snapshot = controller.snapshot else { return false }
+        switch snapshot.linkState {
+        case .addressNotProvisioned, .miniUnreachable:
+            return true
+        case .connected, .disconnected, .unavailable:
+            return false
+        }
     }
 
     private func openNetworkSettings() {

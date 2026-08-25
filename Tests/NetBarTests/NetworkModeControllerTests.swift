@@ -59,6 +59,7 @@ final class NetworkModeControllerTests: XCTestCase {
 
         XCTAssertTrue(LiveNetworkModeSystemProvider.parseInterfaceActive(ifconfig))
         XCTAssertEqual(LiveNetworkModeSystemProvider.parseInterfaceIPv4(ifconfig), "192.168.2.2")
+        XCTAssertEqual(LiveNetworkModeSystemProvider.parseInterfaceIPv4s(ifconfig), ["192.168.2.2"])
         XCTAssertEqual(LiveNetworkModeSystemProvider.parseRouteInterface(route), "bridge0")
     }
 
@@ -129,7 +130,7 @@ final class NetworkModeControllerTests: XCTestCase {
 
     func testGatewayPreflightRejectsEveryUnhealthyLinkState() {
         let rejectedStates: [ThunderboltLinkState] = [
-            .disconnected, .missingIPv4, .missingGateway, .miniUnreachable, .unavailable
+            .disconnected, .addressNotProvisioned, .miniUnreachable, .unavailable
         ]
 
         for linkState in rejectedStates {
@@ -146,6 +147,28 @@ final class NetworkModeControllerTests: XCTestCase {
             XCTAssertEqual(outcome.message, linkState.displayName)
             XCTAssertTrue(provider.orders.isEmpty)
         }
+    }
+
+    func testGatewayPreflightRejectsUnavailableBoundEgress() {
+        let initial = makeSnapshot(
+            names: ["Wi-Fi", "Thunderbolt Bridge", "Tailscale"],
+            defaultInterface: "en0",
+            linkState: .connected,
+            gatewayState: .upstreamUnavailable
+        )
+        let provider = MockNetworkModeProvider(snapshots: [initial], setResults: [])
+
+        let outcome = makeEngine(provider: provider).switchMode(to: .macMiniGateway)
+
+        XCTAssertEqual(outcome.kind, .failed)
+        XCTAssertEqual(outcome.message, "Mac mini 上游不可用")
+        XCTAssertTrue(provider.orders.isEmpty)
+    }
+
+    func testLinkLocalAndUnexpectedAddressesAreNotProvisioned() {
+        XCTAssertTrue(MacMiniLinkProfile.isLinkLocalIPv4("169.254.12.34"))
+        XCTAssertFalse(MacMiniLinkProfile.isLinkLocalIPv4("192.168.2.2"))
+        XCTAssertNotEqual("192.168.3.2", MacMiniLinkProfile.defaults.localAddress)
     }
 
     func testMissingRequiredServiceFailsClosed() {
@@ -272,6 +295,7 @@ final class NetworkModeControllerTests: XCTestCase {
         names: [String],
         defaultInterface: String,
         linkState: ThunderboltLinkState,
+        gatewayState: MacMiniGatewayState = .ready,
         includeThunderbolt: Bool = true
     ) -> NetworkModeSnapshot {
         let services = names.map { name -> NetworkServiceEntry in
@@ -292,10 +316,11 @@ final class NetworkModeControllerTests: XCTestCase {
             wifiDevice: wifi?.device,
             thunderboltServiceName: thunderbolt?.name,
             thunderboltDevice: thunderbolt?.device,
-            bridgeIPv4: linkState == .missingIPv4 || linkState == .disconnected || linkState == .unavailable ? nil : "192.168.2.2",
-            miniGateway: linkState == .missingGateway || linkState == .disconnected || linkState == .unavailable ? nil : "192.168.2.1",
+            bridgeIPv4: linkState == .addressNotProvisioned || linkState == .disconnected || linkState == .unavailable ? nil : "192.168.2.2",
+            miniGateway: "192.168.2.1",
             physicalDefaultInterface: defaultInterface,
-            linkState: linkState
+            linkState: linkState,
+            gatewayState: gatewayState
         )
     }
 }

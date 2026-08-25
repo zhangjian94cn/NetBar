@@ -13,7 +13,7 @@ PLIST_DST="$HOME/Library/LaunchAgents/$PLIST_NAME"
 
 echo "🔨 编译 Release 版本..."
 cd "$SCRIPT_DIR"
-swift build -c release
+swift build -c release -Xswiftc -DDIRECT_FULL
 
 echo "📦 打包 NetBar.app 到 $HOME/Applications ..."
 # 先杀死正在运行的 NetBar，确保新编译的二进制能正确被打包并替换
@@ -26,6 +26,7 @@ mkdir -p "$RES_DIR"
 
 # 复制二进制和 Info.plist
 cp .build/release/NetBar "$BIN_DIR/"
+cp -R .build/release/NetBar_NetBar.bundle "$RES_DIR/NetBar_NetBar.bundle"
 if [ -f "Info.plist" ]; then
     cp Info.plist "$APP_DIR/Contents/"
 else

@@ -10,6 +10,9 @@ let package = Package(
         .executableTarget(
             name: "NetBar",
             path: "Sources/NetBar",
+            resources: [
+                .copy("Resources/MiniLinkHelper")
+            ],
             linkerSettings: [
                 .unsafeFlags(["-framework", "Cocoa"]),
                 .unsafeFlags(["-framework", "SwiftUI"]),
