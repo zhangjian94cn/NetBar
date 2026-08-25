@@ -68,6 +68,17 @@ json_escape() {
     print -rn -- "$value"
 }
 
+sharing_includes_bridge() {
+    local count index device
+    count="$($PLUTIL -extract NAT.SharingDevices raw -o - "$NAT_PROFILE" 2>/dev/null)" || return 1
+    [[ "$count" == <-> ]] || return 1
+    for (( index = 0; index < count; index++ )); do
+        device="$($PLUTIL -extract "NAT.SharingDevices.$index" raw -o - "$NAT_PROFILE" 2>/dev/null)" || return 1
+        [[ "$device" == "bridge0" ]] && return 0
+    done
+    return 1
+}
+
 BRIDGE_SERVICE="$(find_bridge_service)"
 [[ -n "$BRIDGE_SERVICE" ]] || fail "Thunderbolt Bridge service not found"
 
@@ -106,25 +117,23 @@ restore_dns() {
 }
 
 emit_status() {
-    local info ip upstream_active sharing_running sharing_configured configured primary_device sharing_devices
+    local info ip upstream_active sharing_running sharing_configured configured primary_device
     info="$($NETWORKSETUP -getinfo "$BRIDGE_SERVICE")"
     ip="$(network_value "IP address" "$info")"
     "$IFCONFIG" bridge0 | "$GREP" -q "inet $GATEWAY_ADDRESS " && configured=true || configured=false
     "$IFCONFIG" "$UPSTREAM_DEVICE" | "$GREP" -q 'status: active' && upstream_active=true || upstream_active=false
     /bin/ps -axo command | "$GREP" -q '[/]usr/libexec/InternetSharing' && sharing_running=true || sharing_running=false
     primary_device="$($PLUTIL -extract NAT.PrimaryInterface.Device raw -o - "$NAT_PROFILE" 2>/dev/null || true)"
-    sharing_devices="$($PLUTIL -extract NAT.SharingDevices json -o - "$NAT_PROFILE" 2>/dev/null || true)"
-    [[ "$primary_device" == "$UPSTREAM_DEVICE" && "$sharing_devices" == *'"bridge0"'* ]] && sharing_configured=true || sharing_configured=false
+    [[ "$primary_device" == "$UPSTREAM_DEVICE" ]] && sharing_includes_bridge && sharing_configured=true || sharing_configured=false
     print -r -- "{\"service\":\"$(json_escape "$BRIDGE_SERVICE")\",\"configured\":$configured,\"serviceIPv4\":\"$(json_escape "${ip:-}")\",\"gatewayIPv4\":\"$GATEWAY_ADDRESS\",\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"internetSharingRunning\":$sharing_running}"
 }
 
 validate_sharing_configuration() {
-    local primary_device sharing_devices
+    local primary_device
     [[ -r "$NAT_PROFILE" ]] || fail "Internet Sharing configuration missing"
     primary_device="$($PLUTIL -extract NAT.PrimaryInterface.Device raw -o - "$NAT_PROFILE")"
-    sharing_devices="$($PLUTIL -extract NAT.SharingDevices json -o - "$NAT_PROFILE")"
     [[ "$primary_device" == "$UPSTREAM_DEVICE" ]] || fail "Internet Sharing source must be $UPSTREAM_DEVICE"
-    [[ "$sharing_devices" == *'"bridge0"'* ]] || fail "Internet Sharing target must include bridge0"
+    sharing_includes_bridge || fail "Internet Sharing target must include bridge0"
 }
 
 case "$ACTION" in

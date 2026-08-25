@@ -223,6 +223,7 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertNotEqual(run("/bin/zsh", [helper.path, "status", "extra"]).exitCode, 0)
 
         let installerSource = try String(contentsOf: installer)
+        let helperSource = try String(contentsOf: helper)
         let sudoersSource = try String(contentsOf: sudoers)
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper status"))
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper apply"))
@@ -236,6 +237,8 @@ final class NetworkStaticLinkTests: XCTestCase {
             "LEGACY_SUDOERS_TARGET=/etc/sudoers.d/com.zjah.NetBarMiniLinkHelper"
         ))
         XCTAssertTrue(installerSource.contains("/bin/rm -f \"$LEGACY_SUDOERS_TARGET\""))
+        XCTAssertTrue(helperSource.contains("NAT.SharingDevices.$index"))
+        XCTAssertFalse(helperSource.contains("NAT.SharingDevices json"))
     }
 
     private func makeProvisioner(
