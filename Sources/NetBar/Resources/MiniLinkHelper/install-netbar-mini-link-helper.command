@@ -8,7 +8,8 @@ SUDOERS_SOURCE="$SCRIPT_DIR/com.zjah.NetBarMiniLinkHelper.sudoers"
 HELPER_TARGET=/Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper
 PROFILE_DIR=/Library/Application\ Support/NetBar
 PROFILE_TARGET="$PROFILE_DIR/MacMiniLinkProfile.plist"
-SUDOERS_TARGET=/etc/sudoers.d/com.zjah.NetBarMiniLinkHelper
+SUDOERS_TARGET=/etc/sudoers.d/netbar-mini-link-helper
+LEGACY_SUDOERS_TARGET=/etc/sudoers.d/com.zjah.NetBarMiniLinkHelper
 INSTALL_USER="${USER}"
 SUDOERS_TEMP="$(/usr/bin/mktemp /tmp/netbar-mini-helper-sudoers.XXXXXX)"
 
@@ -35,5 +36,6 @@ echo "NetBar 需要一次管理员授权，以安装仅能管理雷雳网桥的�
 /usr/bin/sudo /usr/bin/install -o root -g wheel -m 0644 "$PROFILE_SOURCE" "$PROFILE_TARGET"
 /usr/bin/sudo /usr/bin/install -o root -g wheel -m 0440 "$SUDOERS_TEMP" "$SUDOERS_TARGET"
 /usr/bin/sudo /usr/sbin/visudo -cf "$SUDOERS_TARGET"
+/usr/bin/sudo /bin/rm -f "$LEGACY_SUDOERS_TARGET"
 /usr/bin/sudo -n "$HELPER_TARGET" status
 echo "NetBar Mini Link Helper 安装完成，可以关闭此窗口。"

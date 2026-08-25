@@ -229,6 +229,13 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper rollback"))
         XCTAssertFalse(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper *"))
         XCTAssertTrue(installerSource.contains("visudo -cf"))
+        XCTAssertTrue(installerSource.contains(
+            "SUDOERS_TARGET=/etc/sudoers.d/netbar-mini-link-helper"
+        ))
+        XCTAssertTrue(installerSource.contains(
+            "LEGACY_SUDOERS_TARGET=/etc/sudoers.d/com.zjah.NetBarMiniLinkHelper"
+        ))
+        XCTAssertTrue(installerSource.contains("/bin/rm -f \"$LEGACY_SUDOERS_TARGET\""))
     }
 
     private func makeProvisioner(
