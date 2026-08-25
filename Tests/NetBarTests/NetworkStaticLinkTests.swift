@@ -132,6 +132,17 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertEqual(manual.dnsServers, ["1.1.1.1", "114.114.114.114"])
     }
 
+    func testProvisionerRejectsMissingMalformedAndOldHelperProtocol() {
+        XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.failure("missing")))
+        XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success("{}")))
+        XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
+            "{\"protocolVersion\":0}"
+        )))
+        XCTAssertTrue(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
+            "{\"protocolVersion\":1}"
+        )))
+    }
+
     func testSSHArgumentsRequireRegisteredHostIdentity() {
         let arguments = NetworkLinkProvisioner.sshArguments(
             profile: .defaults,
@@ -382,7 +393,11 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
             }
             if let action = arguments.last, ["status", "apply", "rollback"].contains(action) {
                 remoteActions.append(action)
-                if action == "status" { return remoteHelperInstalled ? .success("{}") : .failure("missing") }
+                if action == "status" {
+                    return remoteHelperInstalled
+                        ? .success("{\"protocolVersion\":1}")
+                        : .failure("missing")
+                }
                 if action == "rollback" { return remoteRollbackSucceeds ? .success("{}") : .failure("rollback failed") }
                 return .success("{}")
             }

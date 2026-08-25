@@ -125,7 +125,7 @@ emit_status() {
     /bin/ps -axo command | "$GREP" -q '[/]usr/libexec/InternetSharing' && sharing_running=true || sharing_running=false
     primary_device="$($PLUTIL -extract NAT.PrimaryInterface.Device raw -o - "$NAT_PROFILE" 2>/dev/null || true)"
     [[ "$primary_device" == "$UPSTREAM_DEVICE" ]] && sharing_includes_bridge && sharing_configured=true || sharing_configured=false
-    print -r -- "{\"service\":\"$(json_escape "$BRIDGE_SERVICE")\",\"configured\":$configured,\"serviceIPv4\":\"$(json_escape "${ip:-}")\",\"gatewayIPv4\":\"$GATEWAY_ADDRESS\",\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"internetSharingRunning\":$sharing_running}"
+    print -r -- "{\"protocolVersion\":1,\"service\":\"$(json_escape "$BRIDGE_SERVICE")\",\"configured\":$configured,\"serviceIPv4\":\"$(json_escape "${ip:-}")\",\"gatewayIPv4\":\"$GATEWAY_ADDRESS\",\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"internetSharingRunning\":$sharing_running}"
 }
 
 validate_sharing_configuration() {
