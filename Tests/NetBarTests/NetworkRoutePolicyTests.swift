@@ -192,7 +192,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
 
         controller.runPolicyCheckNow()
 
-        XCTAssertTrue(waitUntil { controller.lastClashAction == "已清理 Mihomo 旧连接" })
+        XCTAssertTrue(waitUntil { controller.lastClashAction == "物理出口已变化，Mihomo 连接已自动刷新" })
         XCTAssertEqual(mihomo.closeCount, 1)
         XCTAssertEqual(controller.activeCandidateName, "Test WiFi")
     }
@@ -229,7 +229,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
         controller.runPolicyCheckNow()
 
         XCTAssertTrue(waitUntil { controller.policyMessage == "Wi-Fi 已保网 · 直连受限，Clash/TUN 正常" })
-        XCTAssertEqual(mihomo.closeCount, 0)
+        XCTAssertEqual(mihomo.closeCount, 1)
     }
 
     func testRedactedCurrentWiFiCanBeUsedWithoutScanningOrAssociation() {
@@ -264,12 +264,13 @@ final class NetworkRoutePolicyTests: XCTestCase {
             policySnapshot(interface: "en0", gateway: .carrierDown)
         ])
         let routeSafety = RecordingRouteSafetyController()
+        let mihomo = CountingMihomoRecovery()
         let controller = NetworkModeController(
             provider: provider,
             routeSafetyController: routeSafety,
             wifiCandidateController: PolicyWiFiCandidateController(),
             connectivityProber: PolicyConnectivityProber(),
-            mihomoRecovery: PolicyMihomoRecovery(),
+            mihomoRecovery: mihomo,
             eventLogger: PolicyEventLogger(),
             userDefaults: isolatedDefaults(),
             sleeper: { _ in }
@@ -282,6 +283,34 @@ final class NetworkRoutePolicyTests: XCTestCase {
 
         XCTAssertTrue(routeSafety.appliedModes.isEmpty)
         XCTAssertNotEqual(controller.failoverPhase, .routeFlapping)
+        XCTAssertEqual(mihomo.closeCount, 0, "同一物理出口的重复检查不得清理现有连接")
+    }
+
+    func testWiFiPreferredPolicyStillRebindsMihomoWhenPhysicalOutletChanges() throws {
+        let defaults = isolatedDefaults()
+        defaults.set(NetworkRoutePreference.localWiFi.rawValue, forKey: "networkRoutePreference")
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "bridge0", gateway: .ready)
+        ])
+        let mihomo = CountingMihomoRecovery()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: RecordingRouteSafetyController(),
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: mihomo,
+            eventLogger: PolicyEventLogger(),
+            userDefaults: defaults,
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { provider.readCount == 1 })
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { mihomo.closeCount == 1 })
+        XCTAssertEqual(controller.lastClashAction, "物理出口已变化，Mihomo 连接已自动刷新")
     }
 
     func testControllerSwitchesBackOnlyAfterThirtyStableSeconds() throws {
@@ -293,12 +322,13 @@ final class NetworkRoutePolicyTests: XCTestCase {
         ])
         provider.helperStatus = readyHelperStatus()
         let routeSafety = RecordingRouteSafetyController()
+        let mihomo = CountingMihomoRecovery()
         let controller = NetworkModeController(
             provider: provider,
             routeSafetyController: routeSafety,
             wifiCandidateController: PolicyWiFiCandidateController(),
             connectivityProber: PolicyConnectivityProber(),
-            mihomoRecovery: PolicyMihomoRecovery(),
+            mihomoRecovery: mihomo,
             eventLogger: PolicyEventLogger(),
             userDefaults: isolatedDefaults(),
             now: { currentTime },
@@ -316,6 +346,8 @@ final class NetworkRoutePolicyTests: XCTestCase {
             waitUntil { routeSafety.appliedModes == [.macMiniGateway] },
             "modes=\(routeSafety.appliedModes) reads=\(provider.readCount) message=\(controller.policyMessage ?? "nil")"
         )
+        XCTAssertTrue(waitUntil { mihomo.closeCount == 1 })
+        XCTAssertEqual(controller.lastClashAction, "物理出口已变化，Mihomo 连接已自动刷新")
     }
 
     func testControllerRestoresWiFiWhenAutomaticSwitchVerificationFails() throws {

@@ -710,6 +710,19 @@ final class NetworkModeSwitchEngine {
 }
 
 final class NetworkModeController: ObservableObject {
+    private struct PhysicalOutletTransition: Equatable {
+        let from: NetworkRouteMode
+        let to: NetworkRouteMode
+
+        var logDescription: String { "\(from.rawValue)->\(to.rawValue)" }
+    }
+
+    private enum MihomoUnderlayRebindResult: Equatable {
+        case notNeeded
+        case succeeded
+        case failed
+    }
+
     @Published private(set) var snapshot: NetworkModeSnapshot?
     @Published private(set) var isSwitching = false
     @Published private(set) var isProvisioning = false
@@ -745,6 +758,9 @@ final class NetworkModeController: ObservableObject {
     private var policyCheckInFlight = false
     private var policyCheckPending = false
     private var fallbackFailureMessage: String?
+    private var observedPhysicalOutlet: NetworkRouteMode?
+    private var pendingMihomoTransition: PhysicalOutletTransition?
+    private var lastMihomoRebindAttemptAt: Date?
     private var knownMiniGuardianAvailable = false
     private var policyState: NetworkRoutePolicyState
     private let preferenceLock = NSLock()
@@ -935,14 +951,25 @@ final class NetworkModeController: ObservableObject {
                 return
             }
 
+            let previousMode = (try? self.provider.readSnapshot())?.effectiveMode
             let helperResult = self.routeSafetyController.status() != nil
                 ? self.routeSafetyController.apply(.macMiniGateway)
                 : nil
-            let outcome: NetworkModeSwitchOutcome
+            var outcome: NetworkModeSwitchOutcome
             if let helperResult {
                 let refreshed = try? self.provider.readSnapshot()
+                let rebindResult = refreshed.map {
+                    self.rebindMihomoUnderlayIfNeeded(
+                        snapshot: $0,
+                        previousHint: previousMode,
+                        at: self.now()
+                    )
+                }
                 let verified = helperResult.succeeded && refreshed?.verifies(.macMiniGateway) == true &&
-                    self.connectivityProber.probe(interfaceName: refreshed?.thunderboltDevice ?? "bridge0").completeInternetReady
+                    self.verifyDataPlane(
+                        interfaceName: refreshed?.thunderboltDevice ?? "bridge0",
+                        afterRebind: rebindResult == .succeeded
+                    ).completeInternetReady
                 outcome = NetworkModeSwitchOutcome(
                     kind: verified ? .success : .failed,
                     snapshot: refreshed,
@@ -950,6 +977,24 @@ final class NetworkModeController: ObservableObject {
                 )
             } else {
                 outcome = self.switchEngine.switchMode(to: target)
+                if outcome.succeeded, let refreshed = outcome.snapshot {
+                    let rebindResult = self.rebindMihomoUnderlayIfNeeded(
+                        snapshot: refreshed,
+                        previousHint: previousMode,
+                        at: self.now()
+                    )
+                    let verified = self.verifyDataPlane(
+                        interfaceName: refreshed.thunderboltDevice ?? "bridge0",
+                        afterRebind: rebindResult == .succeeded
+                    ).completeInternetReady
+                    if !verified {
+                        outcome = NetworkModeSwitchOutcome(
+                            kind: .failed,
+                            snapshot: refreshed,
+                            message: "Mac mini 物理出口已切换，但 Clash/TUN 数据面未收敛"
+                        )
+                    }
+                }
             }
             if !outcome.succeeded {
                 _ = self.fallbackToVerifiedWiFi(
@@ -1008,15 +1053,17 @@ final class NetworkModeController: ObservableObject {
     }
 
     private func performPolicyCheck(force: Bool = false) {
-        guard routePreference == .miniPreferred, !isSwitching, !isProvisioning else { return }
+        guard !isSwitching, !isProvisioning else { return }
         workQueue.async { [weak self] in
             guard let self else { return }
             if self.policyCheckInFlight {
                 self.policyCheckPending = true
                 return
             }
-            guard self.currentPreference() == .miniPreferred else { return }
-            if !force, !self.policyState.shouldRunSlowFallbackProbe(at: self.now()) {
+            let preference = self.currentPreference()
+            if preference == .miniPreferred,
+               !force,
+               !self.policyState.shouldRunSlowFallbackProbe(at: self.now()) {
                 return
             }
             self.policyCheckInFlight = true
@@ -1031,6 +1078,8 @@ final class NetworkModeController: ObservableObject {
             }
             guard let current = try? self.provider.readSnapshot() else { return }
             let checkDate = self.now()
+            _ = self.rebindMihomoUnderlayIfNeeded(snapshot: current, previousHint: nil, at: checkDate)
+            guard preference == .miniPreferred else { return }
             self.policyState.clearExpiredCircuitBreaker(at: checkDate)
             self.persistPolicyState()
             let helperAvailable = self.routeSafetyController.status() != nil
@@ -1100,7 +1149,15 @@ final class NetworkModeController: ObservableObject {
 
         let result = routeSafetyController.apply(.macMiniGateway)
         let verified = result.succeeded ? (try? provider.readSnapshot()) : nil
-        let finalMiniProbe = verified.map { connectivityProber.probe(interfaceName: $0.thunderboltDevice ?? "bridge0") }
+        let rebindResult = verified.map {
+            rebindMihomoUnderlayIfNeeded(snapshot: $0, previousHint: current.effectiveMode, at: checkDate)
+        }
+        let finalMiniProbe = verified.map {
+            verifyDataPlane(
+                interfaceName: $0.thunderboltDevice ?? "bridge0",
+                afterRebind: rebindResult == .succeeded
+            )
+        }
         if let verified, verified.verifies(.macMiniGateway), finalMiniProbe?.completeInternetReady == true {
             policyState.markMiniActive()
             policyState.recordAutomaticReturn(at: checkDate)
@@ -1293,6 +1350,12 @@ final class NetworkModeController: ObservableObject {
                 continue
             }
 
+            let rebindResult = rebindMihomoUnderlayIfNeeded(
+                snapshot: refreshed,
+                previousHint: current?.effectiveMode,
+                at: checkDate
+            )
+
             let changedPhysicalOutlet = current?.effectiveMode != .localWiFi
             if automatic {
                 policyState.beginWiFiFallback(at: checkDate)
@@ -1306,7 +1369,12 @@ final class NetworkModeController: ObservableObject {
                 policyState.beginWiFiFallback(at: checkDate)
             }
             persistPolicyState()
-            let convergence = convergeClashAfterWiFiSwitch(ssid: candidate.displayName, initialProbe: directProbe, at: checkDate)
+            let convergence = convergeClashAfterWiFiSwitch(
+                ssid: candidate.displayName,
+                initialProbe: directProbe,
+                underlayRebound: rebindResult == .succeeded,
+                at: checkDate
+            )
             let message: String
             if convergence, directProbe.directInternetReady {
                 message = "已使用 Wi-Fi 保网 · \(reason)"
@@ -1336,12 +1404,25 @@ final class NetworkModeController: ObservableObject {
     private func convergeClashAfterWiFiSwitch(
         ssid: String,
         initialProbe: ConnectivityProbeResult,
+        underlayRebound: Bool,
         at checkDate: Date
     ) -> Bool {
         var probe = connectivityProber.probe(interfaceName: "en0")
         if probe.completeInternetReady || probe.routedInternetReady {
             updateCandidateState(ssid: ssid, state: .internetReady, current: true)
             return true
+        }
+        if underlayRebound {
+            for _ in 0..<3 {
+                sleeper(2)
+                probe = connectivityProber.probe(interfaceName: "en0")
+                if probe.completeInternetReady || probe.routedInternetReady {
+                    updateCandidateState(ssid: ssid, state: .internetReady, current: true)
+                    return true
+                }
+            }
+            updateCandidateState(ssid: ssid, state: .proxyDegraded, current: true)
+            return false
         }
         guard initialProbe.directInternetReady,
               probe.clashControllerReachable,
@@ -1371,6 +1452,71 @@ final class NetworkModeController: ObservableObject {
         }
         updateCandidateState(ssid: ssid, state: .proxyDegraded, current: true)
         return false
+    }
+
+    @discardableResult
+    private func rebindMihomoUnderlayIfNeeded(
+        snapshot: NetworkModeSnapshot,
+        previousHint: NetworkRouteMode?,
+        at checkDate: Date
+    ) -> MihomoUnderlayRebindResult {
+        guard let target = snapshot.effectiveMode else { return .notNeeded }
+        if observedPhysicalOutlet == nil {
+            observedPhysicalOutlet = previousHint ?? target
+        }
+        if let previous = observedPhysicalOutlet, previous != target {
+            pendingMihomoTransition = PhysicalOutletTransition(from: previous, to: target)
+            observedPhysicalOutlet = target
+            lastMihomoRebindAttemptAt = nil
+        }
+        guard let transition = pendingMihomoTransition, transition.to == target else {
+            return .notNeeded
+        }
+        if let lastAttempt = lastMihomoRebindAttemptAt,
+           checkDate.timeIntervalSince(lastAttempt) < 5 {
+            return .notNeeded
+        }
+        lastMihomoRebindAttemptAt = checkDate
+        guard mihomoRecovery.isControllerAvailable() else {
+            eventLogger.record(
+                event: "mihomo_underlay_rebind",
+                detail: "\(transition.logDescription): controller unavailable",
+                candidateSSID: nil
+            )
+            return .failed
+        }
+
+        policyState.recordClashRecovery(at: checkDate)
+        persistPolicyState()
+        let closed = mihomoRecovery.closeAllConnections()
+        DispatchQueue.main.async { [weak self] in
+            self?.lastClashAction = closed
+                ? "物理出口已变化，Mihomo 连接已自动刷新"
+                : "物理出口已变化，Mihomo 连接刷新失败"
+        }
+        eventLogger.record(
+            event: "mihomo_underlay_rebind",
+            detail: "\(transition.logDescription): \(closed ? "success" : "failed")",
+            candidateSSID: nil
+        )
+        guard closed else { return .failed }
+        pendingMihomoTransition = nil
+        lastMihomoRebindAttemptAt = nil
+        sleeper(1)
+        return .succeeded
+    }
+
+    private func verifyDataPlane(
+        interfaceName: String,
+        afterRebind: Bool
+    ) -> ConnectivityProbeResult {
+        var probe = connectivityProber.probe(interfaceName: interfaceName)
+        guard afterRebind else { return probe }
+        for _ in 0..<3 where !probe.completeInternetReady {
+            sleeper(2)
+            probe = connectivityProber.probe(interfaceName: interfaceName)
+        }
+        return probe
     }
 
     private func publishPolicy(
