@@ -16,6 +16,7 @@ NAT_PROFILE=/Library/Preferences/SystemConfiguration/com.apple.nat.plist
 STATE_DIR=/Library/Application\ Support/NetBar/ThunderboltLink
 BACKUP_PLIST="$STATE_DIR/mini-network-backup.plist"
 BACKUP_DNS="$STATE_DIR/mini-dns-backup.txt"
+GUARDIAN_STATUS=/Library/Application\ Support/NetBar/MiniGuardian/status.json
 
 fail() {
     print -u2 -- "$1"
@@ -126,7 +127,12 @@ emit_status() {
     /bin/ps -axo command | "$GREP" -q '[/]usr/libexec/InternetSharing' && sharing_running=true || sharing_running=false
     primary_device="$($PLUTIL -extract NAT.PrimaryInterface.Device raw -o - "$NAT_PROFILE" 2>/dev/null || true)"
     [[ "$primary_device" == "$UPSTREAM_DEVICE" ]] && sharing_includes_bridge && sharing_configured=true || sharing_configured=false
-    print -r -- "{\"protocolVersion\":2,\"service\":\"$(json_escape "$BRIDGE_SERVICE")\",\"configured\":$configured,\"serviceIPv4\":\"$(json_escape "${ip:-}")\",\"gatewayIPv4\":\"$GATEWAY_ADDRESS\",\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"internetSharingRunning\":$sharing_running}"
+    local guardian
+    guardian='null'
+    if [[ -r "$GUARDIAN_STATUS" ]] && "$PLUTIL" -lint "$GUARDIAN_STATUS" >/dev/null 2>&1; then
+        guardian="$(<"$GUARDIAN_STATUS")"
+    fi
+    print -r -- "{\"protocolVersion\":3,\"service\":\"$(json_escape "$BRIDGE_SERVICE")\",\"configured\":$configured,\"serviceIPv4\":\"$(json_escape "${ip:-}")\",\"gatewayIPv4\":\"$GATEWAY_ADDRESS\",\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"internetSharingRunning\":$sharing_running,\"guardian\":$guardian}"
 }
 
 wait_for_gateway_address() {

@@ -13,9 +13,9 @@ class MonitorCoordinator {
     let trafficStore = TrafficStore()
     let vpsTrafficMonitor = VPSTrafficMonitor()
     private let egressIdentityRefreshScheduler = DebouncedRefreshScheduler(delay: 3)
-    lazy var networkModeController = NetworkModeController { [weak self] in
+    lazy var networkModeController = NetworkModeController(onNetworkChanged: { [weak self] in
         self?.refreshAfterNetworkModeChange()
-    }
+    })
 
     /// 所有遵循 MonitorProtocol 的服务（按启动顺序）
     private var allMonitors: [MonitorProtocol] {
@@ -40,11 +40,15 @@ class MonitorCoordinator {
         for monitor in allMonitors {
             monitor.start()
         }
+        if DistributionFlavor.current.supportsNetworkModeSwitch {
+            networkModeController.startPolicyMonitoring()
+        }
     }
 
     /// 停止所有监控服务
     func stopAll() {
         egressIdentityRefreshScheduler.cancel()
+        networkModeController.stopPolicyMonitoring()
         for monitor in allMonitors {
             monitor.stop()
         }

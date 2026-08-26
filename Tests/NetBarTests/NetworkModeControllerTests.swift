@@ -154,14 +154,14 @@ final class NetworkModeControllerTests: XCTestCase {
             names: ["Wi-Fi", "Thunderbolt Bridge", "Tailscale"],
             defaultInterface: "en0",
             linkState: .connected,
-            gatewayState: .upstreamUnavailable
+            gatewayState: .boundEgressUnavailable
         )
         let provider = MockNetworkModeProvider(snapshots: [initial], setResults: [])
 
         let outcome = makeEngine(provider: provider).switchMode(to: .macMiniGateway)
 
         XCTAssertEqual(outcome.kind, .failed)
-        XCTAssertEqual(outcome.message, "Mac mini 上游不可用")
+        XCTAssertEqual(outcome.message, "Mac mini 出口探测失败")
         XCTAssertTrue(provider.orders.isEmpty)
     }
 

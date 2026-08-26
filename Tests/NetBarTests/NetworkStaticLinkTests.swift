@@ -124,7 +124,46 @@ final class NetworkStaticLinkTests: XCTestCase {
         let snapshot = try LiveNetworkModeSystemProvider(commandRunner: runner).readSnapshot()
 
         XCTAssertEqual(snapshot.linkState, .connected)
-        XCTAssertEqual(snapshot.gatewayState, .upstreamUnavailable)
+        XCTAssertEqual(snapshot.gatewayState, .remoteStatusUnavailable)
+    }
+
+    func testLiveSnapshotAcceptsOneReachableBoundProbeTarget() throws {
+        let runner = SnapshotCommandRunner(
+            bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
+            router: "192.168.2.1",
+            reachableProbeTargets: ["1.1.1.1"]
+        )
+
+        let snapshot = try LiveNetworkModeSystemProvider(commandRunner: runner).readSnapshot()
+
+        XCTAssertEqual(snapshot.gatewayState, .ready)
+    }
+
+    func testRemoteReadyCannotOverrideFailedMacBookBoundEgress() throws {
+        let runner = SnapshotCommandRunner(
+            bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
+            router: "192.168.2.1",
+            boundEgressReachable: false,
+            remoteHelperJSON: Self.readyHelperJSON
+        )
+
+        let snapshot = try LiveNetworkModeSystemProvider(commandRunner: runner).readSnapshot()
+
+        XCTAssertEqual(snapshot.gatewayState, .boundEgressUnavailable)
+    }
+
+    func testLiveSnapshotUsesNWIPhysicalInterfaceWhenDefaultRouteIsUTUN() throws {
+        let runner = SnapshotCommandRunner(
+            bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
+            router: "192.168.2.1",
+            defaultRouteInterface: "utun6",
+            nwiPrimaryInterface: "bridge0"
+        )
+
+        let snapshot = try LiveNetworkModeSystemProvider(commandRunner: runner).readSnapshot()
+
+        XCTAssertEqual(snapshot.physicalDefaultInterface, "bridge0")
+        XCTAssertEqual(snapshot.effectiveMode, .macMiniGateway)
     }
 
     func testConfigurationParserPreservesDHCPManualAndDNS() {
@@ -149,10 +188,10 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.failure("missing")))
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success("{}")))
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
-            "{\"protocolVersion\":1}"
+            "{\"protocolVersion\":2}"
         )))
         XCTAssertTrue(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
-            "{\"protocolVersion\":2}"
+            "{\"protocolVersion\":3}"
         )))
     }
 
@@ -258,6 +297,11 @@ final class NetworkStaticLinkTests: XCTestCase {
             withExtension: "sudoers",
             subdirectory: "MiniLinkHelper"
         ))
+        let guardianPlist = try XCTUnwrap(bundle.url(
+            forResource: "com.zjah.NetBarMiniNetworkGuardian",
+            withExtension: "plist",
+            subdirectory: "MiniLinkHelper"
+        ))
 
         XCTAssertNotEqual(run("/bin/zsh", [helper.path, "arbitrary"]).exitCode, 0)
         XCTAssertNotEqual(run("/bin/zsh", [helper.path, "status", "extra"]).exitCode, 0)
@@ -279,10 +323,32 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(installerSource.contains("/bin/rm -f \"$LEGACY_SUDOERS_TARGET\""))
         XCTAssertTrue(helperSource.contains("NAT.SharingDevices.$index"))
         XCTAssertFalse(helperSource.contains("NAT.SharingDevices json"))
-        XCTAssertTrue(helperSource.contains("protocolVersion\\\":2"))
+        XCTAssertTrue(helperSource.contains("protocolVersion\\\":3"))
+        XCTAssertTrue(installerSource.contains("com.zjah.NetBarMiniNetworkGuardian"))
+        let guardianPlistSource = try String(contentsOf: guardianPlist)
+        XCTAssertTrue(guardianPlistSource.contains("com.zjah.NetBarMiniNetworkGuardian"))
+        XCTAssertTrue(guardianPlistSource.contains("<key>KeepAlive</key>"))
         XCTAssertTrue(helperSource.contains("SLEEP=/bin/sleep"))
         XCTAssertTrue(helperSource.contains("wait_for_gateway_address"))
         XCTAssertTrue(helperSource.contains("for attempt in {1..10}"))
+    }
+
+    func testGuardianUsesDynamicStoreAndNeverRewritesDNSOrAlternativeUpstreams() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("Sources/NetBarMiniNetworkGuardian/main.swift")
+        let source = try String(contentsOf: sourceURL)
+
+        XCTAssertTrue(source.contains("SCDynamicStoreSetNotificationKeys"))
+        XCTAssertTrue(source.contains("State:/Network/Interface/"))
+        XCTAssertTrue(source.contains("system/com.apple.NetworkSharing"))
+        XCTAssertTrue(source.contains("-setmanual"))
+        XCTAssertFalse(source.contains("-setdnsservers"))
+        XCTAssertFalse(source.contains("-setnetworkserviceenabled"))
+        XCTAssertFalse(source.contains("en8"))
     }
 
     private func makeProvisioner(
@@ -336,6 +402,10 @@ final class NetworkStaticLinkTests: XCTestCase {
         lines.append("\tstatus: \(active ? "active" : "inactive")")
         return lines.joined(separator: "\n")
     }
+
+    private static let readyHelperJSON = """
+    {"protocolVersion":3,"configured":true,"serviceIPv4":"192.168.2.1","gatewayIPv4":"192.168.2.1","upstreamDevice":"en0","upstreamActive":true,"sharingConfigured":true,"internetSharingRunning":true,"guardian":{"state":"ready","lastTransition":null,"lastCarrierChange":null,"lastAction":null,"lastError":null,"carrierActive":true,"addressReady":true,"routeReady":true,"sharingRunning":true,"sharingConfigured":true,"upstreamReachable":true,"nextRetryAt":null}}
+    """
 }
 
 private final class SnapshotCommandRunner: NetworkModeCommandRunning {
@@ -348,8 +418,12 @@ private final class SnapshotCommandRunner: NetworkModeCommandRunning {
     let router: String?
     let peerReachable: Bool
     let boundEgressReachable: Bool
+    let reachableProbeTargets: Set<String>?
     let manualConfiguration: Bool
     let dnsConfigured: Bool
+    let remoteHelperJSON: String?
+    let defaultRouteInterface: String
+    let nwiPrimaryInterface: String?
     private(set) var invocations: [Invocation] = []
 
     init(
@@ -357,15 +431,23 @@ private final class SnapshotCommandRunner: NetworkModeCommandRunning {
         router: String?,
         peerReachable: Bool = true,
         boundEgressReachable: Bool = true,
+        reachableProbeTargets: Set<String>? = nil,
         manualConfiguration: Bool = true,
-        dnsConfigured: Bool = true
+        dnsConfigured: Bool = true,
+        remoteHelperJSON: String? = nil,
+        defaultRouteInterface: String = "en0",
+        nwiPrimaryInterface: String? = nil
     ) {
         self.bridgeOutput = bridgeOutput
         self.router = router
         self.peerReachable = peerReachable
         self.boundEgressReachable = boundEgressReachable
+        self.reachableProbeTargets = reachableProbeTargets
         self.manualConfiguration = manualConfiguration
         self.dnsConfigured = dnsConfigured
+        self.remoteHelperJSON = remoteHelperJSON
+        self.defaultRouteInterface = defaultRouteInterface
+        self.nwiPrimaryInterface = nwiPrimaryInterface
     }
 
     func run(executable: String, arguments: [String]) -> NetworkModeCommandResult {
@@ -383,10 +465,19 @@ private final class SnapshotCommandRunner: NetworkModeCommandRunning {
                 ? "192.168.2.1"
                 : "There aren't any DNS Servers set on Thunderbolt Bridge.")
         }
-        if executable == "/sbin/route" { return .success("interface: en0") }
+        if executable == "/sbin/route" { return .success("interface: \(defaultRouteInterface)") }
+        if executable == "/usr/sbin/scutil", arguments == ["--nwi"], let nwiPrimaryInterface {
+            return .success("Network interfaces: \(nwiPrimaryInterface) en0")
+        }
         if executable == "/sbin/ping" {
             if arguments.last == "192.168.2.1" { return peerReachable ? .success() : .failure("timeout") }
+            if let reachableProbeTargets, let target = arguments.last {
+                return reachableProbeTargets.contains(target) ? .success() : .failure("timeout")
+            }
             return boundEgressReachable ? .success() : .failure("timeout")
+        }
+        if executable == "/usr/bin/ssh", let remoteHelperJSON {
+            return .success(remoteHelperJSON)
         }
         return .failure("unexpected command: \(executable) \(arguments)")
     }
@@ -448,7 +539,7 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
                 remoteActions.append(action)
                 if action == "status" {
                     return remoteHelperInstalled
-                        ? .success("{\"protocolVersion\":2}")
+                        ? .success("{\"protocolVersion\":3}")
                         : .failure("missing")
                 }
                 if action == "rollback" { return remoteRollbackSucceeds ? .success("{}") : .failure("rollback failed") }

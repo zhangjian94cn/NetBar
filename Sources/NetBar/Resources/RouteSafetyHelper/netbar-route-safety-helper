@@ -1,0 +1,160 @@
+#!/bin/zsh
+set -euo pipefail
+
+NETWORKSETUP=/usr/sbin/networksetup
+ROUTE=/sbin/route
+AWK=/usr/bin/awk
+GREP=/usr/bin/grep
+MKDIR=/bin/mkdir
+CHMOD=/bin/chmod
+SLEEP=/bin/sleep
+
+STATE_DIR=/Library/Application\ Support/NetBar/RouteSafety
+BACKUP_ORDER="$STATE_DIR/service-order-backup.txt"
+
+fail() {
+    print -u2 -- "$1"
+    exit 1
+}
+
+[[ "$#" -eq 1 ]] || fail "usage: netbar-route-safety-helper status|prefer-wifi|prefer-mini|rollback"
+case "$1" in
+    status|prefer-wifi|prefer-mini|rollback) ACTION="$1" ;;
+    *) fail "unsupported command" ;;
+esac
+
+service_rows() {
+    "$NETWORKSETUP" -listnetworkserviceorder | "$AWK" '
+        /^\([0-9]+\) / {
+            name=$0
+            sub(/^\([0-9]+\) /, "", name)
+            sub(/^\*/, "", name)
+        }
+        /^\(Hardware Port:/ {
+            port=$0
+            device=$0
+            sub(/^\(Hardware Port: /, "", port)
+            sub(/, Device:.*$/, "", port)
+            sub(/^.*Device: /, "", device)
+            sub(/\)$/, "", device)
+            print name "\t" port "\t" device
+        }
+    '
+}
+
+service_for_device() {
+    service_rows | "$AWK" -F '\t' -v wanted="$1" '$3 == wanted { print $1; exit }'
+}
+
+wifi_row() {
+    service_rows | "$AWK" -F '\t' 'tolower($2) == "wi-fi" || tolower($2) == "wifi" || $2 == "无线局域网" { print; exit }'
+}
+
+all_services() {
+    service_rows | "$AWK" -F '\t' '{ print $1 }'
+}
+
+json_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    print -rn -- "$value"
+}
+
+WIFI_ROW="$(wifi_row)"
+WIFI_SERVICE="$(print -r -- "$WIFI_ROW" | "$AWK" -F '\t' '{ print $1 }')"
+WIFI_DEVICE="$(print -r -- "$WIFI_ROW" | "$AWK" -F '\t' '{ print $3 }')"
+MINI_SERVICE="$(service_for_device bridge0)"
+[[ -n "$WIFI_SERVICE" && -n "$WIFI_DEVICE" && -n "$MINI_SERVICE" ]] || fail "Wi-Fi or bridge0 service not found"
+
+current_order() {
+    all_services
+}
+
+mode_from_order() {
+    local wifi_index mini_index index=0 name
+    while IFS= read -r name; do
+        (( index += 1 ))
+        [[ "$name" == "$WIFI_SERVICE" ]] && wifi_index=$index
+        [[ "$name" == "$MINI_SERVICE" ]] && mini_index=$index
+    done < <(current_order)
+    [[ -n "${wifi_index:-}" && -n "${mini_index:-}" ]] || fail "required service missing from order"
+    if (( mini_index < wifi_index )); then
+        print -r -- "mini"
+    else
+        print -r -- "wifi"
+    fi
+}
+
+emit_status() {
+    local mode
+    mode="$(mode_from_order)"
+    print -r -- "{\"protocolVersion\":1,\"mode\":\"$mode\",\"wifiService\":\"$(json_escape "$WIFI_SERVICE")\",\"wifiDevice\":\"$(json_escape "$WIFI_DEVICE")\",\"miniService\":\"$(json_escape "$MINI_SERVICE")\",\"backupAvailable\":$([[ -r "$BACKUP_ORDER" ]] && print true || print false)}"
+}
+
+save_backup() {
+    "$MKDIR" -p "$STATE_DIR"
+    "$CHMOD" 700 "$STATE_DIR"
+    current_order > "$BACKUP_ORDER"
+    "$CHMOD" 600 "$BACKUP_ORDER"
+}
+
+apply_mode() {
+    local target="$1" name
+    local -a order
+    order=("${(@f)$(current_order)}")
+    local wifi_index=${order[(Ie)$WIFI_SERVICE]}
+    local mini_index=${order[(Ie)$MINI_SERVICE]}
+    (( wifi_index > 0 && mini_index > 0 )) || fail "required service missing from order"
+    if [[ "$target" == "mini" && mini_index > wifi_index ]] ||
+       [[ "$target" == "wifi" && wifi_index > mini_index ]]; then
+        local tmp="${order[$wifi_index]}"
+        order[$wifi_index]="${order[$mini_index]}"
+        order[$mini_index]="$tmp"
+    fi
+    "$NETWORKSETUP" -ordernetworkservices "${order[@]}"
+    [[ "$(mode_from_order)" == "$target" ]] || fail "service order verification failed"
+}
+
+verify_route() {
+    local target="$1" device="$WIFI_DEVICE"
+    [[ "$target" == "mini" ]] && device=bridge0
+    local attempt output interface
+    for attempt in {1..12}; do
+        output="$($ROUTE -n get default 2>/dev/null || true)"
+        interface="$(print -r -- "$output" | "$AWK" '/interface:/ { print $2; exit }')"
+        if [[ "$interface" == "$device" ]]; then
+            return 0
+        fi
+        if [[ "$interface" == utun* ]] && "$ROUTE" -n get -ifscope "$device" default >/dev/null 2>&1; then
+            return 0
+        fi
+        "$SLEEP" 1
+    done
+    return 1
+}
+
+case "$ACTION" in
+    status)
+        emit_status
+        ;;
+    prefer-wifi|prefer-mini)
+        target=wifi
+        [[ "$ACTION" == "prefer-mini" ]] && target=mini
+        save_backup
+        if ! apply_mode "$target" || ! verify_route "$target"; then
+            if [[ -r "$BACKUP_ORDER" ]]; then
+                original=("${(@f)$(<"$BACKUP_ORDER")}")
+                "$NETWORKSETUP" -ordernetworkservices "${original[@]}" || fail "manualRecoveryRequired"
+            fi
+            fail "route verification failed; original order restored"
+        fi
+        emit_status
+        ;;
+    rollback)
+        [[ -r "$BACKUP_ORDER" ]] || fail "backup missing"
+        original=("${(@f)$(<"$BACKUP_ORDER")}")
+        "$NETWORKSETUP" -ordernetworkservices "${original[@]}"
+        emit_status
+        ;;
+esac

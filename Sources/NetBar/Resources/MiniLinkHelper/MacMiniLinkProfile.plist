@@ -8,8 +8,14 @@
     <string>192.168.2.1</string>
     <key>subnetMask</key>
     <string>255.255.255.0</string>
-    <key>miniUpstreamDevice</key>
-    <string>en0</string>
+	<key>miniUpstreamDevice</key>
+	<string>en0</string>
+	<key>miniUpstreamAddress</key>
+	<string>10.32.143.206</string>
+	<key>miniUpstreamSubnetMask</key>
+	<string>255.255.255.0</string>
+	<key>miniUpstreamRouter</key>
+	<string>10.32.143.1</string>
     <key>miniSSHUser</key>
     <string>zhangjian</string>
     <key>miniBonjourHost</key>

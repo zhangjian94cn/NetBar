@@ -150,6 +150,11 @@ enum NetworkModeSystemError: LocalizedError {
 protocol NetworkModeSystemProviding {
     func readSnapshot() throws -> NetworkModeSnapshot
     func setServiceOrder(_ serviceNames: [String]) -> NetworkModeCommandResult
+    func readMacMiniHelperStatus() -> MacMiniHelperStatus?
+}
+
+extension NetworkModeSystemProviding {
+    func readMacMiniHelperStatus() -> MacMiniHelperStatus? { nil }
 }
 
 protocol NetworkModeCommandRunning {
@@ -326,9 +331,21 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             executable: "/sbin/route",
             arguments: ["-n", "get", "default"]
         )
-        let physicalDefaultInterface = routeResult.succeeded
+        var physicalDefaultInterface = routeResult.succeeded
             ? Self.parseRouteInterface(routeResult.standardOutput)
             : nil
+        if physicalDefaultInterface?.hasPrefix("utun") == true || physicalDefaultInterface == nil {
+            let nwiResult = commandRunner.run(
+                executable: "/usr/sbin/scutil",
+                arguments: ["--nwi"]
+            )
+            if nwiResult.succeeded {
+                physicalDefaultInterface = Self.parseNWIPrimaryPhysicalInterface(
+                    nwiResult.standardOutput,
+                    candidates: [wifiService?.device, thunderboltService?.device].compactMap { $0 }
+                )
+            }
+        }
 
         let miniReachable: Bool
         if bridgeActive,
@@ -378,7 +395,16 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
                     ]
                 ).succeeded
             }
-            gatewayState = hasBoundEgress ? .ready : .upstreamUnavailable
+            if hasBoundEgress {
+                gatewayState = .ready
+            } else if let remoteStatus = readMacMiniHelperStatus() {
+                let remoteState = remoteStatus.gatewayState
+                gatewayState = (remoteState == .ready || remoteState == .unknown)
+                    ? .boundEgressUnavailable
+                    : remoteState
+            } else {
+                gatewayState = .remoteStatusUnavailable
+            }
         }
 
         return NetworkModeSnapshot(
@@ -404,6 +430,32 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             return directResult
         }
         return commandRunner.runPrivilegedNetworkServiceOrder(serviceNames)
+    }
+
+    func readMacMiniHelperStatus() -> MacMiniHelperStatus? {
+        #if APP_STORE
+        return nil
+        #else
+        let result = commandRunner.run(
+            executable: "/usr/bin/ssh",
+            arguments: NetworkLinkProvisioner.sshArguments(
+                profile: profile,
+                host: profile.gatewayAddress,
+                remoteArguments: [
+                    "/usr/bin/sudo", "-n",
+                    NetworkLinkProvisioner.miniHelperPath,
+                    "status"
+                ]
+            )
+        )
+        guard result.succeeded,
+              let data = result.standardOutput.data(using: .utf8),
+              let status = try? JSONDecoder().decode(MacMiniHelperStatus.self, from: data),
+              status.protocolVersion == NetworkLinkProvisioner.miniHelperProtocolVersion else {
+            return nil
+        }
+        return status
+        #endif
     }
 
     static func parseServiceOrder(_ output: String) -> [NetworkServiceEntry] {
@@ -486,6 +538,19 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
 
     static func parseRouteInterface(_ output: String) -> String? {
         parseNetworkInfoValue("interface", from: output)
+    }
+
+    static func parseNWIPrimaryPhysicalInterface(
+        _ output: String,
+        candidates: [String]
+    ) -> String? {
+        guard let line = output.components(separatedBy: .newlines).first(where: {
+            $0.trimmingCharacters(in: .whitespaces).hasPrefix("Network interfaces:")
+        }), let separator = line.firstIndex(of: ":") else {
+            return nil
+        }
+        let interfaces = line[line.index(after: separator)...].split(whereSeparator: { $0.isWhitespace })
+        return interfaces.map(String.init).first(where: candidates.contains)
     }
 
     static func isWiFiHardwarePort(_ hardwarePort: String) -> Bool {
@@ -639,38 +704,81 @@ final class NetworkModeController: ObservableObject {
     @Published private(set) var isProvisioning = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var requiresManualRecovery = false
+    @Published private(set) var routePreference: NetworkRoutePreference
+    @Published private(set) var policyMessage: String?
+    @Published private(set) var stabilizationRemaining: Int?
+    @Published private(set) var automationHelperAvailable = false
+    @Published private(set) var miniGuardianAvailable = false
 
     private let provider: NetworkModeSystemProviding
     private let switchEngine: NetworkModeSwitchEngine
     private let provisioner: NetworkLinkProvisioning
+    private let routeSafetyController: RouteSafetyControlling
+    private let userDefaults: UserDefaults
+    private let now: () -> Date
     private let workQueue = DispatchQueue(label: "com.zjah.NetBar.network-mode", qos: .utility)
     private let onNetworkChanged: () -> Void
-    private var refreshTimer: Timer?
+    private var policyTimer: Timer?
+    private var policyCheckInFlight = false
+    private var policyCheckPending = false
+    private var knownMiniGuardianAvailable = false
+    private var policyState: NetworkRoutePolicyState
+    private let preferenceLock = NSLock()
+    private var preferenceValue: NetworkRoutePreference
+    private static let preferenceKey = "networkRoutePreference"
+    private static let guardianAvailabilityKey = "miniGuardianProtocolV3Available"
 
     init(
         provider: NetworkModeSystemProviding = LiveNetworkModeSystemProvider(),
         provisioner: NetworkLinkProvisioning = NetworkLinkProvisioner(),
+        routeSafetyController: RouteSafetyControlling = LiveRouteSafetyController(),
+        userDefaults: UserDefaults = .standard,
+        now: @escaping () -> Date = Date.init,
         onNetworkChanged: @escaping () -> Void = {}
     ) {
+        let storedPreference = userDefaults.string(forKey: Self.preferenceKey)
+            .flatMap(NetworkRoutePreference.init(rawValue:)) ?? .miniPreferred
+        let guardianKnown = userDefaults.bool(forKey: Self.guardianAvailabilityKey)
         self.provider = provider
         self.switchEngine = NetworkModeSwitchEngine(provider: provider)
         self.provisioner = provisioner
+        self.routeSafetyController = routeSafetyController
+        self.userDefaults = userDefaults
+        self.now = now
         self.onNetworkChanged = onNetworkChanged
+        self.routePreference = storedPreference
+        self.preferenceValue = storedPreference
+        self.policyState = NetworkRoutePolicyState(preference: storedPreference)
+        self.miniGuardianAvailable = guardianKnown
+        self.knownMiniGuardianAvailable = guardianKnown
     }
 
     func beginObserving() {
         refresh()
-        guard refreshTimer == nil else { return }
-        let timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
-            self?.refresh()
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        refreshTimer = timer
     }
 
-    func endObserving() {
-        refreshTimer?.invalidate()
-        refreshTimer = nil
+    func endObserving() {}
+
+    func startPolicyMonitoring() {
+        guard DistributionFlavor.current.supportsNetworkModeSwitch else { return }
+        automationHelperAvailable = routeSafetyController.status() != nil
+        refresh()
+        guard policyTimer == nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            self?.performPolicyCheck()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        policyTimer = timer
+        performPolicyCheck()
+    }
+
+    func stopPolicyMonitoring() {
+        policyTimer?.invalidate()
+        policyTimer = nil
+    }
+
+    func runPolicyCheckNow() {
+        performPolicyCheck()
     }
 
     func refresh() {
@@ -697,6 +805,7 @@ final class NetworkModeController: ObservableObject {
         isSwitching = true
         errorMessage = nil
         requiresManualRecovery = false
+        setPreference(target == .macMiniGateway ? .miniPreferred : .localWiFi)
 
         workQueue.async { [weak self] in
             guard let self else { return }
@@ -715,6 +824,206 @@ final class NetworkModeController: ObservableObject {
                 }
             }
         }
+    }
+
+    func installAutomationHelper() {
+        let result = routeSafetyController.openInstaller()
+        if result.succeeded {
+            errorMessage = "请在终端完成一次管理员授权；安装后 NetBar 会自动检测"
+        } else {
+            errorMessage = result.combinedMessage.isEmpty ? "无法打开自动切换组件安装器" : result.combinedMessage
+        }
+    }
+
+    private func setPreference(_ preference: NetworkRoutePreference) {
+        routePreference = preference
+        preferenceLock.lock()
+        preferenceValue = preference
+        preferenceLock.unlock()
+        workQueue.async { [weak self] in
+            self?.policyState.preference = preference
+            self?.policyState.readySince = nil
+            self?.policyState.consecutiveFailures = 0
+        }
+        userDefaults.set(preference.rawValue, forKey: Self.preferenceKey)
+        policyMessage = preference == .miniPreferred ? "目标：经 Mac mini" : "目标：本机 Wi-Fi"
+        stabilizationRemaining = nil
+    }
+
+    private func performPolicyCheck() {
+        guard routePreference == .miniPreferred, !isSwitching, !isProvisioning else { return }
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            if self.policyCheckInFlight {
+                self.policyCheckPending = true
+                return
+            }
+            guard self.currentPreference() == .miniPreferred else { return }
+            self.policyCheckInFlight = true
+            defer {
+                self.policyCheckInFlight = false
+                if self.policyCheckPending {
+                    self.policyCheckPending = false
+                    DispatchQueue.main.async { [weak self] in
+                        self?.performPolicyCheck()
+                    }
+                }
+            }
+            guard let current = try? self.provider.readSnapshot() else { return }
+            let checkDate = self.now()
+            self.policyState.clearExpiredCircuitBreaker(at: checkDate)
+            let helperAvailable = self.routeSafetyController.status() != nil
+            let guardianAvailable = self.knownMiniGuardianAvailable
+            DispatchQueue.main.async { [weak self] in
+                self?.miniGuardianAvailable = guardianAvailable
+            }
+
+            if current.linkState == .connected, current.gatewayState == .ready {
+                self.handleHealthySnapshot(current, at: checkDate, helperAvailable: helperAvailable)
+            } else {
+                self.handleUnhealthySnapshot(current, at: checkDate, helperAvailable: helperAvailable)
+            }
+        }
+    }
+
+    private func handleHealthySnapshot(
+        _ current: NetworkModeSnapshot,
+        at checkDate: Date,
+        helperAvailable: Bool
+    ) {
+        policyState.recordHealthy(at: checkDate)
+        if current.effectiveMode == .macMiniGateway {
+            publishPolicy(snapshot: current, message: "Mac mini 优先 · 当前出口正常", remaining: nil)
+            return
+        }
+        if let until = policyState.circuitBreakerUntil, until > checkDate {
+            let seconds = Int(ceil(until.timeIntervalSince(checkDate)))
+            publishPolicy(snapshot: current, message: "Mac mini 上游反复抖动，\(seconds) 秒后重试", remaining: seconds)
+            return
+        }
+        let elapsed = policyState.stableDuration(at: checkDate)
+        guard elapsed >= 30 else {
+            let remaining = max(0, Int(ceil(30 - elapsed)))
+            publishPolicy(snapshot: current, message: "Mac mini 已恢复，稳定 \(remaining) 秒后自动切回", remaining: remaining)
+            return
+        }
+        guard let remote = provider.readMacMiniHelperStatus(), remote.guardian?.state == .ready else {
+            publishPolicy(snapshot: current, message: "等待 Mac mini Guardian 确认共享稳定", remaining: nil)
+            return
+        }
+        recordMiniGuardianAvailability(true)
+        DispatchQueue.main.async { [weak self] in
+            self?.miniGuardianAvailable = true
+        }
+        guard helperAvailable else {
+            publishPolicy(snapshot: current, message: "Mac mini 已恢复；需安装自动切换组件", remaining: nil, helperAvailable: false)
+            return
+        }
+        guard currentPreference() == .miniPreferred else { return }
+
+        let result = routeSafetyController.apply(.macMiniGateway)
+        let verified = result.succeeded ? (try? provider.readSnapshot()) : nil
+        if let verified, verified.verifies(.macMiniGateway) {
+            policyState.readySince = checkDate
+            publishPolicy(snapshot: verified, message: "已自动切回 Mac mini", remaining: nil, helperAvailable: true)
+            Log.network.info("Mac mini 上游稳定 30 秒，已自动切回雷雳出口")
+            DispatchQueue.main.async { [weak self] in self?.onNetworkChanged() }
+        } else {
+            policyState.recordAutomaticFallback(at: checkDate)
+            let fallbackResult = result.succeeded
+                ? routeSafetyController.apply(.localWiFi)
+                : result
+            let refreshed = (try? provider.readSnapshot()) ?? current
+            let fallbackVerified = fallbackResult.succeeded && refreshed.effectiveMode == .localWiFi
+            let message: String
+            if fallbackVerified {
+                message = "自动切回验证失败，已恢复本机 Wi-Fi"
+            } else if fallbackResult.combinedMessage.contains("manualRecoveryRequired") {
+                message = "自动切回与恢复均失败，需要手动恢复"
+            } else {
+                message = fallbackResult.combinedMessage.isEmpty
+                    ? "自动切回失败，无法确认已恢复本机 Wi-Fi"
+                    : fallbackResult.combinedMessage
+            }
+            publishPolicy(
+                snapshot: refreshed,
+                message: message,
+                remaining: nil,
+                helperAvailable: true,
+                isError: true
+            )
+            Log.network.error("自动切回 Mac mini 失败，Wi-Fi 恢复=\(fallbackVerified): \(message, privacy: .public)")
+        }
+    }
+
+    private func handleUnhealthySnapshot(
+        _ current: NetworkModeSnapshot,
+        at checkDate: Date,
+        helperAvailable: Bool
+    ) {
+        policyState.recordFailure()
+        let definitiveFailure: Bool
+        switch current.gatewayState {
+        case .carrierDown, .addressRecovering, .sharingRecovering, .configurationDrift, .recoveryBackoff:
+            definitiveFailure = true
+        default:
+            definitiveFailure = false
+        }
+        let shouldFallback = current.effectiveMode == .macMiniGateway &&
+            (definitiveFailure || policyState.consecutiveFailures >= 3)
+        guard shouldFallback else {
+            publishPolicy(snapshot: current, message: current.gatewayState.displayName, remaining: nil)
+            return
+        }
+        guard helperAvailable else {
+            publishPolicy(snapshot: current, message: "\(current.gatewayState.displayName)；需安装自动切换组件", remaining: nil, helperAvailable: false, isError: true)
+            return
+        }
+        let result = routeSafetyController.apply(.localWiFi)
+        let refreshed = (try? provider.readSnapshot()) ?? current
+        if result.succeeded, refreshed.effectiveMode == .localWiFi {
+            policyState.recordAutomaticFallback(at: checkDate)
+            publishPolicy(snapshot: refreshed, message: "已恢复本机 Wi-Fi · \(current.gatewayState.displayName)", remaining: nil, helperAvailable: true)
+            Log.network.error("Mac mini 上游异常，已自动回退本机 Wi-Fi: \(current.gatewayState.displayName, privacy: .public)")
+            DispatchQueue.main.async { [weak self] in self?.onNetworkChanged() }
+        } else {
+            let message = result.combinedMessage.contains("manualRecoveryRequired")
+                ? "自动回退失败，需要手动恢复"
+                : (result.combinedMessage.isEmpty ? "自动回退本机 Wi-Fi 失败" : result.combinedMessage)
+            publishPolicy(snapshot: refreshed, message: message, remaining: nil, helperAvailable: true, isError: true)
+        }
+    }
+
+    private func publishPolicy(
+        snapshot: NetworkModeSnapshot,
+        message: String,
+        remaining: Int?,
+        helperAvailable: Bool? = nil,
+        isError: Bool = false
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.snapshot = snapshot
+            self.policyMessage = message
+            self.stabilizationRemaining = remaining
+            if let helperAvailable { self.automationHelperAvailable = helperAvailable }
+            if isError {
+                self.errorMessage = message
+            } else if !self.requiresManualRecovery {
+                self.errorMessage = nil
+            }
+        }
+    }
+
+    private func currentPreference() -> NetworkRoutePreference {
+        preferenceLock.lock()
+        defer { preferenceLock.unlock() }
+        return preferenceValue
+    }
+
+    private func recordMiniGuardianAvailability(_ available: Bool) {
+        knownMiniGuardianAvailable = available
+        userDefaults.set(available, forKey: Self.guardianAvailabilityKey)
     }
 
     func initializeFixedLink() {
@@ -756,6 +1065,10 @@ final class NetworkModeController: ObservableObject {
                 }
             }
             let refreshedSnapshot = try? self.provider.readSnapshot()
+            let guardianInstalled = finalOutcome.succeeded && self.provider.readMacMiniHelperStatus()?.guardian != nil
+            if guardianInstalled {
+                self.recordMiniGuardianAvailability(true)
+            }
             DispatchQueue.main.async {
                 self.snapshot = refreshedSnapshot ?? wifiOutcome.snapshot ?? self.snapshot
                 self.errorMessage = finalOutcome.message
@@ -763,6 +1076,7 @@ final class NetworkModeController: ObservableObject {
                 self.isProvisioning = false
                 if finalOutcome.succeeded {
                     Log.network.info("固定雷雳链路初始化成功")
+                    self.miniGuardianAvailable = guardianInstalled
                     self.onNetworkChanged()
                 } else {
                     Log.network.error("固定雷雳链路初始化失败: \(finalOutcome.message, privacy: .public)")
@@ -772,6 +1086,6 @@ final class NetworkModeController: ObservableObject {
     }
 
     deinit {
-        refreshTimer?.invalidate()
+        policyTimer?.invalidate()
     }
 }
