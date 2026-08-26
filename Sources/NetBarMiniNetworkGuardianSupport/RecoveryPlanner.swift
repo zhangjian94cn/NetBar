@@ -92,3 +92,28 @@ public enum MiniGuardianRecoveryPlanner {
         return .repairFailed
     }
 }
+
+public enum NetworkServiceOrderParser {
+    public static func serviceName(forDevice device: String, in output: String) -> String? {
+        var pendingService: String?
+        for rawLine in output.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.first == "(",
+               let close = line.firstIndex(of: ")"),
+               let ordinal = Int(line[line.index(after: line.startIndex)..<close]),
+               ordinal > 0 {
+                var name = line[line.index(after: close)...].trimmingCharacters(in: .whitespaces)
+                if name.hasPrefix("*") {
+                    name.removeFirst()
+                    name = name.trimmingCharacters(in: .whitespaces)
+                }
+                pendingService = name.isEmpty ? nil : name
+                continue
+            }
+            if line.contains("Device: \(device))"), let pendingService {
+                return pendingService
+            }
+        }
+        return nil
+    }
+}

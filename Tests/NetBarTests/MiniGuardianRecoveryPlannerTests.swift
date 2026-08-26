@@ -61,6 +61,26 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
         XCTAssertEqual(decide(healthyElapsed: 60), .ready(resetBackoff: true))
     }
 
+    func testServiceParserDoesNotTreatHardwarePortLineAsServiceTitle() {
+        let output = """
+        (1) Wi-Fi
+        (Hardware Port: Wi-Fi, Device: en1)
+        (2) *Ethernet Company Manual
+        (Hardware Port: Ethernet, Device: en0)
+        (3) Thunderbolt Bridge
+        (Hardware Port: Thunderbolt Bridge, Device: bridge0)
+        """
+
+        XCTAssertEqual(
+            NetworkServiceOrderParser.serviceName(forDevice: "en0", in: output),
+            "Ethernet Company Manual"
+        )
+        XCTAssertEqual(
+            NetworkServiceOrderParser.serviceName(forDevice: "bridge0", in: output),
+            "Thunderbolt Bridge"
+        )
+    }
+
     private func decide(
         carrierActive: Bool = true,
         preferencesMatch: Bool = true,

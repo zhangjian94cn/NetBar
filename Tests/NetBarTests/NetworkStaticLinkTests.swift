@@ -324,6 +324,8 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(helperSource.contains("NAT.SharingDevices.$index"))
         XCTAssertFalse(helperSource.contains("NAT.SharingDevices json"))
         XCTAssertTrue(helperSource.contains("protocolVersion\\\":3"))
+        XCTAssertTrue(helperSource.contains("-convert json -o - \"$GUARDIAN_STATUS\""))
+        XCTAssertFalse(helperSource.contains("-lint \"$GUARDIAN_STATUS\""))
         XCTAssertTrue(installerSource.contains("com.zjah.NetBarMiniNetworkGuardian"))
         let guardianPlistSource = try String(contentsOf: guardianPlist)
         XCTAssertTrue(guardianPlistSource.contains("com.zjah.NetBarMiniNetworkGuardian"))

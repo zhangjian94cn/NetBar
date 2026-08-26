@@ -392,19 +392,10 @@ private final class MiniNetworkGuardian {
     }
 
     private func findService(device: String) -> String? {
-        let lines = runner.run("/usr/sbin/networksetup", ["-listnetworkserviceorder"]).output
-            .components(separatedBy: .newlines)
-        var pending: String?
-        for raw in lines {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.first == "(", let close = line.firstIndex(of: ")") {
-                let suffix = line[line.index(after: close)...].trimmingCharacters(in: .whitespaces)
-                pending = suffix.hasPrefix("*") ? String(suffix.dropFirst()).trimmingCharacters(in: .whitespaces) : suffix
-            } else if line.contains("Device: \(device))"), let pending {
-                return pending
-            }
-        }
-        return nil
+        NetworkServiceOrderParser.serviceName(
+            forDevice: device,
+            in: runner.run("/usr/sbin/networksetup", ["-listnetworkserviceorder"]).output
+        )
     }
 }
 
