@@ -131,7 +131,7 @@ Mac mini 的上游固定为内置以太网 `en0`。`en0` 断开时，雷雳本�
 
 状态语义：红色表示雷雳本地链路不可用；黄色表示 Mini 无载波、地址/共享恢复中、配置漂移、退避、出口抖动或 Clash/TUN 未收敛；绿色只表示固定链路、Mini Guardian 与绑定物理出口均已验证。明确链路故障立即回退；只有公网 HTTPS 不确定故障才需要三轮失败。Apple 与 Cloudflare 目标中至少一个返回预期状态即可通过，避免单目标被公司网络屏蔽导致误判。
 
-Wi-Fi 先验证载波、IPv4 和网关；能绑定 `en0` 直连 HTTPS 时采用 make-before-break。部分公司网络会阻断绕过代理的 HTTPS，这时 NetBar 允许短暂提升 Wi-Fi 后，以“实际物理出口为 `en0` 且系统 HTTPS、Clash HTTPS 均成功”确认保网，失败则如实告警。每当实际物理出口在 `bridge0` 与 `en0` 之间变化，NetBar 都会通过 Mihomo Unix Socket 调用一次 `DELETE /connections`，关闭旧 underlay 上的运行中连接，再等待并验证新连接；这也覆盖雷雳热插拔、自动回退、自动切回和手动切换。它不退出、重启或重载 Clash，不切换 TUN，也不修改 Clash 配置。同一出口的重复检查不会重复清理，失败只按受控间隔重试。
+Wi-Fi 先验证载波、IPv4 和网关；能绑定 `en0` 直连 HTTPS 时采用 make-before-break。部分公司网络会同时阻断 Wi-Fi 与雷雳出口上绕过代理的 HTTPS：Wi-Fi 以“实际物理出口为 `en0` 且系统 HTTPS、Clash HTTPS 均成功”确认保网；Mini 切换前以固定链路、绑定公网 ICMP 与 Guardian `ready` 确认可尝试，切换后以“实际物理出口为 `bridge0` 且系统 HTTPS、Clash HTTPS 均成功”确认可用。这样不会让 VPN/TUN 单独冒充 Mini 出口，也不会把公司网络的直连限制误判为 Mini 断网。若目标策略和实际出口都是 Mini、但系统服务顺序仍把 Wi-Fi 排在前面，NetBar 会立即纠正顺序，避免 macOS 随后又落回 Wi-Fi。每当实际物理出口在 `bridge0` 与 `en0` 之间变化，NetBar 都会通过 Mihomo Unix Socket 调用一次 `DELETE /connections`，关闭旧 underlay 上的运行中连接，再等待并验证新连接；这也覆盖雷雳热插拔、自动回退、自动切回和手动切换。它不退出、重启或重载 Clash，不切换 TUN，也不修改 Clash 配置。同一出口的重复检查不会重复清理，失败只按受控间隔重试。
 
 查看 MacBook 侧状态转换：
 
