@@ -18,11 +18,14 @@ rm -rf "$DIST_DIR"
 mkdir -p "$BIN_DIR" "$RES_DIR"
 cp "$ROOT_DIR/.build/release/NetBar" "$BIN_DIR/NetBar"
 cp -R "$ROOT_DIR/.build/release/NetBar_NetBar.bundle" "$RES_DIR/NetBar_NetBar.bundle"
+cp "$ROOT_DIR/.build/release/NetBarMiniNetworkGuardian" "$RES_DIR/NetBar_NetBar.bundle/MiniLinkHelper/NetBarMiniNetworkGuardian"
+chmod 0755 "$RES_DIR/NetBar_NetBar.bundle/MiniLinkHelper/NetBarMiniNetworkGuardian"
 cp "$ROOT_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$RES_DIR/AppIcon.icns"
 
 if [[ -n "${NETBAR_DEVELOPER_ID_APPLICATION:-}" ]]; then
     echo "Signing with Developer ID..."
+    codesign --force --options runtime --sign "$NETBAR_DEVELOPER_ID_APPLICATION" "$RES_DIR/NetBar_NetBar.bundle/MiniLinkHelper/NetBarMiniNetworkGuardian"
     codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign "$NETBAR_DEVELOPER_ID_APPLICATION" "$APP_DIR"
 else
     echo "NETBAR_DEVELOPER_ID_APPLICATION is not set; leaving app unsigned."

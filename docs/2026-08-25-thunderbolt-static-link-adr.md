@@ -1,7 +1,7 @@
 # ADR: 雷雳点对点链路使用双端固定地址与受限 Mini Helper
 
 - 日期: 2026-08-25
-- 状态: accepted
+- 状态: accepted（“不使用常驻 LaunchDaemon”与“恢复后不自动切回”部分已由 [2026-08-26-mac-mini-preferred-route-self-healing-adr.md](2026-08-26-mac-mini-preferred-route-self-healing-adr.md) supersede）
 - 范围: NetBar Direct Full / MacBook 与 Mac mini 雷雳链路初始化
 - 相关源码: [MacMiniLinkProfile.swift](../Sources/NetBar/Monitors/MacMiniLinkProfile.swift)、[NetworkLinkProvisioner.swift](../Sources/NetBar/Monitors/NetworkLinkProvisioner.swift)、[Mini Helper](../Sources/NetBar/Resources/MiniLinkHelper/netbar-mini-link-helper)、[安装器](../Sources/NetBar/Resources/MiniLinkHelper/install-netbar-mini-link-helper.command)
 - 上位原则: [engineering-principles.md](../../../docs/engineering-principles.md)

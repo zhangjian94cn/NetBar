@@ -39,6 +39,21 @@ struct NetworkModeCard: View {
                     .lineLimit(1)
             }
 
+            HStack(spacing: 6) {
+                Text("目标：\(controller.routePreference.displayName)")
+                Spacer()
+                Text("当前：\(currentOutletText)")
+            }
+            .font(.system(size: 9))
+            .foregroundColor(.secondary)
+
+            if let policyMessage = controller.policyMessage, !policyMessage.isEmpty {
+                Text(policyMessage)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(statusColor)
+                    .lineLimit(2)
+            }
+
             HStack(spacing: 8) {
                 modeButton(.localWiFi, icon: "wifi")
                 modeButton(.macMiniGateway, icon: "desktopcomputer")
@@ -55,6 +70,31 @@ struct NetworkModeCard: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(controller.isSwitching || controller.isProvisioning)
+            }
+
+            if !controller.miniGuardianAvailable && !shouldOfferProvisioning {
+                Button {
+                    controller.initializeFixedLink()
+                } label: {
+                    Label("安装/更新 Mini 自愈组件", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(maxWidth: .infinity, minHeight: 23)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(controller.isSwitching || controller.isProvisioning)
+            }
+
+            if !controller.automationHelperAvailable {
+                Button {
+                    controller.installAutomationHelper()
+                } label: {
+                    Label("安装自动切换组件", systemImage: "lock.shield")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(maxWidth: .infinity, minHeight: 23)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
 
             if let message = controller.errorMessage, !message.isEmpty {
@@ -80,8 +120,9 @@ struct NetworkModeCard: View {
     }
 
     private func modeButton(_ mode: NetworkRouteMode, icon: String) -> some View {
-        let isSelected = controller.snapshot?.isConsistent == true &&
-            controller.snapshot?.effectiveMode == mode
+        let isSelected = mode == .macMiniGateway
+            ? controller.routePreference == .miniPreferred
+            : controller.routePreference == .localWiFi
         let isEnabled = canSwitch(to: mode)
 
         return Button {
@@ -113,9 +154,6 @@ struct NetworkModeCard: View {
               snapshot.thunderboltServiceName != nil else {
             return false
         }
-        if mode == .macMiniGateway {
-            return snapshot.linkState == .connected && snapshot.gatewayState == .ready
-        }
         return true
     }
 
@@ -144,8 +182,8 @@ struct NetworkModeCard: View {
         if snapshot.linkState == .addressNotProvisioned {
             return "需要初始化"
         }
-        if snapshot.gatewayState == .upstreamUnavailable {
-            return "上游不可用"
+        if snapshot.gatewayState != .ready, snapshot.gatewayState != .unknown {
+            return snapshot.gatewayState.displayName
         }
         if snapshot.isConsistent, let mode = snapshot.effectiveMode {
             return mode.displayName
@@ -155,10 +193,14 @@ struct NetworkModeCard: View {
 
     private var linkText: String {
         guard let snapshot = controller.snapshot else { return "正在检测雷雳链路" }
-        if snapshot.linkState == .connected, snapshot.gatewayState == .upstreamUnavailable {
-            return "雷雳可用 · Mac mini 上游不可用"
+        if snapshot.linkState == .connected, snapshot.gatewayState != .ready {
+            return "雷雳可用 · \(snapshot.gatewayState.displayName)"
         }
         return snapshot.linkState.displayName
+    }
+
+    private var currentOutletText: String {
+        controller.snapshot?.effectiveMode?.displayName ?? "待检测"
     }
 
     private var addressText: String {

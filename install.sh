@@ -27,6 +27,8 @@ mkdir -p "$RES_DIR"
 # 复制二进制和 Info.plist
 cp .build/release/NetBar "$BIN_DIR/"
 cp -R .build/release/NetBar_NetBar.bundle "$RES_DIR/NetBar_NetBar.bundle"
+cp .build/release/NetBarMiniNetworkGuardian "$RES_DIR/NetBar_NetBar.bundle/MiniLinkHelper/NetBarMiniNetworkGuardian"
+chmod 0755 "$RES_DIR/NetBar_NetBar.bundle/MiniLinkHelper/NetBarMiniNetworkGuardian"
 if [ -f "Info.plist" ]; then
     cp Info.plist "$APP_DIR/Contents/"
 else
@@ -40,6 +42,7 @@ else
 fi
 
 echo "🔑 VPS 配置入口已改为应用内设置 > 服务器管理。"
+echo "🛡️  自动路由组件可在 NetBar 链路卡片中完成一次授权安装。"
 
 echo "⚙️  配置开机自启..."
 # 先卸载旧的（如果存在）

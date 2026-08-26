@@ -18,7 +18,7 @@
 | 💾 持久化存储 | 流量数据写入磁盘，支持长期统计 |
 | 📅 多时间维度 | 1分钟 / 5分钟 / 1小时 / 今天 / 7天 / 30天 / 本月 |
 | 🌐 网络信息 | Wi-Fi 名称 + 本机 IP 地址 |
-| ⚡ Mac mini 链路 | 固定双端 IP、检测并修复 IP over Thunderbolt，切换本机 Wi-Fi / Mac mini 物理出口（Direct Full） |
+| ⚡ Mac mini 链路 | 固定双端 IP、Mini 上游自愈、故障自动回退及稳定 30 秒后自动切回（Direct Full） |
 | 🖼 应用图标 | 自动识别进程对应的 macOS 应用图标 |
 | 🚀 开机自启 | 支持 Launch Agent 自动启动 |
 
@@ -43,6 +43,8 @@ chmod +x install.sh
 1. 编译 Direct Full Release 版本
 2. 打包为 `NetBar.app` 并安装到 `~/Applications/`
 3. 配置 Launch Agent 实现开机自启
+
+首次使用链路自动切换时，还需在卡片中分别安装本机 Route Safety Helper 和 Mini 自愈组件；两个安装器各请求一次系统管理员授权，不保存密码。
 
 ### 手动编译
 
@@ -113,13 +115,28 @@ NetBar/
 
 Direct Full 版本会在弹出面板中显示“Mac mini 链路”卡片：
 
-- **本机 Wi-Fi**：Wi-Fi 是物理上网出口，雷雳仍可访问 Mac mini。
-- **经 Mac mini**：雷雳网桥是物理上网出口；切换前必须确认 Mac mini 网关可达，并且绑定 `bridge0` 的公网探测成功。
+- **本机 Wi-Fi**：持久使用 Wi-Fi 作为物理出口，雷雳仍可访问 Mac mini，并关闭自动切回。
+- **经 Mac mini**：启用“Mac mini 优先”。故障时自动回退 Wi-Fi；绑定 `bridge0` 的出口连续稳定 30 秒且 Mini Guardian 报告正常后自动切回。
 - **初始化/修复链路**：把 Mac mini 固定为 `192.168.2.1/24`、本机固定为 `192.168.2.2/24`。两端 `bridge0` 包含全部雷雳口，因此换到任意 Thunderbolt/USB4 口后不再依赖 DHCP。
 
-首次初始化需要在 Mac mini 终端和本机各完成一次管理员授权。Mini 端安装的是非驻留受限 Helper，仅允许 `status`、`apply`、`rollback` 三个固定命令；NetBar 不接收或保存管理员密码。SSH 连接严格复用 `192.168.2.1` 已登记的主机密钥，不自动接受未知或变化的密钥。
+首次初始化需要在 Mac mini 终端和本机各完成一次管理员授权。Mini Helper v3 仅允许 `status`、`apply`、`rollback` 三个固定命令；本机 Route Safety Helper 仅允许 `status`、`prefer-wifi`、`prefer-mini`、`rollback`。NetBar 不接收或保存管理员密码。SSH 连接严格复用 `192.168.2.1` 已登记的主机密钥，不自动接受未知或变化的密钥。
 
-Mac mini 的上游固定为内置以太网 `en0`。`en0` 断开时，雷雳本地链路和 `192.168.2.1` 访问仍保持可用，但“经 Mac mini”会被禁用；NetBar 不自动改用 Mini 的 USB 网卡或 Wi-Fi。原生 macOS Internet Sharing 继续唯一管理 NAT/DHCP，Helper 只读校验其共享源和目标，不修改私有 NAT 配置。
+Mac mini 的上游固定为内置以太网 `en0`。`en0` 断开时，雷雳本地链路和 `192.168.2.1` 访问仍保持可用，MacBook 自动回退 Wi-Fi。Mini Guardian 不会重置无载波的网口；载波恢复后先等待 macOS 自行收敛，必要时只重新应用既定 Manual IPv4 和重拉 `com.apple.NetworkSharing`。它不调用 `-setdnsservers`，因此用户为公司网络配置的 DNS 保持不变。NetBar 不自动改用 Mini 的 USB 网卡或 Wi-Fi，原生 Internet Sharing 继续唯一管理 NAT/DHCP。
+
+状态语义：红色表示雷雳本地链路不可用；黄色表示 Mini 无载波、地址/共享恢复中、配置漂移、退避或出口抖动；绿色只表示固定链路、Mini Guardian 与绑定物理出口均已验证。多个公网探测目标中至少一个成功即可通过一轮，避免单一 ICMP 目标被屏蔽导致误判。
+
+查看 MacBook 侧状态转换：
+
+```bash
+log show --last 1h --style compact --predicate 'subsystem == "com.zjah.NetBar" AND category == "network"'
+```
+
+查看 Mini Guardian 状态与日志：
+
+```bash
+sudo -n /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper status
+log show --last 1h --style compact --predicate 'subsystem == "com.zjah.NetBarMiniNetworkGuardian"'
+```
 
 该功能不关闭或重启 Clash、aTrust、Tailscale、Amnezia 等 VPN，也不修改 Clash 配置。VPN 开启时公网 IP 仍可能显示 VPN 出口；卡片展示的是 VPN 下层的物理出口。系统设置即使仍显示黄色“未知状态”，也不影响 NetBar 根据载波、IP、网关、Ping 和默认路由给出的实测结果。
 
@@ -150,12 +167,23 @@ rm -rf ~/Applications/NetBar.app
 rm -rf ~/Library/Application\ Support/NetBar/
 ```
 
-如果安装过 Mini Helper，请先在 Mac mini 上恢复初始化前配置，再删除权限文件和 Helper：
+如果安装过本机 Route Safety Helper，再删除：
+
+```bash
+sudo rm -f /etc/sudoers.d/netbar-route-safety-helper
+sudo rm -f /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper
+sudo rm -rf /Library/Application\ Support/NetBar/RouteSafety
+```
+
+如果安装过 Mini Helper/Guardian，请先在 Mac mini 上恢复初始化前的雷雳配置，再删除受限组件。以下命令不会修改 `en0` 的 IP 或公司 DNS：
 
 ```bash
 sudo -n /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper rollback
+sudo launchctl bootout system/com.zjah.NetBarMiniNetworkGuardian
+sudo rm -f /Library/LaunchDaemons/com.zjah.NetBarMiniNetworkGuardian.plist
 sudo rm -f /etc/sudoers.d/netbar-mini-link-helper /etc/sudoers.d/com.zjah.NetBarMiniLinkHelper
-sudo rm /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper
+sudo rm -f /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper
+sudo rm -f /Library/PrivilegedHelperTools/com.zjah.NetBarMiniNetworkGuardian
 sudo rm -rf /Library/Application\ Support/NetBar
 ```
 

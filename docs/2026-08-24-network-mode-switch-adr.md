@@ -1,7 +1,7 @@
 # ADR: NetBar 管理 Wi-Fi 与雷雳网桥物理出口优先级
 
 - 日期: 2026-08-24
-- 状态: accepted（固定链路前置条件由 [2026-08-25-thunderbolt-static-link-adr.md](2026-08-25-thunderbolt-static-link-adr.md) 扩展）
+- 状态: accepted（固定链路由 [2026-08-25-thunderbolt-static-link-adr.md](2026-08-25-thunderbolt-static-link-adr.md) 扩展；自动优先与自愈由 [2026-08-26-mac-mini-preferred-route-self-healing-adr.md](2026-08-26-mac-mini-preferred-route-self-healing-adr.md) 扩展）
 - 范围: NetBar Direct Full / 本机网络服务控制
 - 相关源码: [NetworkModeController.swift](../Sources/NetBar/Monitors/NetworkModeController.swift)、[NetworkModeCard.swift](../Sources/NetBar/Views/Components/NetworkModeCard.swift)
 - 上位原则: [engineering-principles.md](../../../docs/engineering-principles.md)

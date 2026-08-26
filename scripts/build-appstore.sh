@@ -19,8 +19,8 @@ cp "$ROOT_DIR/.build/release/NetBar" "$BIN_DIR/NetBar"
 cp "$ROOT_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$RES_DIR/AppIcon.icns"
 
-if find "$APP_DIR" -name 'netbar-mini-link-helper' -o -name 'install-netbar-mini-link-helper.command' | grep -q .; then
-    echo "App Store Lite artifact must not contain Mini Helper resources" >&2
+if find "$APP_DIR" \( -name 'netbar-mini-link-helper' -o -name 'install-netbar-mini-link-helper.command' -o -name 'NetBarMiniNetworkGuardian' -o -name 'netbar-route-safety-helper' \) | grep -q .; then
+    echo "App Store Lite artifact must not contain network Helper or Guardian resources" >&2
     exit 1
 fi
 if strings "$BIN_DIR/NetBar" | grep -Fq '/usr/bin/ssh'; then

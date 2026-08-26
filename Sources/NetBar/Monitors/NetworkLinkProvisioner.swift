@@ -28,7 +28,7 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
 #else
 final class NetworkLinkProvisioner: NetworkLinkProvisioning {
     static let miniHelperPath = "/Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper"
-    static let miniHelperProtocolVersion = 2
+    static let miniHelperProtocolVersion = 3
 
     private let runner: NetworkModeCommandRunning
     private let profile: MacMiniLinkProfile
@@ -250,7 +250,13 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
             forResource: "com.zjah.NetBarMiniLinkHelper",
             withExtension: "sudoers",
             subdirectory: "MiniLinkHelper"
-        ) else {
+        ),
+        let guardianPlist = bundle.url(
+            forResource: "com.zjah.NetBarMiniNetworkGuardian",
+            withExtension: "plist",
+            subdirectory: "MiniLinkHelper"
+        ),
+        let guardian = guardianExecutableURL() else {
             return .init(kind: .failed, message: "NetBar 安装包缺少 Mini Helper 资源")
         }
 
@@ -261,7 +267,7 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
             arguments: Self.sshArguments(
                 profile: profile,
                 host: host,
-                remoteArguments: ["/bin/mkdir", "-p", remoteDirectory]
+                remoteArguments: ["/bin/mkdir", "-m", "0700", remoteDirectory]
             )
         )
         guard mkdirResult.succeeded else {
@@ -276,7 +282,8 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
                 "-o", "ConnectTimeout=5",
                 "-o", "StrictHostKeyChecking=yes",
                 "-o", "HostKeyAlias=\(profile.fixedHostKeyAlias)",
-                helper.path, installer.path, profileURL.path, sudoers.path, destination
+                helper.path, installer.path, profileURL.path, sudoers.path,
+                guardian.path, guardianPlist.path, destination
             ]
         )
         guard copyResult.succeeded else {
@@ -317,6 +324,20 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
             }
         }
         return .init(kind: .failed, message: "等待 Mac mini 管理员授权超时，请完成终端中的安装后重试")
+    }
+
+    private func guardianExecutableURL() -> URL? {
+        if let bundled = bundle.url(
+            forResource: "NetBarMiniNetworkGuardian",
+            withExtension: nil,
+            subdirectory: "MiniLinkHelper"
+        ) {
+            return bundled
+        }
+        let executableSibling = URL(fileURLWithPath: CommandLine.arguments[0])
+            .deletingLastPathComponent()
+            .appendingPathComponent("NetBarMiniNetworkGuardian")
+        return fileManager.isExecutableFile(atPath: executableSibling.path) ? executableSibling : nil
     }
 
     private func readConfiguration(serviceName: String) throws -> NetworkServiceConfiguration {
