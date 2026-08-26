@@ -232,6 +232,32 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(mihomo.closeCount, 0)
     }
 
+    func testRedactedCurrentWiFiCanBeUsedWithoutScanningOrAssociation() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "en0", gateway: .carrierDown)
+        ])
+        let wifi = EmptyWiFiCandidateController()
+        let routeSafety = RecordingRouteSafetyController()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: wifi,
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { controller.activeCandidateName == "当前已连接 Wi-Fi" })
+        XCTAssertEqual(wifi.associationAttempts, 0)
+        XCTAssertEqual(routeSafety.appliedModes, [.localWiFi])
+    }
+
     func testAlreadyHealthyWiFiDoesNotRepeatRouteFallbackOrOpenCircuit() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "en0", gateway: .carrierDown),
@@ -571,6 +597,28 @@ private final class SequencedWiFiCandidateController: WiFiCandidateControlling {
     func associate(ssid: String) -> WiFiAssociationResult {
         associationAttempts.append(ssid)
         return results.isEmpty ? .unavailable : results.removeFirst()
+    }
+    func requestLocationAccess() {}
+    func startMonitoring(onChange: @escaping () -> Void) {}
+    func stopMonitoring() {}
+}
+
+private final class EmptyWiFiCandidateController: WiFiCandidateControlling {
+    private(set) var associationAttempts = 0
+
+    func snapshot(pinnedSSIDs: [String]) -> WiFiCandidateSnapshot {
+        .init(
+            candidates: [],
+            currentSSID: nil,
+            savedSSIDs: [],
+            visibleSSIDs: [],
+            locationAccess: .notDetermined
+        )
+    }
+
+    func associate(ssid: String) -> WiFiAssociationResult {
+        associationAttempts += 1
+        return .failed("must not associate a redacted SSID")
     }
     func requestLocationAccess() {}
     func startMonitoring(onChange: @escaping () -> Void) {}

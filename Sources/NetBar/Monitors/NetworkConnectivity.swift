@@ -138,6 +138,8 @@ protocol WiFiCandidateControlling: AnyObject {
 }
 
 struct WiFiCandidateSelector {
+    static let anonymousCurrentID = "wifi-current-associated"
+
     static func select(
         pinnedSSIDs: [String],
         savedSSIDs: Set<String>,
@@ -188,6 +190,19 @@ struct WiFiCandidateSelector {
     static func candidateID(for ssid: String) -> String {
         let digest = SHA256.hash(data: Data(ssid.utf8))
         return "wifi-" + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func anonymousCurrentCandidate() -> NetworkAccessCandidate {
+        NetworkAccessCandidate(
+            id: anonymousCurrentID,
+            kind: .wifi,
+            displayName: "当前已连接 Wi-Fi",
+            interfaceName: "en0",
+            state: .localOnly,
+            signalStrength: nil,
+            isPinned: true,
+            isCurrent: true
+        )
     }
 }
 

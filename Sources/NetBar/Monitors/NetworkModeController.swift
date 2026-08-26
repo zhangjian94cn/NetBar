@@ -1222,6 +1222,13 @@ final class NetworkModeController: ObservableObject {
         let pinned = candidateStore.load()
         let wifi = wifiCandidateController.snapshot(pinnedSSIDs: pinned)
         var candidates = wifi.candidates.filter { $0.isPinned && $0.state != .unavailable }
+        if candidates.isEmpty,
+           wifi.currentSSID == nil,
+           connectivityProber.probe(interfaceName: "en0").hasLocalNetwork {
+            // Location access can redact the current SSID. Reusing the already-associated
+            // interface does not expand the whitelist or attempt any unknown network.
+            candidates = [WiFiCandidateSelector.anonymousCurrentCandidate()]
+        }
         candidates.sort { lhs, rhs in
             if lhs.isCurrent != rhs.isCurrent { return lhs.isCurrent }
             return (pinned.firstIndex(of: lhs.displayName) ?? Int.max) < (pinned.firstIndex(of: rhs.displayName) ?? Int.max)
@@ -1332,7 +1339,8 @@ final class NetworkModeController: ObservableObject {
                 isError: !convergence,
                 activeCandidate: candidate.displayName
             )
-            eventLogger.record(event: "wifi_fallback_active", detail: message, candidateSSID: candidate.displayName)
+            let loggedSSID = candidate.id == WiFiCandidateSelector.anonymousCurrentID ? nil : candidate.displayName
+            eventLogger.record(event: "wifi_fallback_active", detail: message, candidateSSID: loggedSSID)
             DispatchQueue.main.async { [weak self] in self?.onNetworkChanged() }
             return true
         }
