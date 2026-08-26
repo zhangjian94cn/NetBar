@@ -40,60 +40,48 @@ struct NetworkModeCard: View {
                     .lineLimit(1)
             }
 
-            HStack(spacing: 6) {
-                Text("目标：\(controller.routePreference.displayName)")
+            HStack(spacing: 5) {
+                Text("当前出口")
+                    .foregroundColor(.secondary)
+                Text(currentOutletText)
+                    .fontWeight(.semibold)
                 Spacer()
-                Text("当前：\(currentOutletText)")
+                Text(controller.failoverPhase.displayName)
+                    .foregroundColor(.secondary)
             }
             .font(.system(size: 9))
-            .foregroundColor(.secondary)
 
-            HStack(spacing: 6) {
-                Text("阶段：\(controller.failoverPhase.displayName)")
-                Spacer()
-                if let candidate = controller.activeCandidateName {
-                    Text("候选：\(candidate)")
-                        .lineLimit(1)
-                }
+            HStack(spacing: 8) {
+                modeButton(.macMiniGateway, icon: "desktopcomputer")
+                modeButton(.localWiFi, icon: "wifi")
             }
-            .font(.system(size: 9))
-            .foregroundColor(.secondary)
 
             if let policyMessage = controller.policyMessage, !policyMessage.isEmpty {
                 Text(policyMessage)
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundColor(statusColor)
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
                     .lineLimit(2)
             }
 
-            HStack(spacing: 8) {
-                modeButton(.localWiFi, icon: "wifi")
-                modeButton(.macMiniGateway, icon: "desktopcomputer")
-            }
-
-            HStack(spacing: 8) {
-                Button {
-                    controller.useWiFiNow()
-                } label: {
-                    Label("立即用 Wi-Fi", systemImage: "wifi.exclamationmark")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(maxWidth: .infinity, minHeight: 23)
+            Button {
+                showsWiFiCandidates.toggle()
+                if showsWiFiCandidates { controller.refreshWiFiCandidates() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "wifi")
+                    Text("Wi-Fi 候选")
+                        .fontWeight(.medium)
+                    Text(candidateCountText)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Image(systemName: showsWiFiCandidates ? "chevron.up" : "chevron.down")
+                        .foregroundColor(.secondary)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(controller.isSwitching || controller.isProvisioning)
-
-                Button {
-                    showsWiFiCandidates.toggle()
-                    if showsWiFiCandidates { controller.refreshWiFiCandidates() }
-                } label: {
-                    Label("Wi-Fi 候选", systemImage: showsWiFiCandidates ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(maxWidth: .infinity, minHeight: 23)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .font(.system(size: 9))
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .padding(.top, 1)
 
             if showsWiFiCandidates {
                 wifiCandidateList
@@ -176,6 +164,7 @@ struct NetworkModeCard: View {
             ? controller.routePreference == .miniPreferred
             : controller.routePreference == .localWiFi
         let isEnabled = canSwitch(to: mode)
+        let selectedColor: Color = mode == .macMiniGateway ? .green : .blue
 
         return Button {
             controller.switchMode(to: mode)
@@ -183,14 +172,18 @@ struct NetworkModeCard: View {
             HStack(spacing: 5) {
                 Image(systemName: icon)
                     .font(.system(size: 10, weight: .semibold))
-                Text(mode == .macMiniGateway ? "自动（Mini 优先）" : "固定 Wi-Fi")
+                Text(mode == .macMiniGateway ? "Mac mini 优先" : "Wi-Fi 优先")
                     .font(.system(size: 10, weight: .semibold))
             }
             .foregroundColor(isSelected ? .white : .primary)
             .frame(maxWidth: .infinity, minHeight: 25)
             .background {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isSelected ? Color.accentColor : Color.primary.opacity(0.08))
+                    .fill(isSelected ? selectedColor.opacity(0.9) : Color.primary.opacity(0.06))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(isSelected ? selectedColor.opacity(0.35) : Color.primary.opacity(0.06), lineWidth: 0.5)
             }
             .contentShape(Rectangle())
         }
@@ -266,6 +259,11 @@ struct NetworkModeCard: View {
         return "本机 \(local) · Mini \(mini)"
     }
 
+    private var candidateCountText: String {
+        let count = controller.wifiCandidates.count
+        return count == 0 ? "未发现" : "\(count) 个"
+    }
+
     private var shouldOfferProvisioning: Bool {
         guard let snapshot = controller.snapshot else { return false }
         switch snapshot.linkState {
@@ -288,7 +286,7 @@ struct NetworkModeCard: View {
     private var wifiCandidateList: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(controller.wifiLocationAccess.displayName)
+                Text(candidateAccessText)
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
                 Spacer()
@@ -303,7 +301,7 @@ struct NetworkModeCard: View {
             }
 
             if controller.wifiCandidates.isEmpty {
-                Text("没有符合条件的已保存 Wi-Fi；请先在系统 Wi-Fi 菜单连接并置顶。")
+                Text("当前没有可用连接。允许定位后可发现附近已保存的 Wi-Fi。")
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
             } else {
@@ -320,7 +318,7 @@ struct NetworkModeCard: View {
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
-                        if candidate.isPinned {
+                        if candidate.id != WiFiCandidateSelector.anonymousCurrentID, candidate.isPinned {
                             Button { controller.moveWiFiCandidate(candidate.displayName, offset: -1) } label: {
                                 Image(systemName: "chevron.up")
                             }
@@ -331,14 +329,20 @@ struct NetworkModeCard: View {
                             }
                             .buttonStyle(.plain)
                         }
-                        Button {
-                            controller.setWiFiCandidate(candidate.displayName, pinned: !candidate.isPinned)
-                        } label: {
-                            Image(systemName: candidate.isPinned ? "star.fill" : "star")
-                                .foregroundColor(candidate.isPinned ? .yellow : .secondary)
+                        if candidate.id != WiFiCandidateSelector.anonymousCurrentID {
+                            Button {
+                                controller.setWiFiCandidate(candidate.displayName, pinned: !candidate.isPinned)
+                            } label: {
+                                Image(systemName: candidate.isPinned ? "star.fill" : "star")
+                                    .foregroundColor(candidate.isPinned ? .yellow : .secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help(candidate.isPinned ? "从自动候选中移除" : "加入自动候选并置顶")
+                        } else {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                                .help("当前连接可直接用于故障回退")
                         }
-                        .buttonStyle(.plain)
-                        .help(candidate.isPinned ? "从自动候选中移除" : "加入自动候选并置顶")
                     }
                     .padding(.vertical, 2)
                 }
@@ -352,6 +356,13 @@ struct NetworkModeCard: View {
         let signal = candidate.signalStrength.map { " · \($0) dBm" } ?? ""
         let current = candidate.isCurrent ? "当前连接 · " : ""
         return "\(current)\(candidate.state.displayName)\(signal)"
+    }
+
+    private var candidateAccessText: String {
+        if controller.wifiCandidates.contains(where: { $0.id == WiFiCandidateSelector.anonymousCurrentID }) {
+            return "当前连接可用；允许定位后可扫描其他 Wi-Fi"
+        }
+        return controller.wifiLocationAccess.displayName
     }
 
     private func openClash() {

@@ -29,6 +29,35 @@ final class NetworkConnectivityTests: XCTestCase {
         XCTAssertEqual(candidates.filter { $0.state != .unavailable }.map(\.displayName), ["Office Backup"])
     }
 
+    func testRedactedCurrentSSIDStillAppearsAsAnonymousCandidate() {
+        let candidates = WiFiCandidateSelector.select(
+            pinnedSSIDs: [],
+            savedSSIDs: ["Hidden by macOS"],
+            visibleSignals: [:],
+            currentSSID: nil,
+            locationAccess: .denied,
+            anonymousCurrentAssociated: true
+        )
+
+        XCTAssertEqual(candidates.map(\.id), [WiFiCandidateSelector.anonymousCurrentID])
+        XCTAssertEqual(candidates.first?.displayName, "当前已连接 Wi-Fi")
+        XCTAssertTrue(candidates.first?.isCurrent == true)
+        XCTAssertEqual(WiFiCandidateSelector.bestUsableCandidate(from: candidates)?.id, WiFiCandidateSelector.anonymousCurrentID)
+    }
+
+    func testNoAnonymousCandidateWithoutAnActiveWiFiAddress() {
+        let candidates = WiFiCandidateSelector.select(
+            pinnedSSIDs: [],
+            savedSSIDs: [],
+            visibleSignals: [:],
+            currentSSID: nil,
+            locationAccess: .denied,
+            anonymousCurrentAssociated: false
+        )
+
+        XCTAssertTrue(candidates.isEmpty)
+    }
+
     func testOpenVisibleNetworkIsNotAnAutomaticCandidate() {
         let candidates = WiFiCandidateSelector.select(
             pinnedSSIDs: ["Secured", "Open"],

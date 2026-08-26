@@ -93,7 +93,7 @@ enum NetworkFailoverPhase: String, Codable, Equatable {
         case .stableWiFiFallback: return "Wi-Fi 稳定降级"
         case .miniStabilizing: return "Mac mini 恢复确认中"
         case .routeFlapping: return "Mac mini 上游反复抖动"
-        case .manualWiFi: return "固定使用 Wi-Fi"
+        case .manualWiFi: return "Wi-Fi 优先"
         }
     }
 }
@@ -146,7 +146,8 @@ struct WiFiCandidateSelector {
         visibleSignals: [String: Int],
         securedSSIDs: Set<String>? = nil,
         currentSSID: String?,
-        locationAccess: WiFiLocationAccessState
+        locationAccess: WiFiLocationAccessState,
+        anonymousCurrentAssociated: Bool = false
     ) -> [NetworkAccessCandidate] {
         let allowedVisible: Set<String>
         if locationAccess == .allowed {
@@ -166,7 +167,7 @@ struct WiFiCandidateSelector {
             .filter { !orderedPinned.contains($0) }
             .sorted()
 
-        return displayOrder.map { ssid in
+        var candidates = displayOrder.map { ssid in
             NetworkAccessCandidate(
                 id: candidateID(for: ssid),
                 kind: .wifi,
@@ -178,6 +179,10 @@ struct WiFiCandidateSelector {
                 isCurrent: ssid == currentSSID
             )
         }
+        if currentSSID == nil, anonymousCurrentAssociated {
+            candidates.insert(anonymousCurrentCandidate(), at: 0)
+        }
+        return candidates
     }
 
     static func bestUsableCandidate(
@@ -363,7 +368,8 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
             visibleSignals: visibleSignals,
             securedSSIDs: securedSSIDs,
             currentSSID: current,
-            locationAccess: locationAccess
+            locationAccess: locationAccess,
+            anonymousCurrentAssociated: current == nil && hasActiveWiFiAddress()
         )
         return .init(
             candidates: candidates,
@@ -451,6 +457,16 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
             if let value, !value.isEmpty, value != "<redacted>" { return value }
         }
         return nil
+    }
+
+    private func hasActiveWiFiAddress() -> Bool {
+        let address = runner.run(executable: "/usr/sbin/ipconfig", arguments: ["getifaddr", "en0"])
+        guard address.succeeded,
+              !address.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        let interface = runner.run(executable: "/sbin/ifconfig", arguments: ["en0"])
+        return interface.succeeded && interface.standardOutput.contains("status: active")
     }
 }
 

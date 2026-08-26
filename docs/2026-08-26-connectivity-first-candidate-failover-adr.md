@@ -31,7 +31,7 @@
 
 ## Decision Outcome
 
-采用方案 4。候选集合为 CoreWLAN 发现的“附近可见、macOS 已保存、用户置顶”交集，并保持用户顺序。当前已连接且健康的白名单网络优先保留。CoreWLAN 扫描需要定位权限；权限被拒绝时不尝试其他 SSID。若系统同时隐藏当前 SSID 名称，但 `en0` 已经关联且具有 IPv4/网关，则允许把现有连接作为不持久化的匿名临时候选，只调整服务顺序，不执行关联。普通关联通过参数数组调用 `/usr/sbin/networksetup -setairportnetwork en0 <SSID>`，不提供密码，也不读取钥匙串。
+采用方案 4。主界面只提供“Mac mini 优先”和“Wi-Fi 优先”两个持久策略，不再暴露语义重叠的“固定 Wi-Fi”和“立即用 Wi-Fi”。候选集合为 CoreWLAN 发现的“附近可见、macOS 已保存、用户置顶”交集，并保持用户顺序。当前已连接且健康的白名单网络优先保留。CoreWLAN 扫描需要定位权限；权限被拒绝时不尝试其他 SSID。若系统同时隐藏当前 SSID 名称，但 `en0` 已经关联且具有 IPv4，则在候选池持续显示“当前已连接 Wi-Fi”，并允许把它作为不持久化的匿名候选；只调整服务顺序，不执行关联。普通关联通过参数数组调用 `/usr/sbin/networksetup -setairportnetwork en0 <SSID>`，不提供密码，也不读取钥匙串。
 
 `SCDynamicStore` 与 CoreWLAN 事件触发即时复检，10 秒定时器仅兜底。雷雳无载波、`bridge0`/固定地址丢失或 Peer 不可达是明确故障；先关联候选并验证 `en0` 的载波、IPv4 和网关。绑定直连 HTTPS 可用时采用 make-before-break。实机验证发现公司 Wi-Fi 会阻断绕过代理的 HTTPS，但系统与 Clash/TUN 数据面可用；此时允许短暂提升 Wi-Fi，并要求实际物理出口为 `en0`、系统 HTTPS 与 Clash HTTPS 同时成功，否则保持事实状态并继续候选/告警。Mini 公网探测失败属于不确定故障，Apple 和 Cloudflare HTTPS 连续三轮均失败才回退。
 
@@ -42,7 +42,7 @@
 ## Consequences
 
 - 正面：拔掉雷雳后不再等待远端网关状态；普通网络采用 make-before-break，公司网络阻断直连时以物理出口加现有代理/TUN 数据面验证可用性。
-- 正面：UI 能区分目标策略、当前物理出口、候选、5 分钟阶段和 Clash/TUN 未收敛，避免把服务顺序变化误报为恢复。
+- 正面：UI 用两个优先策略、当前物理出口和折叠候选列表表达状态，减少一次性动作与长期策略混淆；5 分钟阶段和 Clash/TUN 未收敛仍按需展示。
 - 正面：用户明确控制自动候选范围；定位拒绝和关联授权失败均 fail closed。
 - 正面：Mihomo PID、TUN 开关、配置文件和其他 VPN 进程保持不变。
 - 代价：Direct Full 增加 CoreWLAN/CoreLocation 依赖，并需要一次定位许可才能发现非当前候选。
