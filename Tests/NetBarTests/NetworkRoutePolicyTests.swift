@@ -237,6 +237,10 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(installerSource.contains("visudo -cf"))
         XCTAssertFalse(helperSource.contains("setdnsservers"))
         XCTAssertFalse(helperSource.contains("ifconfig utun"))
+        XCTAssertTrue(helperSource.contains("for attempt in {1..12}"))
+        XCTAssertTrue(helperSource.contains("mode_from_order"))
+        XCTAssertTrue(helperSource.contains("(( mini_index > wifi_index ))"))
+        XCTAssertTrue(helperSource.contains("(( wifi_index > mini_index ))"))
     }
 
     private func run(_ executable: String, _ arguments: [String]) -> NetworkModeCommandResult {

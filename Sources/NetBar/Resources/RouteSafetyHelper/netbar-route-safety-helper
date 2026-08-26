@@ -106,14 +106,26 @@ apply_mode() {
     local wifi_index=${order[(Ie)$WIFI_SERVICE]}
     local mini_index=${order[(Ie)$MINI_SERVICE]}
     (( wifi_index > 0 && mini_index > 0 )) || fail "required service missing from order"
-    if [[ "$target" == "mini" && mini_index > wifi_index ]] ||
-       [[ "$target" == "wifi" && wifi_index > mini_index ]]; then
+    local should_swap=0
+    if [[ "$target" == "mini" ]]; then
+        if (( mini_index > wifi_index )); then should_swap=1; fi
+    elif (( wifi_index > mini_index )); then
+        should_swap=1
+    fi
+    if (( should_swap )); then
         local tmp="${order[$wifi_index]}"
         order[$wifi_index]="${order[$mini_index]}"
         order[$mini_index]="$tmp"
     fi
     "$NETWORKSETUP" -ordernetworkservices "${order[@]}"
-    [[ "$(mode_from_order)" == "$target" ]] || fail "service order verification failed"
+    local attempt
+    for attempt in {1..12}; do
+        if [[ "$(mode_from_order)" == "$target" ]]; then
+            return 0
+        fi
+        "$SLEEP" 1
+    done
+    fail "service order verification failed"
 }
 
 verify_route() {
