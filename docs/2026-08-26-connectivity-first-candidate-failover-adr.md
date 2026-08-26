@@ -37,14 +37,15 @@
 
 回退后立即使用 Wi-Fi 保网；前 5 分钟每 10 秒探测 Mini，之后每 60 秒探测。Mini 绑定出口连续健康 30 秒且 Guardian `ready` 后自动切回。短期重复失败继续使用 10 分钟熔断。
 
-若 Wi-Fi 直连与物理出口均已验证，但经 Mihomo 和系统路径仍失败，NetBar 在每次物理出口变化中至多调用一次 `DELETE /connections`，并设 60 秒冷却。该 API 只关闭当前连接，使新拨号跟随新底层路由；NetBar 不调用重启、重载、TUN 开关或配置写接口。Clash 持久配置仍由 `dual-vpn-config` 独占治理。
+每次确认实际物理出口由 `bridge0` 切到 `en0`，或由 `en0` 切到 `bridge0`，NetBar 都通过 Mihomo Unix Socket 调用一次 `DELETE /connections`，随后等待并重新验证数据面；不能只在 Wi-Fi 直连成功但代理探测失败时才清理，因为公司网络可能禁止绕过代理直连，而且浏览器旧连接失败时新建的健康探测仍可能成功。相同物理出口的重复检查不清理连接；控制面暂不可用或清理失败时保留待处理转换，并按受控间隔重试。该 API 只关闭当前连接，使新拨号跟随新底层路由；NetBar 不调用重启、重载、TUN 开关或配置写接口。Clash 持久配置仍由 `dual-vpn-config` 独占治理。
 
 ## Consequences
 
 - 正面：拔掉雷雳后不再等待远端网关状态；普通网络采用 make-before-break，公司网络阻断直连时以物理出口加现有代理/TUN 数据面验证可用性。
 - 正面：UI 用两个优先策略、当前物理出口和折叠候选列表表达状态，减少一次性动作与长期策略混淆；5 分钟阶段和 Clash/TUN 未收敛仍按需展示。
 - 正面：用户明确控制自动候选范围；定位拒绝和关联授权失败均 fail closed。
-- 正面：Mihomo PID、TUN 开关、配置文件和其他 VPN 进程保持不变。
+- 正面：雷雳热插拔、自动回退、自动切回及手动切换都会刷新 Mihomo underlay；Mihomo PID、TUN 开关、配置文件和其他 VPN 进程保持不变。
+- 代价：物理出口真正变化时，已有 Mihomo 连接会被关闭并自动重拨，个别长连接会发生一次可恢复的短暂中断。
 - 代价：Direct Full 增加 CoreWLAN/CoreLocation 依赖，并需要一次定位许可才能发现非当前候选。
 - 代价：候选 Wi-Fi 需先由 macOS 保存凭据；Captive Portal 和需要额外授权的网络不会后台完成认证。
 - 限制：所有候选直连失败时只能告警；一次 Mihomo 连接清理后仍未收敛时保持 Wi-Fi 物理出口并提示打开 Clash。
@@ -53,6 +54,6 @@
 ## Verification
 
 - 候选交集、定位拒绝、排序、关联参数、Captive Portal 状态码与 5 分钟/60 秒阶段由 [NetworkConnectivityTests.swift](../Tests/NetBarTests/NetworkConnectivityTests.swift) 覆盖。
-- 雷雳明确故障立即回退、三轮不确定故障、第二候选、30 秒切回、切回回滚、Mihomo 单次清理和熔断由 [NetworkRoutePolicyTests.swift](../Tests/NetBarTests/NetworkRoutePolicyTests.swift) 覆盖。
+- 雷雳明确故障立即回退、三轮不确定故障、第二候选、30 秒切回、切回回滚、双向物理出口变化的 Mihomo 单次清理、同出口去重和熔断由 [NetworkRoutePolicyTests.swift](../Tests/NetBarTests/NetworkRoutePolicyTests.swift) 覆盖。
 - Helper 固定命令与无 DNS/VPN 写入边界继续由 [NetworkStaticLinkTests.swift](../Tests/NetBarTests/NetworkStaticLinkTests.swift) 覆盖。
 - 交付必须运行完整 `swift test`、Direct Full/App Store Lite 双构建、真实绑定 HTTPS、Helper/Guardian 状态回读，以及安装后二进制哈希和单进程检查。
