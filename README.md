@@ -18,7 +18,7 @@
 | 💾 持久化存储 | 流量数据写入磁盘，支持长期统计 |
 | 📅 多时间维度 | 1分钟 / 5分钟 / 1小时 / 今天 / 7天 / 30天 / 本月 |
 | 🌐 网络信息 | Wi-Fi 名称 + 本机 IP 地址 |
-| ⚡ Mac mini 链路 | 固定双端 IP、Mini 上游自愈、故障自动回退及稳定 30 秒后自动切回（Direct Full） |
+| ⚡ Mac mini 链路 | 固定双端 IP、Wi-Fi 候选保网、Mini 上游自愈、故障自动回退及稳定 30 秒后自动切回（Direct Full） |
 | 🖼 应用图标 | 自动识别进程对应的 macOS 应用图标 |
 | 🚀 开机自启 | 支持 Launch Agent 自动启动 |
 
@@ -71,7 +71,8 @@ NetBar/
     │   └── StatusBarController.swift     # 菜单栏控制 + 浮层面板管理
     ├── Monitors/                         # 核心监控服务
     │   ├── NetworkMonitor.swift          # 总网速 (sysctl)
-    │   ├── NetworkModeController.swift   # Wi-Fi / 雷雳物理出口检测、切换与回滚
+    │   ├── NetworkModeController.swift   # 候选编排、Wi-Fi / 雷雳物理出口检测、切换与回滚
+    │   ├── NetworkConnectivity.swift     # CoreWLAN 候选、分层 HTTPS 探测、事件与隐私日志
     │   ├── ProcessTrafficMonitor.swift   # 按应用流量（聚合 nettop + mihomo）
     │   ├── NettopParser.swift            # nettop 命令执行与解析
     │   ├── MihomoClient.swift            # Mihomo 代理 API 客户端
@@ -115,21 +116,32 @@ NetBar/
 
 Direct Full 版本会在弹出面板中显示“Mac mini 链路”卡片：
 
-- **本机 Wi-Fi**：持久使用 Wi-Fi 作为物理出口，雷雳仍可访问 Mac mini，并关闭自动切回。
-- **经 Mac mini**：启用“Mac mini 优先”。故障时自动回退 Wi-Fi；绑定 `bridge0` 的出口连续稳定 30 秒且 Mini Guardian 报告正常后自动切回。
+- **固定 Wi-Fi**：持久使用 Wi-Fi 作为物理出口，雷雳仍可访问 Mac mini，并关闭自动切回。
+- **自动（Mini 优先）**：Mini 健康时使用 Mini；雷雳断开、固定地址丢失或 Peer 不可达时立即回退到已验证 Wi-Fi，不离线等待。绑定 `bridge0` 的出口连续稳定 30 秒且 Mini Guardian 报告正常后自动切回。
+- **立即用 Wi-Fi**：只临时保网，不改变“Mini 优先”的长期策略。
+- **Wi-Fi 候选**：只自动尝试“附近可见、macOS 已保存、用户手动置顶”三者的交集；当前健康候选会保留，不为了排名主动换网。NetBar 不读取钥匙串或 Wi-Fi 密码。
 - **初始化/修复链路**：把 Mac mini 固定为 `192.168.2.1/24`、本机固定为 `192.168.2.2/24`。两端 `bridge0` 包含全部雷雳口，因此换到任意 Thunderbolt/USB4 口后不再依赖 DHCP。
+
+第一次展开候选池时，macOS 可能询问定位权限，这是 CoreWLAN 扫描附近 SSID 所需。拒绝后 NetBar 仍可验证当前已连接且已置顶的 Wi-Fi，但不会盲连其他不可见 SSID。需要密码、网页登录或管理员关联的网络只显示原因并跳过，后台不会弹授权框。
+
+回退后的前 5 分钟是 Mini 积极恢复窗口：Wi-Fi 已经保网，同时每 10 秒检查 Mini。满 5 分钟仍不可用会进入稳定 Wi-Fi 降级，Mini 检查降为每 60 秒一次；这 5 分钟不是断网等待时间。10 分钟内重复自动切回再失败会熔断 10 分钟，避免两个出口反复抖动。
 
 首次初始化需要在 Mac mini 终端和本机各完成一次管理员授权。Mini Helper v3 仅允许 `status`、`apply`、`rollback` 三个固定命令；本机 Route Safety Helper 仅允许 `status`、`prefer-wifi`、`prefer-mini`、`rollback`。NetBar 不接收或保存管理员密码。SSH 连接严格复用 `192.168.2.1` 已登记的主机密钥，不自动接受未知或变化的密钥。
 
 Mac mini 的上游固定为内置以太网 `en0`。`en0` 断开时，雷雳本地链路和 `192.168.2.1` 访问仍保持可用，MacBook 自动回退 Wi-Fi。Mini Guardian 不会重置无载波的网口；载波恢复后先等待 macOS 自行收敛，必要时只重新应用既定 Manual IPv4 和重拉 `com.apple.NetworkSharing`。它不调用 `-setdnsservers`，因此用户为公司网络配置的 DNS 保持不变。NetBar 不自动改用 Mini 的 USB 网卡或 Wi-Fi，原生 Internet Sharing 继续唯一管理 NAT/DHCP。
 
-状态语义：红色表示雷雳本地链路不可用；黄色表示 Mini 无载波、地址/共享恢复中、配置漂移、退避或出口抖动；绿色只表示固定链路、Mini Guardian 与绑定物理出口均已验证。多个公网探测目标中至少一个成功即可通过一轮，避免单一 ICMP 目标被屏蔽导致误判。
+状态语义：红色表示雷雳本地链路不可用；黄色表示 Mini 无载波、地址/共享恢复中、配置漂移、退避、出口抖动或 Clash/TUN 未收敛；绿色只表示固定链路、Mini Guardian 与绑定物理出口均已验证。明确链路故障立即回退；只有公网 HTTPS 不确定故障才需要三轮失败。Apple 与 Cloudflare 目标中至少一个返回预期状态即可通过，避免单目标被公司网络屏蔽导致误判。
+
+Wi-Fi 先验证载波、IPv4 和网关；能绑定 `en0` 直连 HTTPS 时采用 make-before-break。部分公司网络会阻断绕过代理的 HTTPS，这时 NetBar 允许短暂提升 Wi-Fi 后，以“实际物理出口为 `en0` 且系统 HTTPS、Clash HTTPS 均成功”确认保网，失败则如实告警。若直连正常但 Clash/System TUN 仍失败，NetBar 最多调用一次 Mihomo `DELETE /connections` 关闭旧连接，让新连接跟随新底层路由；它不退出、重启、重载 Clash，不切换 TUN，也不修改 Clash 配置。60 秒冷却内不会重复清理。
 
 查看 MacBook 侧状态转换：
 
 ```bash
 log show --last 1h --style compact --predicate 'subsystem == "com.zjah.NetBar" AND category == "network"'
+tail -n 100 ~/Library/Logs/NetBar/network-events.jsonl
 ```
+
+JSONL 只记录状态转换和修复动作，候选以 SHA-256 短标识保存，不写 SSID、BSSID、密码或代理凭据；日志上限 2 MB，并清理 7 天前的记录。
 
 查看 Mini Guardian 状态与日志：
 
@@ -138,7 +150,7 @@ sudo -n /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper status
 log show --last 1h --style compact --predicate 'subsystem == "com.zjah.NetBarMiniNetworkGuardian"'
 ```
 
-该功能不关闭或重启 Clash、aTrust、Tailscale、Amnezia 等 VPN，也不修改 Clash 配置。VPN 开启时公网 IP 仍可能显示 VPN 出口；卡片展示的是 VPN 下层的物理出口。系统设置即使仍显示黄色“未知状态”，也不影响 NetBar 根据载波、IP、网关、Ping 和默认路由给出的实测结果。
+该功能不关闭或重启 Clash、aTrust、Tailscale、Amnezia 等 VPN，也不修改 Clash 配置。Clash 持久配置（包括 IPv6）继续由 `dual-vpn-config` 独占治理。VPN 开启时公网 IP 仍可能显示 VPN 出口；卡片展示的是 VPN 下层的物理出口。系统设置即使仍显示黄色“未知状态”，也不影响 NetBar 根据载波、IP、网关、绑定 HTTPS 和默认路由给出的实测结果。
 
 App Store Lite 受沙盒限制，不包含网络模式切换、SSH 写入、初始化按钮或 Mini Helper 资源。
 

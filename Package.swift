@@ -21,6 +21,8 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags(["-framework", "Cocoa"]),
                 .unsafeFlags(["-framework", "SwiftUI"]),
+                .unsafeFlags(["-framework", "CoreWLAN"]),
+                .unsafeFlags(["-framework", "CoreLocation"]),
             ]
         ),
         .executableTarget(

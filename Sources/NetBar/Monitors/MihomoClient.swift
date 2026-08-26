@@ -22,6 +22,12 @@ enum MihomoClient {
         let startDate: Date?
     }
 
+    struct RuntimeConfiguration: Equatable {
+        let mixedPort: Int
+        let tunEnabled: Bool
+        let ipv6Enabled: Bool
+    }
+
     // MARK: - Public API
 
     /// 获取当前所有 Mihomo 连接的快照，key 为连接 ID
@@ -51,6 +57,51 @@ enum MihomoClient {
         }
     }
 
+    static func runtimeConfiguration() -> RuntimeConfiguration? {
+        guard let data = fetchControllerData(path: "/configs", timeout: "2"),
+              let response = try? JSONDecoder().decode(RuntimeConfigurationResponse.self, from: data) else {
+            return nil
+        }
+        return RuntimeConfiguration(
+            mixedPort: response.mixedPort,
+            tunEnabled: response.tun?.enable ?? false,
+            ipv6Enabled: response.ipv6 ?? false
+        )
+    }
+
+    static func probeHTTPS() -> Bool {
+        guard let configuration = runtimeConfiguration(), configuration.mixedPort > 0 else { return false }
+        let result = runCurlCommand(arguments: [
+            "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+            "--connect-timeout", "2", "--max-time", "4",
+            "--proxy", "http://127.0.0.1:\(configuration.mixedPort)",
+            "https://cp.cloudflare.com/generate_204"
+        ])
+        guard result.exitCode == 0,
+              let status = Int(result.output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return false
+        }
+        return (200..<400).contains(status)
+    }
+
+    /// Close only Mihomo's active connections so new dials follow the new underlay.
+    /// This does not reload configuration, toggle TUN, or restart the core process.
+    static func closeAllConnections() -> Bool {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return false }
+        var arguments = [
+            "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+            "--max-time", "2", "-X", "DELETE",
+            "--unix-socket", socketPath
+        ]
+        if !secret.isEmpty {
+            arguments += ["-H", "Authorization: Bearer \(secret)"]
+        }
+        arguments.append(controllerEndpoint(path: "/connections", useUnixHost: true))
+        let result = runCurlCommand(arguments: arguments)
+        let status = Int(result.output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        return result.exitCode == 0 && status == 204
+    }
+
     // MARK: - Network
 
     private static func fetchConnectionsData() -> Data? {
@@ -71,7 +122,31 @@ enum MihomoClient {
         ])
     }
 
+    private static func fetchControllerData(path: String, timeout: String) -> Data? {
+        var arguments = ["-sS", "--max-time", timeout]
+        let useSocket = FileManager.default.fileExists(atPath: socketPath)
+        if useSocket { arguments += ["--unix-socket", socketPath] }
+        if !secret.isEmpty { arguments += ["-H", "Authorization: Bearer \(secret)"] }
+        arguments.append(controllerEndpoint(path: path, useUnixHost: useSocket))
+        return runCurl(arguments: arguments)
+    }
+
+    private static func controllerEndpoint(path: String, useUnixHost: Bool) -> String {
+        if useUnixHost { return "http://unix\(path)" }
+        guard var components = URLComponents(string: controllerURL) else { return controllerURL }
+        components.path = path
+        components.query = nil
+        components.fragment = nil
+        return components.url?.absoluteString ?? controllerURL
+    }
+
     private static func runCurl(arguments: [String]) -> Data? {
+        let result = runCurlCommand(arguments: arguments)
+        guard result.exitCode == 0, let data = result.output.data(using: .utf8), !data.isEmpty else { return nil }
+        return data
+    }
+
+    private static func runCurlCommand(arguments: [String]) -> (exitCode: Int32, output: String) {
         let process = Process()
         let pipe = Pipe()
 
@@ -83,14 +158,13 @@ enum MihomoClient {
         do {
             try process.run()
         } catch {
-            return nil
+            return (-1, "")
         }
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
-        guard process.terminationStatus == 0, !data.isEmpty else { return nil }
-        return data
+        return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
     }
 
     // MARK: - Parsing
@@ -144,6 +218,19 @@ enum MihomoClient {
 
     private struct ConnectionsResponse: Decodable {
         let connections: [Connection]
+    }
+
+    private struct RuntimeConfigurationResponse: Decodable {
+        struct Tun: Decodable { let enable: Bool? }
+        let mixedPort: Int
+        let tun: Tun?
+        let ipv6: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case mixedPort = "mixed-port"
+            case tun
+            case ipv6
+        }
     }
 
     private struct Connection: Decodable {

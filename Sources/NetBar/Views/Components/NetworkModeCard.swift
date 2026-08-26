@@ -3,6 +3,7 @@ import SwiftUI
 
 struct NetworkModeCard: View {
     @ObservedObject var controller: NetworkModeController
+    @State private var showsWiFiCandidates = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -47,6 +48,17 @@ struct NetworkModeCard: View {
             .font(.system(size: 9))
             .foregroundColor(.secondary)
 
+            HStack(spacing: 6) {
+                Text("阶段：\(controller.failoverPhase.displayName)")
+                Spacer()
+                if let candidate = controller.activeCandidateName {
+                    Text("候选：\(candidate)")
+                        .lineLimit(1)
+                }
+            }
+            .font(.system(size: 9))
+            .foregroundColor(.secondary)
+
             if let policyMessage = controller.policyMessage, !policyMessage.isEmpty {
                 Text(policyMessage)
                     .font(.system(size: 9, weight: .medium))
@@ -57,6 +69,46 @@ struct NetworkModeCard: View {
             HStack(spacing: 8) {
                 modeButton(.localWiFi, icon: "wifi")
                 modeButton(.macMiniGateway, icon: "desktopcomputer")
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    controller.useWiFiNow()
+                } label: {
+                    Label("立即用 Wi-Fi", systemImage: "wifi.exclamationmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(maxWidth: .infinity, minHeight: 23)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(controller.isSwitching || controller.isProvisioning)
+
+                Button {
+                    showsWiFiCandidates.toggle()
+                    if showsWiFiCandidates { controller.refreshWiFiCandidates() }
+                } label: {
+                    Label("Wi-Fi 候选", systemImage: showsWiFiCandidates ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(maxWidth: .infinity, minHeight: 23)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            if showsWiFiCandidates {
+                wifiCandidateList
+            }
+
+            if let action = controller.lastClashAction {
+                HStack(spacing: 5) {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                    Text(action)
+                    Spacer()
+                    Button("打开 Clash") { openClash() }
+                        .buttonStyle(.link)
+                }
+                .font(.system(size: 9))
+                .foregroundColor(.orange)
             }
 
             if shouldOfferProvisioning {
@@ -131,7 +183,7 @@ struct NetworkModeCard: View {
             HStack(spacing: 5) {
                 Image(systemName: icon)
                     .font(.system(size: 10, weight: .semibold))
-                Text(mode.displayName)
+                Text(mode == .macMiniGateway ? "自动（Mini 优先）" : "固定 Wi-Fi")
                     .font(.system(size: 10, weight: .semibold))
             }
             .foregroundColor(isSelected ? .white : .primary)
@@ -200,7 +252,11 @@ struct NetworkModeCard: View {
     }
 
     private var currentOutletText: String {
-        controller.snapshot?.effectiveMode?.displayName ?? "待检测"
+        if let activeCandidate = controller.activeCandidateName,
+           controller.snapshot?.effectiveMode == .localWiFi {
+            return "Wi-Fi · \(activeCandidate)"
+        }
+        return controller.snapshot?.effectiveMode?.displayName ?? "待检测"
     }
 
     private var addressText: String {
@@ -225,6 +281,89 @@ struct NetworkModeCard: View {
             NSWorkspace.shared.open(url)
         } else {
             NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+        }
+    }
+
+    @ViewBuilder
+    private var wifiCandidateList: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(controller.wifiLocationAccess.displayName)
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+                Spacer()
+                if controller.wifiLocationAccess == .notDetermined {
+                    Button("允许扫描") { controller.requestWiFiLocationAccess() }
+                        .buttonStyle(.link)
+                        .font(.system(size: 9))
+                }
+                Button("刷新") { controller.refreshWiFiCandidates() }
+                    .buttonStyle(.link)
+                    .font(.system(size: 9))
+            }
+
+            if controller.wifiCandidates.isEmpty {
+                Text("没有符合条件的已保存 Wi-Fi；请先在系统 Wi-Fi 菜单连接并置顶。")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(Array(controller.wifiCandidates.enumerated()), id: \.element.id) { index, candidate in
+                    HStack(spacing: 6) {
+                        Image(systemName: candidate.isCurrent ? "wifi.circle.fill" : "wifi")
+                            .foregroundColor(candidate.state == .internetReady ? .green : .secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(candidate.displayName)
+                                .font(.system(size: 9, weight: candidate.isCurrent ? .semibold : .regular))
+                                .lineLimit(1)
+                            Text(candidateDetail(candidate))
+                                .font(.system(size: 8))
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        if candidate.isPinned {
+                            Button { controller.moveWiFiCandidate(candidate.displayName, offset: -1) } label: {
+                                Image(systemName: "chevron.up")
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(index == 0)
+                            Button { controller.moveWiFiCandidate(candidate.displayName, offset: 1) } label: {
+                                Image(systemName: "chevron.down")
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        Button {
+                            controller.setWiFiCandidate(candidate.displayName, pinned: !candidate.isPinned)
+                        } label: {
+                            Image(systemName: candidate.isPinned ? "star.fill" : "star")
+                                .foregroundColor(candidate.isPinned ? .yellow : .secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help(candidate.isPinned ? "从自动候选中移除" : "加入自动候选并置顶")
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+        .padding(8)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func candidateDetail(_ candidate: NetworkAccessCandidate) -> String {
+        let signal = candidate.signalStrength.map { " · \($0) dBm" } ?? ""
+        let current = candidate.isCurrent ? "当前连接 · " : ""
+        return "\(current)\(candidate.state.displayName)\(signal)"
+    }
+
+    private func openClash() {
+        let applications = [
+            "/Applications/Clash Verge.app",
+            "/Applications/Clash Verge Rev.app"
+        ]
+        if let path = applications.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+            NSWorkspace.shared.openApplication(
+                at: URL(fileURLWithPath: path),
+                configuration: NSWorkspace.OpenConfiguration()
+            )
         }
     }
 }

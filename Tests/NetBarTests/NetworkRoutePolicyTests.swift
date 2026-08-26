@@ -12,6 +12,10 @@ final class NetworkRoutePolicyTests: XCTestCase {
         let controller = NetworkModeController(
             provider: provider,
             routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
             userDefaults: defaults
         )
 
@@ -22,6 +26,10 @@ final class NetworkRoutePolicyTests: XCTestCase {
         let reloaded = NetworkModeController(
             provider: provider,
             routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
             userDefaults: defaults
         )
         XCTAssertEqual(reloaded.routePreference, .localWiFi)
@@ -41,12 +49,16 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(state.consecutiveFailures, 1)
     }
 
-    func testTwoFallbacksWithinTenMinutesOpenCircuitForTenMinutes() {
+    func testTwoFailedAutomaticReturnsWithinTenMinutesOpenCircuitForTenMinutes() {
         let start = Date(timeIntervalSince1970: 2_000)
         var state = NetworkRoutePolicyState(preference: .miniPreferred)
 
         state.recordAutomaticFallback(at: start)
+        XCTAssertTrue(state.automaticFallbacks.isEmpty, "首次降级前没有自动切回，不应计入抖动")
+        state.recordAutomaticReturn(at: start.addingTimeInterval(60))
+        state.recordAutomaticFallback(at: start.addingTimeInterval(120))
         XCTAssertNil(state.circuitBreakerUntil)
+        state.recordAutomaticReturn(at: start.addingTimeInterval(240))
         state.recordAutomaticFallback(at: start.addingTimeInterval(300))
 
         XCTAssertEqual(state.circuitBreakerUntil, start.addingTimeInterval(900))
@@ -59,6 +71,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
     func testControllerFallsBackImmediatelyForDefinitiveCarrierLoss() throws {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
             policySnapshot(interface: "en0", gateway: .carrierDown)
         ])
         let routeSafety = RecordingRouteSafetyController()
@@ -66,7 +79,12 @@ final class NetworkRoutePolicyTests: XCTestCase {
         let controller = NetworkModeController(
             provider: provider,
             routeSafetyController: routeSafety,
-            userDefaults: defaults
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: defaults,
+            sleeper: { _ in }
         )
 
         controller.runPolicyCheckNow()
@@ -74,9 +92,8 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { routeSafety.appliedModes == [.localWiFi] })
     }
 
-    func testControllerRequiresThreeGenericBoundEgressFailuresBeforeFallback() {
+    func testControllerUsesThreeRapidHTTPSFailuresBeforeFallback() {
         let provider = SequencedPolicyProvider(snapshots: [
-            policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable),
             policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable),
             policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable),
             policySnapshot(interface: "en0", gateway: .boundEgressUnavailable)
@@ -85,16 +102,15 @@ final class NetworkRoutePolicyTests: XCTestCase {
         let controller = NetworkModeController(
             provider: provider,
             routeSafetyController: routeSafety,
-            userDefaults: isolatedDefaults()
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber { interface in
+                Self.probe(interface: interface, ready: interface == "en0")
+            },
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
         )
-
-        controller.runPolicyCheckNow()
-        XCTAssertTrue(waitUntil { provider.readCount >= 1 })
-        XCTAssertTrue(routeSafety.appliedModes.isEmpty)
-
-        controller.runPolicyCheckNow()
-        XCTAssertTrue(waitUntil { provider.readCount >= 2 })
-        XCTAssertTrue(routeSafety.appliedModes.isEmpty)
 
         controller.runPolicyCheckNow()
         XCTAssertTrue(waitUntil { routeSafety.appliedModes == [.localWiFi] })
@@ -108,6 +124,10 @@ final class NetworkRoutePolicyTests: XCTestCase {
         let controller = NetworkModeController(
             provider: provider,
             routeSafetyController: RecordingRouteSafetyController(),
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
             userDefaults: isolatedDefaults()
         )
 
@@ -115,6 +135,127 @@ final class NetworkRoutePolicyTests: XCTestCase {
 
         XCTAssertTrue(waitUntil { provider.readCount == 1 })
         XCTAssertEqual(provider.helperReadCount, 0)
+    }
+
+    func testWiFiFallbackSkipsFailedCandidateAndUsesNextPinnedNetwork() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "en0", gateway: .carrierDown)
+        ])
+        let wifi = SequencedWiFiCandidateController(
+            names: ["Primary", "Backup"],
+            results: [.failed("authentication failed"), .connected]
+        )
+        let routeSafety = RecordingRouteSafetyController()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: wifi,
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { controller.activeCandidateName == "Backup" })
+        XCTAssertEqual(wifi.associationAttempts, ["Primary", "Backup"])
+        XCTAssertEqual(routeSafety.appliedModes, [.localWiFi])
+    }
+
+    func testWiFiFallbackClosesMihomoConnectionsOnceThenRevalidates() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "en0", gateway: .carrierDown)
+        ])
+        let degraded = Self.probe(interface: "en0", ready: false, directReady: true)
+        let prober = SequencedConnectivityProber(results: [
+            degraded,
+            degraded,
+            Self.probe(interface: "en0", ready: true)
+        ])
+        let mihomo = CountingMihomoRecovery()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: RecordingRouteSafetyController(),
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: prober,
+            mihomoRecovery: mihomo,
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { controller.lastClashAction == "已清理 Mihomo 旧连接" })
+        XCTAssertEqual(mihomo.closeCount, 1)
+        XCTAssertEqual(controller.activeCandidateName, "Test WiFi")
+    }
+
+    func testManagedWiFiFallbackAcceptsHealthyClashDataPlaneWithoutDirectHTTPS() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "en0", gateway: .carrierDown)
+        ])
+        let managed = ConnectivityProbeResult(
+            interfaceName: "en0",
+            carrierActive: true,
+            ipv4Address: "192.168.219.173",
+            gateway: "192.168.219.194",
+            directHTTPSReachable: false,
+            clashControllerReachable: true,
+            clashHTTPSReachable: true,
+            systemHTTPSReachable: true,
+            physicalDefaultInterface: "en0"
+        )
+        let mihomo = CountingMihomoRecovery()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: RecordingRouteSafetyController(),
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: SequencedConnectivityProber(results: [managed, managed]),
+            mihomoRecovery: mihomo,
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { controller.policyMessage == "Wi-Fi 已保网 · 直连受限，Clash/TUN 正常" })
+        XCTAssertEqual(mihomo.closeCount, 0)
+    }
+
+    func testAlreadyHealthyWiFiDoesNotRepeatRouteFallbackOrOpenCircuit() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .carrierDown),
+            policySnapshot(interface: "en0", gateway: .carrierDown)
+        ])
+        let routeSafety = RecordingRouteSafetyController()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { provider.readCount == 1 })
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { provider.readCount == 2 })
+
+        XCTAssertTrue(routeSafety.appliedModes.isEmpty)
+        XCTAssertNotEqual(controller.failoverPhase, .routeFlapping)
     }
 
     func testControllerSwitchesBackOnlyAfterThirtyStableSeconds() throws {
@@ -129,8 +270,13 @@ final class NetworkRoutePolicyTests: XCTestCase {
         let controller = NetworkModeController(
             provider: provider,
             routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
             userDefaults: isolatedDefaults(),
-            now: { currentTime }
+            now: { currentTime },
+            sleeper: { _ in }
         )
 
         controller.runPolicyCheckNow()
@@ -140,7 +286,10 @@ final class NetworkRoutePolicyTests: XCTestCase {
         currentTime = currentTime.addingTimeInterval(31)
         controller.runPolicyCheckNow()
 
-        XCTAssertTrue(waitUntil { routeSafety.appliedModes == [.macMiniGateway] })
+        XCTAssertTrue(
+            waitUntil { routeSafety.appliedModes == [.macMiniGateway] },
+            "modes=\(routeSafety.appliedModes) reads=\(provider.readCount) message=\(controller.policyMessage ?? "nil")"
+        )
     }
 
     func testControllerRestoresWiFiWhenAutomaticSwitchVerificationFails() throws {
@@ -149,6 +298,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
             policySnapshot(interface: "en0", gateway: .ready),
             policySnapshot(interface: "en0", gateway: .ready),
             policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable),
+            policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable),
             policySnapshot(interface: "en0", gateway: .boundEgressUnavailable)
         ])
         provider.helperStatus = readyHelperStatus()
@@ -156,8 +306,19 @@ final class NetworkRoutePolicyTests: XCTestCase {
         let controller = NetworkModeController(
             provider: provider,
             routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: SequencedConnectivityProber(results: [
+                Self.probe(interface: "bridge0", ready: true),
+                Self.probe(interface: "bridge0", ready: true),
+                Self.probe(interface: "bridge0", ready: false),
+                Self.probe(interface: "en0", ready: true),
+                Self.probe(interface: "en0", ready: true)
+            ]),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
             userDefaults: isolatedDefaults(),
-            now: { currentTime }
+            now: { currentTime },
+            sleeper: { _ in }
         )
 
         controller.runPolicyCheckNow()
@@ -165,9 +326,10 @@ final class NetworkRoutePolicyTests: XCTestCase {
         currentTime = currentTime.addingTimeInterval(31)
         controller.runPolicyCheckNow()
 
-        XCTAssertTrue(waitUntil {
-            routeSafety.appliedModes == [.macMiniGateway, .localWiFi]
-        })
+        XCTAssertTrue(
+            waitUntil { routeSafety.appliedModes == [.macMiniGateway, .localWiFi] },
+            "modes=\(routeSafety.appliedModes) reads=\(provider.readCount) message=\(controller.policyMessage ?? "nil")"
+        )
     }
 
     func testHelperV3DecodesGuardianAndClassifiesSpecificFailure() throws {
@@ -327,6 +489,138 @@ final class NetworkRoutePolicyTests: XCTestCase {
             )
         )
     }
+
+    fileprivate static func probe(
+        interface: String,
+        ready: Bool,
+        directReady: Bool? = nil
+    ) -> ConnectivityProbeResult {
+        ConnectivityProbeResult(
+            interfaceName: interface,
+            carrierActive: true,
+            ipv4Address: interface == "en0" ? "10.0.0.2" : "192.168.2.2",
+            gateway: interface == "en0" ? "10.0.0.1" : "192.168.2.1",
+            directHTTPSReachable: directReady ?? ready,
+            clashControllerReachable: true,
+            clashHTTPSReachable: ready,
+            systemHTTPSReachable: ready,
+            physicalDefaultInterface: interface
+        )
+    }
+}
+
+private final class PolicyWiFiCandidateController: WiFiCandidateControlling {
+    func snapshot(pinnedSSIDs: [String]) -> WiFiCandidateSnapshot {
+        let candidate = NetworkAccessCandidate(
+            id: WiFiCandidateSelector.candidateID(for: "Test WiFi"),
+            kind: .wifi,
+            displayName: "Test WiFi",
+            interfaceName: "en0",
+            state: .internetReady,
+            signalStrength: -45,
+            isPinned: true,
+            isCurrent: true
+        )
+        return .init(
+            candidates: [candidate],
+            currentSSID: "Test WiFi",
+            savedSSIDs: ["Test WiFi"],
+            visibleSSIDs: ["Test WiFi"],
+            locationAccess: .allowed
+        )
+    }
+
+    func associate(ssid: String) -> WiFiAssociationResult { .connected }
+    func requestLocationAccess() {}
+    func startMonitoring(onChange: @escaping () -> Void) {}
+    func stopMonitoring() {}
+}
+
+private final class SequencedWiFiCandidateController: WiFiCandidateControlling {
+    private let names: [String]
+    private var results: [WiFiAssociationResult]
+    private(set) var associationAttempts: [String] = []
+
+    init(names: [String], results: [WiFiAssociationResult]) {
+        self.names = names
+        self.results = results
+    }
+
+    func snapshot(pinnedSSIDs: [String]) -> WiFiCandidateSnapshot {
+        let candidates = names.map {
+            NetworkAccessCandidate(
+                id: WiFiCandidateSelector.candidateID(for: $0),
+                kind: .wifi,
+                displayName: $0,
+                interfaceName: "en0",
+                state: .localOnly,
+                signalStrength: -55,
+                isPinned: true,
+                isCurrent: false
+            )
+        }
+        return .init(
+            candidates: candidates,
+            currentSSID: nil,
+            savedSSIDs: Set(names),
+            visibleSSIDs: Set(names),
+            locationAccess: .allowed
+        )
+    }
+
+    func associate(ssid: String) -> WiFiAssociationResult {
+        associationAttempts.append(ssid)
+        return results.isEmpty ? .unavailable : results.removeFirst()
+    }
+    func requestLocationAccess() {}
+    func startMonitoring(onChange: @escaping () -> Void) {}
+    func stopMonitoring() {}
+}
+
+private final class PolicyConnectivityProber: ConnectivityProbing {
+    private let result: (String) -> ConnectivityProbeResult
+
+    init(result: @escaping (String) -> ConnectivityProbeResult = {
+        NetworkRoutePolicyTests.probe(interface: $0, ready: true)
+    }) {
+        self.result = result
+    }
+
+    func probe(interfaceName: String) -> ConnectivityProbeResult { result(interfaceName) }
+}
+
+private final class SequencedConnectivityProber: ConnectivityProbing {
+    private let lock = NSLock()
+    private var results: [ConnectivityProbeResult]
+
+    init(results: [ConnectivityProbeResult]) { self.results = results }
+
+    func probe(interfaceName: String) -> ConnectivityProbeResult {
+        lock.lock()
+        defer { lock.unlock() }
+        if results.count > 1 { return results.removeFirst() }
+        return results.first ?? NetworkRoutePolicyTests.probe(interface: interfaceName, ready: false)
+    }
+}
+
+private final class PolicyMihomoRecovery: MihomoRouteRecovering {
+    func isControllerAvailable() -> Bool { true }
+    func probeHTTPS() -> Bool { true }
+    func closeAllConnections() -> Bool { true }
+}
+
+private final class CountingMihomoRecovery: MihomoRouteRecovering {
+    private(set) var closeCount = 0
+    func isControllerAvailable() -> Bool { true }
+    func probeHTTPS() -> Bool { false }
+    func closeAllConnections() -> Bool {
+        closeCount += 1
+        return true
+    }
+}
+
+private final class PolicyEventLogger: NetworkEventLogging {
+    func record(event: String, detail: String, candidateSSID: String?) {}
 }
 
 private final class PolicySnapshotProvider: NetworkModeSystemProviding {
