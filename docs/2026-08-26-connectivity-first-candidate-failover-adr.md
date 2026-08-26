@@ -31,7 +31,7 @@
 
 ## Decision Outcome
 
-采用方案 4。候选集合为 CoreWLAN 发现的“附近可见、macOS 已保存、用户置顶”交集，并保持用户顺序。当前已连接且健康的白名单网络优先保留。CoreWLAN 扫描需要定位权限；权限被拒绝时只允许当前已关联的白名单网络。关联通过参数数组调用 `/usr/sbin/networksetup -setairportnetwork en0 <SSID>`，不提供密码，也不读取钥匙串。
+采用方案 4。候选集合为 CoreWLAN 发现的“附近可见、macOS 已保存、用户置顶”交集，并保持用户顺序。当前已连接且健康的白名单网络优先保留。CoreWLAN 扫描需要定位权限；权限被拒绝时不尝试其他 SSID。若系统同时隐藏当前 SSID 名称，但 `en0` 已经关联且具有 IPv4/网关，则允许把现有连接作为不持久化的匿名临时候选，只调整服务顺序，不执行关联。普通关联通过参数数组调用 `/usr/sbin/networksetup -setairportnetwork en0 <SSID>`，不提供密码，也不读取钥匙串。
 
 `SCDynamicStore` 与 CoreWLAN 事件触发即时复检，10 秒定时器仅兜底。雷雳无载波、`bridge0`/固定地址丢失或 Peer 不可达是明确故障；先关联候选并验证 `en0` 的载波、IPv4 和网关。绑定直连 HTTPS 可用时采用 make-before-break。实机验证发现公司 Wi-Fi 会阻断绕过代理的 HTTPS，但系统与 Clash/TUN 数据面可用；此时允许短暂提升 Wi-Fi，并要求实际物理出口为 `en0`、系统 HTTPS 与 Clash HTTPS 同时成功，否则保持事实状态并继续候选/告警。Mini 公网探测失败属于不确定故障，Apple 和 Cloudflare HTTPS 连续三轮均失败才回退。
 
