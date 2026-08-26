@@ -898,20 +898,6 @@ final class NetworkModeController: ObservableObject {
         refreshWiFiCandidates()
     }
 
-    func useWiFiNow() {
-        guard !isSwitching, !isProvisioning else { return }
-        isSwitching = true
-        errorMessage = nil
-        workQueue.async { [weak self] in
-            guard let self else { return }
-            let result = self.fallbackToVerifiedWiFi(at: self.now(), reason: "用户请求立即使用 Wi-Fi", automatic: false)
-            DispatchQueue.main.async {
-                self.isSwitching = false
-                if !result { self.errorMessage = self.fallbackFailureMessage ?? self.policyMessage ?? "没有可用的 Wi-Fi 候选" }
-            }
-        }
-    }
-
     func refresh() {
         guard !isSwitching, !isProvisioning else { return }
         workQueue.async { [weak self] in
@@ -941,7 +927,7 @@ final class NetworkModeController: ObservableObject {
         workQueue.async { [weak self] in
             guard let self else { return }
             if target == .localWiFi {
-                let succeeded = self.fallbackToVerifiedWiFi(at: self.now(), reason: "用户选择固定 Wi-Fi", automatic: false)
+                let succeeded = self.fallbackToVerifiedWiFi(at: self.now(), reason: "用户选择 Wi-Fi 优先", automatic: false)
                 DispatchQueue.main.async {
                     self.isSwitching = false
                     if !succeeded { self.errorMessage = self.fallbackFailureMessage ?? self.policyMessage ?? "白名单中没有可验证的 Wi-Fi" }
@@ -1017,7 +1003,7 @@ final class NetworkModeController: ObservableObject {
         }
         userDefaults.set(preference.rawValue, forKey: Self.preferenceKey)
         failoverPhase = preference == .miniPreferred ? .miniStabilizing : .manualWiFi
-        policyMessage = preference == .miniPreferred ? "目标：自动（Mini 优先）" : "目标：固定 Wi-Fi"
+        policyMessage = preference == .miniPreferred ? "优先使用 Mac mini，可用性异常时自动回退 Wi-Fi" : "优先使用 Wi-Fi，雷雳链路保持可访问"
         stabilizationRemaining = nil
     }
 

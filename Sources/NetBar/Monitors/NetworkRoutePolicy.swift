@@ -6,8 +6,8 @@ enum NetworkRoutePreference: String, Codable, Equatable {
 
     var displayName: String {
         switch self {
-        case .miniPreferred: return "自动（Mini 优先）"
-        case .localWiFi: return "固定 Wi-Fi"
+        case .miniPreferred: return "Mac mini 优先"
+        case .localWiFi: return "Wi-Fi 优先"
         }
     }
 }
