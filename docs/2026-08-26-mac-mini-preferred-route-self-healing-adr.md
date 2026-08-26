@@ -5,6 +5,7 @@
 - 范围: NetBar Direct Full / MacBook 路由策略与 Mac mini 上游恢复
 - 相关源码: [NetworkRoutePolicy.swift](../Sources/NetBar/Monitors/NetworkRoutePolicy.swift)、[NetworkModeController.swift](../Sources/NetBar/Monitors/NetworkModeController.swift)、[Mini Guardian](../Sources/NetBarMiniNetworkGuardian/main.swift)、[Guardian 恢复规划器](../Sources/NetBarMiniNetworkGuardianSupport/RecoveryPlanner.swift)
 - 被扩展决策: [2026-08-24-network-mode-switch-adr.md](2026-08-24-network-mode-switch-adr.md)、[2026-08-25-thunderbolt-static-link-adr.md](2026-08-25-thunderbolt-static-link-adr.md)
+- 部分被取代: [2026-08-26-connectivity-first-candidate-failover-adr.md](2026-08-26-connectivity-first-candidate-failover-adr.md) 将固定双候选扩展为 Wi-Fi 白名单候选池，并将定时检查改为事件优先、定时兜底。
 - 上位原则: [engineering-principles.md](../../../docs/engineering-principles.md)
 
 ## Context and Problem Statement

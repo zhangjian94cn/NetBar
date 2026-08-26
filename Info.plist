@@ -18,5 +18,7 @@
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/> <!-- 重要：作为仅菜单栏应用运行，无 Dock 图标 -->
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>NetBar 使用定位权限识别附近且已保存的 Wi-Fi，只用于网络候选切换，不记录位置。</string>
 </dict>
 </plist>

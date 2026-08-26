@@ -6,8 +6,8 @@ enum NetworkRoutePreference: String, Codable, Equatable {
 
     var displayName: String {
         switch self {
-        case .miniPreferred: return "Mac mini 优先"
-        case .localWiFi: return "本机 Wi-Fi"
+        case .miniPreferred: return "自动（Mini 优先）"
+        case .localWiFi: return "固定 Wi-Fi"
         }
     }
 }
@@ -94,6 +94,35 @@ struct NetworkRoutePolicyState: Equatable {
     var consecutiveFailures = 0
     var automaticFallbacks: [Date] = []
     var circuitBreakerUntil: Date?
+    var fallbackStartedAt: Date?
+    var lastSlowProbeAt: Date?
+    var lastClashRecoveryAt: Date?
+    var lastAutomaticReturnAt: Date?
+    var phase: NetworkFailoverPhase
+
+    init(
+        preference: NetworkRoutePreference,
+        readySince: Date? = nil,
+        consecutiveFailures: Int = 0,
+        automaticFallbacks: [Date] = [],
+        circuitBreakerUntil: Date? = nil,
+        fallbackStartedAt: Date? = nil,
+        lastSlowProbeAt: Date? = nil,
+        lastClashRecoveryAt: Date? = nil,
+        lastAutomaticReturnAt: Date? = nil,
+        phase: NetworkFailoverPhase? = nil
+    ) {
+        self.preference = preference
+        self.readySince = readySince
+        self.consecutiveFailures = consecutiveFailures
+        self.automaticFallbacks = automaticFallbacks
+        self.circuitBreakerUntil = circuitBreakerUntil
+        self.fallbackStartedAt = fallbackStartedAt
+        self.lastSlowProbeAt = lastSlowProbeAt
+        self.lastClashRecoveryAt = lastClashRecoveryAt
+        self.lastAutomaticReturnAt = lastAutomaticReturnAt
+        self.phase = phase ?? (preference == .miniPreferred ? .miniActive : .manualWiFi)
+    }
 
     mutating func recordHealthy(at now: Date) {
         consecutiveFailures = 0
@@ -106,17 +135,70 @@ struct NetworkRoutePolicyState: Equatable {
     }
 
     mutating func recordAutomaticFallback(at now: Date) {
+        guard let lastAutomaticReturnAt,
+              now.timeIntervalSince(lastAutomaticReturnAt) <= 600 else { return }
+        self.lastAutomaticReturnAt = nil
         automaticFallbacks = automaticFallbacks.filter { now.timeIntervalSince($0) <= 600 }
         automaticFallbacks.append(now)
         if automaticFallbacks.count >= 2 {
             circuitBreakerUntil = now.addingTimeInterval(600)
+            phase = .routeFlapping
         }
+    }
+
+    mutating func recordAutomaticReturn(at now: Date) {
+        lastAutomaticReturnAt = now
+    }
+
+    mutating func beginWiFiFallback(at now: Date) {
+        if fallbackStartedAt == nil {
+            fallbackStartedAt = now
+            readySince = nil
+        }
+        if phase != .routeFlapping {
+            phase = fallbackDuration(at: now) >= 300 ? .stableWiFiFallback : .temporaryWiFi
+        }
+    }
+
+    mutating func markMiniActive() {
+        fallbackStartedAt = nil
+        lastSlowProbeAt = nil
+        consecutiveFailures = 0
+        readySince = nil
+        phase = .miniActive
+    }
+
+    mutating func refreshFallbackPhase(at now: Date) {
+        guard fallbackStartedAt != nil, phase != .routeFlapping else { return }
+        phase = fallbackDuration(at: now) >= 300 ? .stableWiFiFallback : .temporaryWiFi
+    }
+
+    func fallbackDuration(at now: Date) -> TimeInterval {
+        fallbackStartedAt.map { max(0, now.timeIntervalSince($0)) } ?? 0
+    }
+
+    mutating func shouldRunSlowFallbackProbe(at now: Date) -> Bool {
+        refreshFallbackPhase(at: now)
+        guard phase == .stableWiFiFallback else { return true }
+        if let lastSlowProbeAt, now.timeIntervalSince(lastSlowProbeAt) < 60 { return false }
+        lastSlowProbeAt = now
+        return true
+    }
+
+    func canRecoverClash(at now: Date) -> Bool {
+        guard let lastClashRecoveryAt else { return true }
+        return now.timeIntervalSince(lastClashRecoveryAt) >= 60
+    }
+
+    mutating func recordClashRecovery(at now: Date) {
+        lastClashRecoveryAt = now
     }
 
     mutating func clearExpiredCircuitBreaker(at now: Date) {
         if let until = circuitBreakerUntil, until <= now {
             circuitBreakerUntil = nil
             automaticFallbacks.removeAll()
+            refreshFallbackPhase(at: now)
         }
     }
 
