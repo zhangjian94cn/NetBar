@@ -137,6 +137,58 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(provider.helperReadCount, 0)
     }
 
+    func testManagedMiniRouteStaysActiveWhenDirectHTTPSIsBlocked() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .ready)
+        ])
+        let routeSafety = RecordingRouteSafetyController()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber { interface in
+                Self.probe(interface: interface, ready: true, directReady: false)
+            },
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { controller.policyMessage == "Mac mini 优先 · 当前出口正常" })
+        XCTAssertTrue(routeSafety.appliedModes.isEmpty)
+        XCTAssertEqual(controller.failoverPhase, .miniActive)
+    }
+
+    func testMiniPreferredRepairsServiceOrderWhileEffectiveRouteIsAlreadyMini() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .ready, intendedMode: .localWiFi),
+            policySnapshot(interface: "bridge0", gateway: .ready, intendedMode: .macMiniGateway)
+        ])
+        let routeSafety = RecordingRouteSafetyController()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber { interface in
+                Self.probe(interface: interface, ready: true, directReady: false)
+            },
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { routeSafety.appliedModes == [.macMiniGateway] })
+        XCTAssertTrue(waitUntil { controller.snapshot?.isConsistent == true })
+        XCTAssertEqual(controller.snapshot?.effectiveMode, .macMiniGateway)
+        XCTAssertEqual(controller.policyMessage, "Mac mini 优先 · 当前出口正常")
+    }
+
     func testWiFiFallbackSkipsFailedCandidateAndUsesNextPinnedNetwork() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "bridge0", gateway: .carrierDown),
@@ -350,6 +402,40 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(controller.lastClashAction, "物理出口已变化，Mihomo 连接已自动刷新")
     }
 
+    func testManagedNetworkSwitchesToMiniUsingGuardianAndRoutedDataPlane() {
+        var currentTime = Date(timeIntervalSince1970: 3_500)
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "bridge0", gateway: .ready)
+        ])
+        provider.helperStatus = readyHelperStatus()
+        let routeSafety = RecordingRouteSafetyController()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber { interface in
+                Self.probe(interface: interface, ready: true, directReady: false)
+            },
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            now: { currentTime },
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 })
+        XCTAssertTrue(routeSafety.appliedModes.isEmpty)
+
+        currentTime = currentTime.addingTimeInterval(31)
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { routeSafety.appliedModes == [.macMiniGateway] })
+        XCTAssertFalse(routeSafety.appliedModes.contains(.localWiFi))
+    }
+
     func testControllerRestoresWiFiWhenAutomaticSwitchVerificationFails() throws {
         var currentTime = Date(timeIntervalSince1970: 4_000)
         let provider = SequencedPolicyProvider(snapshots: [
@@ -494,7 +580,11 @@ final class NetworkRoutePolicyTests: XCTestCase {
         return predicate()
     }
 
-    private func policySnapshot(interface: String, gateway: MacMiniGatewayState) -> NetworkModeSnapshot {
+    private func policySnapshot(
+        interface: String,
+        gateway: MacMiniGatewayState,
+        intendedMode: NetworkRouteMode? = nil
+    ) -> NetworkModeSnapshot {
         let wifi = NetworkServiceEntry(
             name: "Wi-Fi",
             hardwarePort: "Wi-Fi",
@@ -507,8 +597,9 @@ final class NetworkRoutePolicyTests: XCTestCase {
             device: "bridge0",
             isDisabled: false
         )
+        let intended = intendedMode ?? (interface == "bridge0" ? .macMiniGateway : .localWiFi)
         return NetworkModeSnapshot(
-            services: interface == "bridge0" ? [thunderbolt, wifi] : [wifi, thunderbolt],
+            services: intended == .macMiniGateway ? [thunderbolt, wifi] : [wifi, thunderbolt],
             wifiServiceName: "Wi-Fi",
             wifiDevice: "en0",
             thunderboltServiceName: "Thunderbolt Bridge",

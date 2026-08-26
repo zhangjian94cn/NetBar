@@ -969,7 +969,7 @@ final class NetworkModeController: ObservableObject {
                     self.verifyDataPlane(
                         interfaceName: refreshed?.thunderboltDevice ?? "bridge0",
                         afterRebind: rebindResult == .succeeded
-                    ).completeInternetReady
+                    ).routedInternetReady
                 outcome = NetworkModeSwitchOutcome(
                     kind: verified ? .success : .failed,
                     snapshot: refreshed,
@@ -986,7 +986,7 @@ final class NetworkModeController: ObservableObject {
                     let verified = self.verifyDataPlane(
                         interfaceName: refreshed.thunderboltDevice ?? "bridge0",
                         afterRebind: rebindResult == .succeeded
-                    ).completeInternetReady
+                    ).routedInternetReady
                     if !verified {
                         outcome = NetworkModeSwitchOutcome(
                             kind: .failed,
@@ -1102,19 +1102,55 @@ final class NetworkModeController: ObservableObject {
         helperAvailable: Bool
     ) {
         let miniProbe = connectivityProber.probe(interfaceName: current.thunderboltDevice ?? "bridge0")
-        guard miniProbe.directInternetReady else {
+        let boundMiniReachable = current.linkState == .connected && current.gatewayState == .ready
+        guard miniProbe.directInternetReady || boundMiniReachable else {
             handleUnhealthySnapshot(current, at: checkDate, helperAvailable: helperAvailable)
             return
         }
         if current.effectiveMode == .macMiniGateway {
+            guard miniProbe.routedInternetReady else {
+                handleUnhealthySnapshot(current, at: checkDate, helperAvailable: helperAvailable)
+                return
+            }
+            var activeSnapshot = current
+            if current.intendedMode != .macMiniGateway {
+                guard helperAvailable else {
+                    publishPolicy(
+                        snapshot: current,
+                        message: "Mac mini 出口正常 · 需安装自动切换组件以修复服务顺序",
+                        remaining: nil,
+                        helperAvailable: false,
+                        isError: true,
+                        activeCandidate: "Mac mini"
+                    )
+                    return
+                }
+                let orderResult = routeSafetyController.apply(.macMiniGateway)
+                guard orderResult.succeeded,
+                      let reconciled = try? provider.readSnapshot(),
+                      reconciled.verifies(.macMiniGateway) else {
+                    eventLogger.record(event: "mini_service_order_reconcile", detail: "failed", candidateSSID: nil)
+                    publishPolicy(
+                        snapshot: current,
+                        message: "Mac mini 出口正常 · 服务顺序修复失败",
+                        remaining: nil,
+                        helperAvailable: true,
+                        isError: true,
+                        activeCandidate: "Mac mini"
+                    )
+                    return
+                }
+                activeSnapshot = reconciled
+                eventLogger.record(event: "mini_service_order_reconcile", detail: "success", candidateSSID: nil)
+            }
             policyState.recordHealthy(at: checkDate)
             let previousPhase = policyState.phase
             policyState.markMiniActive()
             persistPolicyState()
             if previousPhase != .miniActive {
-                eventLogger.record(event: "mini_active", detail: "fixed link and direct HTTPS verified", candidateSSID: nil)
+                eventLogger.record(event: "mini_active", detail: "fixed link and routed data plane verified", candidateSSID: nil)
             }
-            publishPolicy(snapshot: current, message: "Mac mini 优先 · 当前出口正常", remaining: nil, activeCandidate: "Mac mini")
+            publishPolicy(snapshot: activeSnapshot, message: "Mac mini 优先 · 当前出口正常", remaining: nil, activeCandidate: "Mac mini")
             return
         }
         policyState.beginWiFiFallback(at: checkDate)
@@ -1158,7 +1194,7 @@ final class NetworkModeController: ObservableObject {
                 afterRebind: rebindResult == .succeeded
             )
         }
-        if let verified, verified.verifies(.macMiniGateway), finalMiniProbe?.completeInternetReady == true {
+        if let verified, verified.verifies(.macMiniGateway), finalMiniProbe?.routedInternetReady == true {
             policyState.markMiniActive()
             policyState.recordAutomaticReturn(at: checkDate)
             persistPolicyState()
@@ -1246,6 +1282,7 @@ final class NetworkModeController: ObservableObject {
                 return
             }
         }
+        eventLogger.record(event: "wifi_fallback_started", detail: reason, candidateSSID: nil)
         let restored = fallbackToVerifiedWiFi(at: checkDate, reason: reason, automatic: true)
         if !restored {
             let refreshed = (try? provider.readSnapshot()) ?? current
@@ -1512,7 +1549,7 @@ final class NetworkModeController: ObservableObject {
     ) -> ConnectivityProbeResult {
         var probe = connectivityProber.probe(interfaceName: interfaceName)
         guard afterRebind else { return probe }
-        for _ in 0..<3 where !probe.completeInternetReady {
+        for _ in 0..<3 where !probe.routedInternetReady {
             sleeper(2)
             probe = connectivityProber.probe(interfaceName: interfaceName)
         }
