@@ -1,5 +1,30 @@
 import Foundation
 
+public enum NativeSharingProcessIdentity {
+    public static func pid(fromLaunchctlPrint output: String) -> Int32? {
+        let lines = output.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard lines.contains("state = running"),
+              lines.contains("program = /usr/libexec/InternetSharing"),
+              let pidLine = lines.first(where: { $0.hasPrefix("pid = ") }) else {
+            return nil
+        }
+        let value = String(pidLine.dropFirst("pid = ".count))
+        guard !value.isEmpty, value.allSatisfy(\.isNumber), let pid = Int32(value), pid > 1 else {
+            return nil
+        }
+        return pid
+    }
+}
+
+public enum GuardianPersistedRecoveryMigration {
+    public static func shouldResetBackoff(lastError: String?) -> Bool {
+        guard let lastError else { return false }
+        return lastError.contains("Could not kickstart service") &&
+            lastError.contains("System Integrity Protection")
+    }
+}
+
 public struct MiniGuardianRecoveryInput: Equatable {
     public let carrierActive: Bool
     public let preferencesMatch: Bool

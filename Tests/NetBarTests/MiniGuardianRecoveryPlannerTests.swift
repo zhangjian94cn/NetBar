@@ -65,6 +65,39 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
         )
     }
 
+    func testNativeSharingProcessIdentityRequiresRunningAppleExecutableAndNumericPID() {
+        let valid = """
+            system/com.apple.NetworkSharing = {
+                state = running
+                program = /usr/libexec/InternetSharing
+                pid = 22136
+            }
+            """
+        XCTAssertEqual(NativeSharingProcessIdentity.pid(fromLaunchctlPrint: valid), 22_136)
+        XCTAssertNil(NativeSharingProcessIdentity.pid(fromLaunchctlPrint: valid.replacingOccurrences(
+            of: "/usr/libexec/InternetSharing",
+            with: "/tmp/InternetSharing"
+        )))
+        XCTAssertNil(NativeSharingProcessIdentity.pid(fromLaunchctlPrint: valid.replacingOccurrences(
+            of: "state = running",
+            with: "state = exited"
+        )))
+        XCTAssertNil(NativeSharingProcessIdentity.pid(fromLaunchctlPrint: valid.replacingOccurrences(
+            of: "pid = 22136",
+            with: "pid = 22136; /bin/sh"
+        )))
+    }
+
+    func testPersistedKickstartSIPFailureResetsObsoleteBackoffAfterUpgrade() {
+        XCTAssertTrue(GuardianPersistedRecoveryMigration.shouldResetBackoff(
+            lastError: "Could not kickstart service com.apple.NetworkSharing: Operation not permitted while System Integrity Protection is engaged"
+        ))
+        XCTAssertFalse(GuardianPersistedRecoveryMigration.shouldResetBackoff(
+            lastError: "Internet Sharing did not restore kernel forwarding"
+        ))
+        XCTAssertFalse(GuardianPersistedRecoveryMigration.shouldResetBackoff(lastError: nil))
+    }
+
     func testFailedRepairAndPersistedBackoffFailClosed() {
         XCTAssertEqual(
             decide(upstreamReachable: false, pendingRepairVerification: true),

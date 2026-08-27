@@ -35,6 +35,8 @@
 
 Guardian 的 ready 同时要求 `en0` 载波、预期地址/路由、正确共享拓扑、共享进程、forwarding 和 Mini 自身上游。MacBook 连续确认下游出口失败时，只能调用固定无参数 `report-egress-failure` 写入短期标记；Guardian 校验本地事实、标记时效和退避后，才可重拉一次原生 Network Sharing。所有恢复路径继续不调用 `-setdnsservers`。
 
+实机安装 v4 后确认，macOS/SIP 会拒绝对关键系统服务执行 `launchctl kickstart -k`。这与 Apple 在 [macOS 14.4 Release Notes](https://developer.apple.com/documentation/macos-release-notes/macos-14_4-release-notes) 中记录的限制一致；Apple 建议需要强制终止时使用 `kill`。Guardian 因此只在 `launchctl print` 同时证明状态为 running、程序严格等于 `/usr/libexec/InternetSharing` 且 PID 为纯数字时，向该 PID 发送 `TERM`，由 launchd 原生重建服务。它不直接执行 `sysctl -w`，避免与系统共享或公司 VPN 争夺内核转发所有权。
+
 MacBook 的降级 episode 从首次确认首选路径故障开始，与 Wi-Fi 回退是否成功无关。相同失败只记录一次；候选失败后等待网络事件或退避到期。Mini 自动切回必须看到新鲜、无冲突、forwarding=true 的远端事实以及连续 30 秒下游证明。
 
 后续接管使用纯 `NetworkPolicyMachine.reduce(state:event:)` 和单 actor。每个 effect 携带 transaction ID、network generation、幂等键和 deadline。Route Safety Helper v2 把完整服务顺序写入 root-only 事务日志，切换后只能 commit、rollback 或进入 manual recovery。该接管先以只读影子模式运行 24 小时；与旧策略出现不安全分歧时保持旧执行路径并记录证据，不自动写路由。
@@ -48,6 +50,7 @@ MacBook 的降级 episode 从首次确认首选路径故障开始，与 Wi-Fi �
 - 代价：Helper v4 与未来 Route Helper v2 都是 fail-closed 协议升级，需要各执行一次受限安装更新。
 - 代价：纯状态机接管前需要 2 小时止血观察和 24 小时影子观察；旧策略至少保留一个版本作为紧急回退。
 - 限制：`forwarding=1` 只是必要条件；最终可用性仍必须由 MacBook 下游和切换后系统/Clash HTTPS 证明。
+- 限制：若公司 VPN 在原生共享重建后再次关闭 forwarding，Guardian 进入退避，MacBook 保持 Wi-Fi；NetBar 不循环强写 forwarding 与公司 VPN 对抗。
 - 限制：持续物理无载波和所有 Wi-Fi 候选不可用时，软件只能报告离线，不能制造连通性。
 
 ## Verification and Rollout

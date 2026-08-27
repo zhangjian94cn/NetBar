@@ -114,6 +114,11 @@ private final class MiniNetworkGuardian {
             nextRetryAt: nil,
             failureCount: 0
         )
+        if GuardianPersistedRecoveryMigration.shouldResetBackoff(lastError: status.lastError) {
+            status.failureCount = 0
+            status.nextRetryAt = nil
+            status.lastError = "retrying with SIP-safe native sharing restart"
+        }
     }
 
     func run() {
@@ -299,12 +304,12 @@ private final class MiniNetworkGuardian {
             scheduleEvaluation(after: delay)
 
         case .restartSharing:
-            let result = runner.run("/bin/launchctl", ["kickstart", "-k", "system/com.apple.NetworkSharing"])
+            let result = terminateNativeSharingForRestart()
             guard result.succeeded else {
                 registerFailure(now: now, message: result.output)
                 return
             }
-            status.lastAction = "restarted com.apple.NetworkSharing"
+            status.lastAction = "terminated stale InternetSharing process for launchd restart"
             status.lastError = nil
             pendingRepairVerification = true
             sharingWaitStarted = nil
@@ -379,6 +384,15 @@ private final class MiniNetworkGuardian {
     private func internetSharingIsRunning() -> Bool {
         let output = runner.run("/bin/launchctl", ["print", "system/com.apple.NetworkSharing"]).output
         return output.contains("state = running") && output.contains("/usr/libexec/InternetSharing")
+    }
+
+    private func terminateNativeSharingForRestart() -> CommandResult {
+        let status = runner.run("/bin/launchctl", ["print", "system/com.apple.NetworkSharing"])
+        guard status.succeeded,
+              let pid = NativeSharingProcessIdentity.pid(fromLaunchctlPrint: status.output) else {
+            return CommandResult(status: 1, output: "unable to identify running /usr/libexec/InternetSharing")
+        }
+        return runner.run("/bin/kill", ["-TERM", String(pid)])
     }
 
     private func kernelForwardingIsEnabled() -> Bool {
