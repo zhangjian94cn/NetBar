@@ -269,8 +269,8 @@ private final class MiniNetworkGuardian {
             registerFailure(now: now, message: "repair did not reach a healthy state")
 
         case .recoveryBackoff(let delay):
-            transition(to: .recoveryBackoff)
-            scheduleEvaluation(after: max(1, delay))
+            transition(to: .recoveryBackoff, error: status.lastError)
+            scheduleEvaluation(after: GuardianEvaluationCadence.duringRecoveryBackoff(remaining: delay))
 
         case .addressRecovering(let delay):
             if addressWaitStarted == nil { addressWaitStarted = now }
@@ -324,7 +324,7 @@ private final class MiniNetworkGuardian {
         let delay = delays[min(status.failureCount - 1, delays.count - 1)]
         status.nextRetryAt = iso8601.string(from: now.addingTimeInterval(delay))
         transition(to: .recoveryBackoff, error: message)
-        scheduleEvaluation(after: delay)
+        scheduleEvaluation(after: GuardianEvaluationCadence.duringRecoveryBackoff(remaining: delay))
     }
 
     private func transition(to state: GuardianState, action: String? = nil, error: String? = nil) {

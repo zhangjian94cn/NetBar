@@ -41,6 +41,8 @@ MacBook 的降级 episode 从首次确认首选路径故障开始，与 Wi-Fi �
 
 后续接管使用纯 `NetworkPolicyMachine.reduce(state:event:)` 和单 actor。每个 effect 携带 transaction ID、network generation、幂等键和 deadline。Route Safety Helper v2 把完整服务顺序写入 root-only 事务日志，切换后只能 commit、rollback 或进入 manual recovery。该接管先以只读影子模式运行 24 小时；与旧策略出现不安全分歧时保持旧执行路径并记录证据，不自动写路由。
 
+Guardian 的修复退避与观察节奏相互独立：60 秒、5 分钟和 15 分钟只限制下一次共享写操作，本地事实仍每 15 秒采样。否则 VPN 或系统在退避期间自行恢复 forwarding 时，Helper 会长期拿到过期 Guardian 快照并产生伪证据冲突，也会延迟 MacBook 的 30 秒恢复资格判断。
+
 ## Consequences
 
 - 正面：进程存在但 forwarding=0、Helper/Guardian 矛盾和下游 NAT 失败不再被“上游正常”掩盖。
