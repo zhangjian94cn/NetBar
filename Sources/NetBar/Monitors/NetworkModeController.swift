@@ -151,10 +151,12 @@ protocol NetworkModeSystemProviding {
     func readSnapshot() throws -> NetworkModeSnapshot
     func setServiceOrder(_ serviceNames: [String]) -> NetworkModeCommandResult
     func readMacMiniHelperStatus() -> MacMiniHelperStatus?
+    func reportMacMiniEgressFailure() -> Bool
 }
 
 extension NetworkModeSystemProviding {
     func readMacMiniHelperStatus() -> MacMiniHelperStatus? { nil }
+    func reportMacMiniEgressFailure() -> Bool { false }
 }
 
 protocol NetworkModeCommandRunning {
@@ -458,6 +460,25 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
         #endif
     }
 
+    func reportMacMiniEgressFailure() -> Bool {
+        #if APP_STORE
+        return false
+        #else
+        return commandRunner.run(
+            executable: "/usr/bin/ssh",
+            arguments: NetworkLinkProvisioner.sshArguments(
+                profile: profile,
+                host: profile.gatewayAddress,
+                remoteArguments: [
+                    "/usr/bin/sudo", "-n",
+                    NetworkLinkProvisioner.miniHelperPath,
+                    "report-egress-failure"
+                ]
+            )
+        ).succeeded
+        #endif
+    }
+
     static func parseServiceOrder(_ output: String) -> [NetworkServiceEntry] {
         let servicePattern = try? NSRegularExpression(pattern: #"^\((\d+)\)\s+(.+)$"#)
         let hardwarePattern = try? NSRegularExpression(
@@ -758,6 +779,9 @@ final class NetworkModeController: ObservableObject {
     private var policyCheckInFlight = false
     private var policyCheckPending = false
     private var fallbackFailureMessage: String?
+    private var nextWiFiFallbackAttemptAt: Date?
+    private var lastLoggedFallbackFailureReason: String?
+    private var reportedMiniEgressFailure = false
     private var observedPhysicalOutlet: NetworkRouteMode?
     private var pendingMihomoTransition: PhysicalOutletTransition?
     private var lastMihomoRebindAttemptAt: Date?
@@ -1056,6 +1080,7 @@ final class NetworkModeController: ObservableObject {
         guard !isSwitching, !isProvisioning else { return }
         workQueue.async { [weak self] in
             guard let self else { return }
+            if force { self.nextWiFiFallbackAttemptAt = nil }
             if self.policyCheckInFlight {
                 self.policyCheckPending = true
                 return
@@ -1144,6 +1169,8 @@ final class NetworkModeController: ObservableObject {
                 eventLogger.record(event: "mini_service_order_reconcile", detail: "success", candidateSSID: nil)
             }
             policyState.recordHealthy(at: checkDate)
+            reportedMiniEgressFailure = false
+            lastLoggedFallbackFailureReason = nil
             let previousPhase = policyState.phase
             policyState.markMiniActive()
             persistPolicyState()
@@ -1169,7 +1196,9 @@ final class NetworkModeController: ObservableObject {
             publishPolicy(snapshot: current, message: "Mac mini 已恢复，稳定 \(remaining) 秒后自动切回", remaining: remaining)
             return
         }
-        guard let remote = provider.readMacMiniHelperStatus(), remote.guardian?.state == .ready else {
+        guard let remote = provider.readMacMiniHelperStatus(),
+              remote.gatewayState == .ready,
+              remote.guardianIsFresh(at: checkDate) else {
             publishPolicy(snapshot: current, message: "等待 Mac mini Guardian 确认共享稳定", remaining: nil)
             return
         }
@@ -1226,7 +1255,8 @@ final class NetworkModeController: ObservableObject {
             definitiveFailure = false
         }
         switch current.gatewayState {
-        case .carrierDown, .addressRecovering, .sharingRecovering, .configurationDrift, .recoveryBackoff:
+        case .carrierDown, .addressRecovering, .sharingRecovering, .sharingForwardingUnavailable,
+             .configurationDrift, .recoveryBackoff:
             definitiveFailure = true
         default:
             break
@@ -1256,6 +1286,21 @@ final class NetworkModeController: ObservableObject {
             return
         }
 
+        policyState.beginWiFiFallback(at: checkDate)
+        persistPolicyState()
+
+        if current.linkState == .connected,
+           current.gatewayState == .boundEgressUnavailable,
+           !reportedMiniEgressFailure {
+            reportedMiniEgressFailure = true
+            let reported = provider.reportMacMiniEgressFailure()
+            eventLogger.record(
+                event: "mini_downstream_egress_report",
+                detail: reported ? "accepted" : "failed",
+                candidateSSID: nil
+            )
+        }
+
         let reason = current.linkState != .connected
             ? current.linkState.displayName
             : current.gatewayState.displayName
@@ -1265,7 +1310,11 @@ final class NetworkModeController: ObservableObject {
                 policyState.beginWiFiFallback(at: checkDate)
                 persistPolicyState()
                 let message: String
-                if let until = policyState.circuitBreakerUntil, until > checkDate {
+                if current.gatewayState == .sharingForwardingUnavailable {
+                    message = "Mac mini 上游正常 · 共享转发未就绪；正在恢复 Network Sharing，期间保持 Wi-Fi"
+                } else if current.gatewayState == .remoteEvidenceConflict {
+                    message = "Mac mini 共享状态证据冲突；重新采样期间保持 Wi-Fi"
+                } else if let until = policyState.circuitBreakerUntil, until > checkDate {
                     message = "Wi-Fi 保网 · Mac mini 抖动熔断 \(Int(ceil(until.timeIntervalSince(checkDate)))) 秒"
                 } else if policyState.phase == .stableWiFiFallback {
                     message = "Wi-Fi 稳定保网 · Mini 慢速恢复探测"
@@ -1282,9 +1331,24 @@ final class NetworkModeController: ObservableObject {
                 return
             }
         }
-        eventLogger.record(event: "wifi_fallback_started", detail: reason, candidateSSID: nil)
+        if let nextWiFiFallbackAttemptAt, nextWiFiFallbackAttemptAt > checkDate {
+            let seconds = Int(ceil(nextWiFiFallbackAttemptAt.timeIntervalSince(checkDate)))
+            publishPolicy(
+                snapshot: current,
+                message: "\(reason)；等待 Wi-Fi 或网络变化（\(seconds) 秒）",
+                remaining: fallbackRemaining(at: checkDate),
+                helperAvailable: helperAvailable,
+                isError: true
+            )
+            return
+        }
+        if lastLoggedFallbackFailureReason != reason {
+            eventLogger.record(event: "wifi_fallback_started", detail: reason, candidateSSID: nil)
+            lastLoggedFallbackFailureReason = reason
+        }
         let restored = fallbackToVerifiedWiFi(at: checkDate, reason: reason, automatic: true)
         if !restored {
+            nextWiFiFallbackAttemptAt = checkDate.addingTimeInterval(60)
             let refreshed = (try? provider.readSnapshot()) ?? current
             publishPolicy(
                 snapshot: refreshed,
@@ -1315,7 +1379,6 @@ final class NetworkModeController: ObservableObject {
         }
         guard !candidates.isEmpty else {
             fallbackFailureMessage = "白名单中没有当前可见且已保存的 Wi-Fi"
-            eventLogger.record(event: "wifi_fallback_unavailable", detail: reason, candidateSSID: nil)
             return false
         }
 
@@ -1432,6 +1495,8 @@ final class NetworkModeController: ObservableObject {
             )
             let loggedSSID = candidate.id == WiFiCandidateSelector.anonymousCurrentID ? nil : candidate.displayName
             eventLogger.record(event: "wifi_fallback_active", detail: message, candidateSSID: loggedSSID)
+            nextWiFiFallbackAttemptAt = nil
+            lastLoggedFallbackFailureReason = nil
             DispatchQueue.main.async { [weak self] in self?.onNetworkChanged() }
             return true
         }

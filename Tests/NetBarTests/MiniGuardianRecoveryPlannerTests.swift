@@ -43,6 +43,28 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
         )
     }
 
+    func testRunningSharingProcessWithoutKernelForwardingIsNotReady() {
+        XCTAssertEqual(
+            decide(forwardingEnabled: false, sharingWaitElapsed: nil),
+            .sharingRecovering(15)
+        )
+        XCTAssertEqual(
+            decide(forwardingEnabled: false, sharingWaitElapsed: 15),
+            .restartSharing
+        )
+    }
+
+    func testFreshDownstreamEgressFailureRestartsSharingWhenLocalFactsAreHealthy() {
+        XCTAssertEqual(
+            decide(downstreamEgressFailureReported: true),
+            .restartSharing
+        )
+        XCTAssertEqual(
+            decide(downstreamEgressFailureReported: true, retryRemaining: 42),
+            .recoveryBackoff(42)
+        )
+    }
+
     func testFailedRepairAndPersistedBackoffFailClosed() {
         XCTAssertEqual(
             decide(upstreamReachable: false, pendingRepairVerification: true),
@@ -88,6 +110,8 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
         addressReady: Bool = true,
         routeReady: Bool = true,
         sharingRunning: Bool = true,
+        forwardingEnabled: Bool = true,
+        downstreamEgressFailureReported: Bool = false,
         upstreamReachable: Bool = true,
         pendingRepairVerification: Bool = false,
         retryRemaining: TimeInterval? = nil,
@@ -103,6 +127,8 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
                 addressReady: addressReady,
                 routeReady: routeReady,
                 sharingRunning: sharingRunning,
+                forwardingEnabled: forwardingEnabled,
+                downstreamEgressFailureReported: downstreamEgressFailureReported,
                 upstreamReachable: upstreamReachable,
                 pendingRepairVerification: pendingRepairVerification,
                 retryRemaining: retryRemaining,

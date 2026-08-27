@@ -28,7 +28,7 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
 #else
 final class NetworkLinkProvisioner: NetworkLinkProvisioning {
     static let miniHelperPath = "/Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper"
-    static let miniHelperProtocolVersion = 3
+    static let miniHelperProtocolVersion = 4
 
     private let runner: NetworkModeCommandRunning
     private let profile: MacMiniLinkProfile

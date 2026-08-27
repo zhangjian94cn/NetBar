@@ -56,6 +56,8 @@ enum MacMiniGatewayState: String, Codable, Equatable {
     case routeFlapping
     case boundEgressUnavailable
     case remoteStatusUnavailable
+    case remoteEvidenceConflict
+    case sharingForwardingUnavailable
     case unknown
 
     var displayName: String {
@@ -80,6 +82,10 @@ enum MacMiniGatewayState: String, Codable, Equatable {
             return "Mac mini 出口探测失败"
         case .remoteStatusUnavailable:
             return "无法读取 Mac mini 状态"
+        case .remoteEvidenceConflict:
+            return "Mac mini 共享状态证据冲突"
+        case .sharingForwardingUnavailable:
+            return "Mac mini 共享转发未就绪"
         case .unknown:
             return "Mac mini 上游待检测"
         }
@@ -90,6 +96,8 @@ enum MacMiniGatewayState: String, Codable, Equatable {
 
 struct MacMiniGuardianStatus: Codable, Equatable {
     let state: MacMiniGatewayState
+    let observedAt: String?
+    let generation: UInt64
     let lastTransition: String?
     let lastCarrierChange: String?
     let lastAction: String?
@@ -98,6 +106,7 @@ struct MacMiniGuardianStatus: Codable, Equatable {
     let addressReady: Bool
     let routeReady: Bool
     let sharingRunning: Bool
+    let forwardingEnabled: Bool
     let sharingConfigured: Bool
     let upstreamReachable: Bool
     let nextRetryAt: String?
@@ -111,13 +120,33 @@ struct MacMiniHelperStatus: Codable, Equatable {
     let upstreamDevice: String
     let upstreamActive: Bool
     let sharingConfigured: Bool
-    let internetSharingRunning: Bool
+    let sharingProcessRunning: Bool
+    let forwardingEnabled: Bool
+    let guardianObservedAt: String?
+    let guardianGeneration: UInt64?
+    let evidenceConflict: Bool
     let guardian: MacMiniGuardianStatus?
+
+    func guardianIsFresh(at date: Date, maximumAge: TimeInterval = 45) -> Bool {
+        guard let guardianObservedAt,
+              let observed = ISO8601DateFormatter().date(from: guardianObservedAt) else {
+            return false
+        }
+        let age = date.timeIntervalSince(observed)
+        return age >= -5 && age <= maximumAge
+    }
 
     var gatewayState: MacMiniGatewayState {
         if !upstreamActive { return .carrierDown }
         if !sharingConfigured { return .configurationDrift }
-        if !internetSharingRunning { return .sharingRecovering }
+        if evidenceConflict { return .remoteEvidenceConflict }
+        if !sharingProcessRunning { return .sharingRecovering }
+        if !forwardingEnabled { return .sharingForwardingUnavailable }
+        if let guardian,
+           guardian.sharingRunning != sharingProcessRunning ||
+           guardian.forwardingEnabled != forwardingEnabled {
+            return .remoteEvidenceConflict
+        }
         if let guardian { return guardian.state }
         return .unknown
     }

@@ -7,6 +7,8 @@ public struct MiniGuardianRecoveryInput: Equatable {
     public let addressReady: Bool
     public let routeReady: Bool
     public let sharingRunning: Bool
+    public let forwardingEnabled: Bool
+    public let downstreamEgressFailureReported: Bool
     public let upstreamReachable: Bool
     public let pendingRepairVerification: Bool
     public let retryRemaining: TimeInterval?
@@ -21,6 +23,8 @@ public struct MiniGuardianRecoveryInput: Equatable {
         addressReady: Bool,
         routeReady: Bool,
         sharingRunning: Bool,
+        forwardingEnabled: Bool,
+        downstreamEgressFailureReported: Bool,
         upstreamReachable: Bool,
         pendingRepairVerification: Bool,
         retryRemaining: TimeInterval?,
@@ -34,6 +38,8 @@ public struct MiniGuardianRecoveryInput: Equatable {
         self.addressReady = addressReady
         self.routeReady = routeReady
         self.sharingRunning = sharingRunning
+        self.forwardingEnabled = forwardingEnabled
+        self.downstreamEgressFailureReported = downstreamEgressFailureReported
         self.upstreamReachable = upstreamReachable
         self.pendingRepairVerification = pendingRepairVerification
         self.retryRemaining = retryRemaining
@@ -66,8 +72,15 @@ public enum MiniGuardianRecoveryPlanner {
             return .configurationDrift("Internet Sharing must use en0 and include bridge0")
         }
 
+        if input.downstreamEgressFailureReported {
+            if let remaining = input.retryRemaining, remaining > 0 {
+                return .recoveryBackoff(remaining)
+            }
+            return .restartSharing
+        }
+
         let healthy = input.addressReady && input.routeReady &&
-            input.sharingRunning && input.upstreamReachable
+            input.sharingRunning && input.forwardingEnabled && input.upstreamReachable
         if healthy {
             let elapsed = input.healthyElapsed ?? 0
             if elapsed < 30 {
@@ -84,7 +97,7 @@ public enum MiniGuardianRecoveryPlanner {
             let elapsed = input.addressWaitElapsed ?? 0
             return elapsed < 15 ? .addressRecovering(15 - elapsed) : .reapplyAddress
         }
-        if !input.sharingRunning || !input.upstreamReachable {
+        if !input.sharingRunning || !input.forwardingEnabled || !input.upstreamReachable {
             let elapsed = input.sharingWaitElapsed ?? 0
             return elapsed < 15 ? .sharingRecovering(15 - elapsed) : .restartSharing
         }

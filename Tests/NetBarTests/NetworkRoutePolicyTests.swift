@@ -116,6 +116,37 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { routeSafety.appliedModes == [.localWiFi] })
     }
 
+    func testDownstreamFailureStartsEpisodeAndReportsGuardianOnlyOnceWhenWiFiFallbackFails() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable)
+        ])
+        let logger = RecordingPolicyEventLogger()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: RecordingRouteSafetyController(),
+            wifiCandidateController: SequencedWiFiCandidateController(
+                names: ["Unavailable"],
+                results: [.unavailable, .unavailable]
+            ),
+            connectivityProber: PolicyConnectivityProber { interface in
+                Self.probe(interface: interface, ready: false)
+            },
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: logger,
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { provider.egressReportCount == 1 })
+        XCTAssertTrue(waitUntil { controller.failoverPhase == .temporaryWiFi })
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { provider.readCount >= 2 })
+
+        XCTAssertEqual(provider.egressReportCount, 1)
+        XCTAssertEqual(logger.events.filter { $0 == "wifi_fallback_started" }.count, 1)
+    }
+
     func testHealthyMiniRouteDoesNotReadRemoteHelper() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "bridge0", gateway: .ready)
@@ -372,7 +403,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
             policySnapshot(interface: "en0", gateway: .ready),
             policySnapshot(interface: "bridge0", gateway: .ready)
         ])
-        provider.helperStatus = readyHelperStatus()
+        provider.helperStatus = readyHelperStatus(observedAt: currentTime.addingTimeInterval(31))
         let routeSafety = RecordingRouteSafetyController()
         let mihomo = CountingMihomoRecovery()
         let controller = NetworkModeController(
@@ -409,7 +440,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
             policySnapshot(interface: "en0", gateway: .ready),
             policySnapshot(interface: "bridge0", gateway: .ready)
         ])
-        provider.helperStatus = readyHelperStatus()
+        provider.helperStatus = readyHelperStatus(observedAt: currentTime.addingTimeInterval(31))
         let routeSafety = RecordingRouteSafetyController()
         let controller = NetworkModeController(
             provider: provider,
@@ -445,7 +476,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
             policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable),
             policySnapshot(interface: "en0", gateway: .boundEgressUnavailable)
         ])
-        provider.helperStatus = readyHelperStatus()
+        provider.helperStatus = readyHelperStatus(observedAt: currentTime.addingTimeInterval(31))
         let routeSafety = RecordingRouteSafetyController()
         let controller = NetworkModeController(
             provider: provider,
@@ -476,19 +507,25 @@ final class NetworkRoutePolicyTests: XCTestCase {
         )
     }
 
-    func testHelperV3DecodesGuardianAndClassifiesSpecificFailure() throws {
+    func testHelperV4DecodesRawFactsAndClassifiesSpecificFailure() throws {
         let json = """
         {
-          "protocolVersion": 3,
+          "protocolVersion": 4,
           "configured": true,
           "serviceIPv4": "192.168.2.1",
           "gatewayIPv4": "192.168.2.1",
           "upstreamDevice": "en0",
           "upstreamActive": false,
           "sharingConfigured": true,
-          "internetSharingRunning": false,
+          "sharingProcessRunning": false,
+          "forwardingEnabled": false,
+          "guardianObservedAt": "2026-08-27T08:39:00Z",
+          "guardianGeneration": 17,
+          "evidenceConflict": false,
           "guardian": {
             "state": "carrierDown",
+            "observedAt": "2026-08-27T08:39:00Z",
+            "generation": 17,
             "lastTransition": "2026-08-25T17:47:11Z",
             "lastCarrierChange": "2026-08-25T17:47:11Z",
             "lastAction": "carrier inactive",
@@ -497,6 +534,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
             "addressReady": false,
             "routeReady": false,
             "sharingRunning": false,
+            "forwardingEnabled": false,
             "sharingConfigured": true,
             "upstreamReachable": false,
             "nextRetryAt": null
@@ -506,10 +544,31 @@ final class NetworkRoutePolicyTests: XCTestCase {
 
         let status = try JSONDecoder().decode(MacMiniHelperStatus.self, from: Data(json.utf8))
 
-        XCTAssertEqual(status.protocolVersion, 3)
+        XCTAssertEqual(status.protocolVersion, 4)
         XCTAssertEqual(status.gatewayState, .carrierDown)
         XCTAssertEqual(status.guardian?.lastCarrierChange, "2026-08-25T17:47:11Z")
         XCTAssertEqual(status.guardian?.lastAction, "carrier inactive")
+    }
+
+    func testRunningSharingProcessWithoutForwardingCannotBeReady() {
+        var status = readyHelperStatus()
+        status = MacMiniHelperStatus(
+            protocolVersion: status.protocolVersion,
+            configured: status.configured,
+            serviceIPv4: status.serviceIPv4,
+            gatewayIPv4: status.gatewayIPv4,
+            upstreamDevice: status.upstreamDevice,
+            upstreamActive: status.upstreamActive,
+            sharingConfigured: status.sharingConfigured,
+            sharingProcessRunning: true,
+            forwardingEnabled: false,
+            guardianObservedAt: status.guardianObservedAt,
+            guardianGeneration: status.guardianGeneration,
+            evidenceConflict: false,
+            guardian: nil
+        )
+
+        XCTAssertEqual(status.gatewayState, .sharingForwardingUnavailable)
     }
 
     func testRouteSafetyHelperHasExactNoArgumentContract() throws {
@@ -612,18 +671,25 @@ final class NetworkRoutePolicyTests: XCTestCase {
         )
     }
 
-    private func readyHelperStatus() -> MacMiniHelperStatus {
-        MacMiniHelperStatus(
-            protocolVersion: 3,
+    private func readyHelperStatus(observedAt: Date = Date()) -> MacMiniHelperStatus {
+        let timestamp = ISO8601DateFormatter().string(from: observedAt)
+        return MacMiniHelperStatus(
+            protocolVersion: 4,
             configured: true,
             serviceIPv4: "192.168.2.1",
             gatewayIPv4: "192.168.2.1",
             upstreamDevice: "en0",
             upstreamActive: true,
             sharingConfigured: true,
-            internetSharingRunning: true,
+            sharingProcessRunning: true,
+            forwardingEnabled: true,
+            guardianObservedAt: timestamp,
+            guardianGeneration: 1,
+            evidenceConflict: false,
             guardian: MacMiniGuardianStatus(
                 state: .ready,
+                observedAt: timestamp,
+                generation: 1,
                 lastTransition: nil,
                 lastCarrierChange: nil,
                 lastAction: nil,
@@ -632,6 +698,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
                 addressReady: true,
                 routeReady: true,
                 sharingRunning: true,
+                forwardingEnabled: true,
                 sharingConfigured: true,
                 upstreamReachable: true,
                 nextRetryAt: nil
@@ -794,6 +861,21 @@ private final class PolicyEventLogger: NetworkEventLogging {
     func record(event: String, detail: String, candidateSSID: String?) {}
 }
 
+private final class RecordingPolicyEventLogger: NetworkEventLogging {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    var events: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+    func record(event: String, detail: String, candidateSSID: String?) {
+        lock.lock()
+        recorded.append(event)
+        lock.unlock()
+    }
+}
+
 private final class PolicySnapshotProvider: NetworkModeSystemProviding {
     func readSnapshot() throws -> NetworkModeSnapshot {
         NetworkModeSnapshot(
@@ -834,6 +916,7 @@ private final class SequencedPolicyProvider: NetworkModeSystemProviding {
     var helperStatus: MacMiniHelperStatus?
     private(set) var readCount = 0
     private(set) var helperReadCount = 0
+    private(set) var egressReportCount = 0
 
     init(snapshots: [NetworkModeSnapshot]) {
         self.snapshots = snapshots
@@ -856,6 +939,14 @@ private final class SequencedPolicyProvider: NetworkModeSystemProviding {
         helperReadCount += 1
         lock.unlock()
         return helperStatus
+    }
+
+
+    func reportMacMiniEgressFailure() -> Bool {
+        lock.lock()
+        egressReportCount += 1
+        lock.unlock()
+        return true
     }
 }
 
