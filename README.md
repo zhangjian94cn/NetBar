@@ -131,6 +131,8 @@ Mac mini 的上游固定为内置以太网 `en0`。`en0` 断开时，雷雳本�
 
 Guardian 的 `ready` 现在必须同时满足 `en0` 载波、预期地址与路由、共享拓扑、Network Sharing 进程、`net.inet.ip.forwarding=1` 和 Mini 自身上游探测。Helper 与 Guardian 对同一事实不一致时显示“共享状态证据冲突”；进程 running 但 forwarding=0 时显示“Mac mini 上游正常 · 共享转发未就绪”，期间保持 Wi-Fi。较新的 macOS/SIP 不允许对该关键系统服务执行 `launchctl kickstart -k`，因此 Guardian 会严格验证 `/usr/libexec/InternetSharing` 的进程身份，终止旧实例并等待其完全退出，再使用不带 `-k` 的启动请求让 launchd 重建原生服务；它不直接强写 forwarding。若公司 VPN 随即再次关闭 forwarding，Guardian 进入退避并继续保持 Wi-Fi，不与 VPN 循环争夺。`forwarding=1` 只是必要条件，绿色仍要求 MacBook 下游和切换后系统/Clash 数据面共同验证。
 
+恢复退避只限制下一次写操作，Guardian 在 60 秒、5 分钟或 15 分钟退避期间仍每 15 秒刷新进程、forwarding、载波、地址和路由事实。这样公司 VPN 退出或系统自行恢复时可以及时重新进入 30 秒稳定验证，而不会等到写操作退避结束；重复失败原因在只读采样中保持，不被空状态覆盖。
+
 状态语义：红色表示雷雳本地链路不可用；黄色表示 Mini 无载波、地址/共享恢复中、证据冲突、内核转发未就绪、配置漂移、退避、出口抖动或 Clash/TUN 未收敛；绿色只表示固定链路、Mini Guardian 与绑定物理出口均已验证。明确链路故障立即回退；只有公网 HTTPS 不确定故障才需要三轮失败。Apple 与 Cloudflare 目标中至少一个返回预期状态即可通过，避免单目标被公司网络屏蔽导致误判。降级计时从首次确认 Mini 故障开始，即使 Wi-Fi 候选暂时不可用也会在 5 分钟后进入慢速探测；同一候选失败在网络事件或退避到期前不会重复执行和刷日志。
 
 Wi-Fi 先验证载波、IPv4 和网关；能绑定 `en0` 直连 HTTPS 时采用 make-before-break。部分公司网络会同时阻断 Wi-Fi 与雷雳出口上绕过代理的 HTTPS：Wi-Fi 以“实际物理出口为 `en0` 且系统 HTTPS、Clash HTTPS 均成功”确认保网；Mini 切换前以固定链路、绑定公网 ICMP 与 Guardian `ready` 确认可尝试，切换后以“实际物理出口为 `bridge0` 且系统 HTTPS、Clash HTTPS 均成功”确认可用。这样不会让 VPN/TUN 单独冒充 Mini 出口，也不会把公司网络的直连限制误判为 Mini 断网。若目标策略和实际出口都是 Mini、但系统服务顺序仍把 Wi-Fi 排在前面，NetBar 会立即纠正顺序，避免 macOS 随后又落回 Wi-Fi。每当实际物理出口在 `bridge0` 与 `en0` 之间变化，NetBar 都会通过 Mihomo Unix Socket 调用一次 `DELETE /connections`，关闭旧 underlay 上的运行中连接，再等待并验证新连接；这也覆盖雷雳热插拔、自动回退、自动切回和手动切换。它不退出、重启或重载 Clash，不切换 TUN，也不修改 Clash 配置。同一出口的重复检查不会重复清理，失败只按受控间隔重试。

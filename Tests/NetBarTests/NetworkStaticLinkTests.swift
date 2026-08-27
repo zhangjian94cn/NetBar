@@ -357,6 +357,8 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(source.contains("[\"kickstart\", \"system/com.apple.NetworkSharing\"]"))
         XCTAssertFalse(source.contains("\"kickstart\", \"-k\""))
         XCTAssertFalse(source.contains("\"-w\", \"net.inet.ip.forwarding"))
+        XCTAssertTrue(source.contains("GuardianEvaluationCadence.duringRecoveryBackoff"))
+        XCTAssertTrue(source.contains("transition(to: .recoveryBackoff, error: status.lastError)"))
         XCTAssertTrue(source.contains("-setmanual"))
         XCTAssertFalse(source.contains("-setdnsservers"))
         XCTAssertFalse(source.contains("-setnetworkserviceenabled"))

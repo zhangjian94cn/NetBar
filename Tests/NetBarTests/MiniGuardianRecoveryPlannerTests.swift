@@ -107,6 +107,12 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
         XCTAssertFalse(GuardianPersistedRecoveryMigration.shouldResetBackoff(lastError: nil))
     }
 
+    func testBackoffThrottlesRepairsWithoutSuspendingFifteenSecondObservation() {
+        XCTAssertEqual(GuardianEvaluationCadence.duringRecoveryBackoff(remaining: 900), 15)
+        XCTAssertEqual(GuardianEvaluationCadence.duringRecoveryBackoff(remaining: 5), 5)
+        XCTAssertEqual(GuardianEvaluationCadence.duringRecoveryBackoff(remaining: 0), 1)
+    }
+
     func testFailedRepairAndPersistedBackoffFailClosed() {
         XCTAssertEqual(
             decide(upstreamReachable: false, pendingRepairVerification: true),

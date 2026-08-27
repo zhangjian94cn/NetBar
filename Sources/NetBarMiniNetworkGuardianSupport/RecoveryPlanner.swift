@@ -33,6 +33,12 @@ public enum GuardianPersistedRecoveryMigration {
     }
 }
 
+public enum GuardianEvaluationCadence {
+    public static func duringRecoveryBackoff(remaining: TimeInterval) -> TimeInterval {
+        min(15, max(1, remaining))
+    }
+}
+
 public struct MiniGuardianRecoveryInput: Equatable {
     public let carrierActive: Bool
     public let preferencesMatch: Bool
