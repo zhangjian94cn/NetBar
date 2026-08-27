@@ -35,7 +35,7 @@
 
 Guardian 的 ready 同时要求 `en0` 载波、预期地址/路由、正确共享拓扑、共享进程、forwarding 和 Mini 自身上游。MacBook 连续确认下游出口失败时，只能调用固定无参数 `report-egress-failure` 写入短期标记；Guardian 校验本地事实、标记时效和退避后，才可重拉一次原生 Network Sharing。所有恢复路径继续不调用 `-setdnsservers`。
 
-实机安装 v4 后确认，macOS/SIP 会拒绝对关键系统服务执行 `launchctl kickstart -k`。这与 Apple 在 [macOS 14.4 Release Notes](https://developer.apple.com/documentation/macos-release-notes/macos-14_4-release-notes) 中记录的限制一致；Apple 建议需要强制终止时使用 `kill`。Guardian 因此只在 `launchctl print` 同时证明状态为 running、程序严格等于 `/usr/libexec/InternetSharing` 且 PID 为纯数字时，向该 PID 发送 `TERM`，由 launchd 原生重建服务。它不直接执行 `sysctl -w`，避免与系统共享或公司 VPN 争夺内核转发所有权。
+实机安装 v4 后确认，macOS/SIP 会拒绝对关键系统服务执行 `launchctl kickstart -k`。这与 Apple 在 [macOS 14.4 Release Notes](https://developer.apple.com/documentation/macos-release-notes/macos-14_4-release-notes) 中记录的限制一致；Apple 建议需要强制终止时使用 `kill`。Guardian 因此只在 `launchctl print` 同时证明状态为 running、程序严格等于 `/usr/libexec/InternetSharing` 且 PID 为纯数字时，向该 PID 发送 `TERM`；实机进一步证明该服务不具备 KeepAlive，因此 Guardian 等待 `launchctl print` 严格证明同一 Apple 服务已停止后，再执行不带 `-k` 的 `launchctl kickstart` 启动请求。它不直接执行 `sysctl -w`，避免与系统共享或公司 VPN 争夺内核转发所有权。
 
 MacBook 的降级 episode 从首次确认首选路径故障开始，与 Wi-Fi 回退是否成功无关。相同失败只记录一次；候选失败后等待网络事件或退避到期。Mini 自动切回必须看到新鲜、无冲突、forwarding=true 的远端事实以及连续 30 秒下游证明。
 

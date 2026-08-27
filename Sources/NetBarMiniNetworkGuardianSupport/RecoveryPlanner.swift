@@ -15,6 +15,14 @@ public enum NativeSharingProcessIdentity {
         }
         return pid
     }
+
+    public static func isStoppedNativeService(launchctlPrint output: String) -> Bool {
+        let lines = output.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return lines.contains("state = not running") &&
+            lines.contains("program = /usr/libexec/InternetSharing") &&
+            !lines.contains(where: { $0.hasPrefix("pid = ") })
+    }
 }
 
 public enum GuardianPersistedRecoveryMigration {
