@@ -1317,7 +1317,8 @@ final class NetworkModeController: ObservableObject {
         let reason = current.linkState != .connected
             ? current.linkState.displayName
             : current.gatewayState.displayName
-        if current.effectiveMode == .localWiFi {
+        if current.effectiveMode == .localWiFi,
+           current.intendedMode == .localWiFi {
             let wifiProbe = connectivityProber.probe(interfaceName: current.wifiDevice ?? "en0")
             if wifiProbe.routedInternetReady {
                 policyState.beginWiFiFallback(at: checkDate)
@@ -1434,7 +1435,7 @@ final class NetworkModeController: ObservableObject {
             }
 
             let current = try? provider.readSnapshot()
-            if current?.effectiveMode != .localWiFi {
+            if current?.effectiveMode != .localWiFi || current?.intendedMode != .localWiFi {
                 let helperAvailable = routeSafetyController.status() != nil
                 let routeResult: NetworkModeCommandResult
                 if helperAvailable {
@@ -1457,7 +1458,8 @@ final class NetworkModeController: ObservableObject {
             }
 
             guard let refreshed = (try? provider.readSnapshot()) ?? current,
-                  refreshed.effectiveMode == .localWiFi else {
+                  refreshed.effectiveMode == .localWiFi,
+                  refreshed.intendedMode == .localWiFi else {
                 fallbackFailureMessage = "Wi-Fi 服务顺序已修改，但默认物理出口验证失败"
                 eventLogger.record(event: "wifi_route_verification_failed", detail: reason, candidateSSID: candidate.displayName)
                 continue

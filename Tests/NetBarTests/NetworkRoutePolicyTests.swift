@@ -92,6 +92,41 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { routeSafety.appliedModes == [.localWiFi] })
     }
 
+    func testCarrierLossRepairsWiFiServiceOrderAfterMacOSAlreadyChangedDefaultRoute() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(
+                interface: "en0",
+                gateway: .carrierDown,
+                intendedMode: .macMiniGateway
+            ),
+            policySnapshot(
+                interface: "en0",
+                gateway: .carrierDown,
+                intendedMode: .macMiniGateway
+            ),
+            policySnapshot(
+                interface: "en0",
+                gateway: .carrierDown,
+                intendedMode: .localWiFi
+            )
+        ])
+        let routeSafety = RecordingRouteSafetyController()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { routeSafety.appliedModes == [.localWiFi] })
+    }
+
     func testControllerUsesThreeRapidHTTPSFailuresBeforeFallback() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable),
