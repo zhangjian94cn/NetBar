@@ -129,7 +129,7 @@ Direct Full 版本会在弹出面板中显示“Mac mini 链路”卡片：
 
 Mac mini 的上游固定为内置以太网 `en0`。`en0` 断开时，雷雳本地链路和 `192.168.2.1` 访问仍保持可用，MacBook 自动回退 Wi-Fi。Mini Guardian 不会重置无载波的网口；载波恢复后先等待 macOS 自行收敛，必要时只重新应用既定 Manual IPv4 和重拉 `com.apple.NetworkSharing`。它不调用 `-setdnsservers`，因此用户为公司网络配置的 DNS 保持不变。NetBar 不自动改用 Mini 的 USB 网卡或 Wi-Fi，原生 Internet Sharing 继续唯一管理 NAT/DHCP。
 
-Guardian 的 `ready` 现在必须同时满足 `en0` 载波、预期地址与路由、共享拓扑、Network Sharing 进程、`net.inet.ip.forwarding=1` 和 Mini 自身上游探测。Helper 与 Guardian 对同一事实不一致时显示“共享状态证据冲突”；进程 running 但 forwarding=0 时显示“Mac mini 上游正常 · 共享转发未就绪”，期间保持 Wi-Fi 并由 Guardian 受退避约束地恢复原生共享。`forwarding=1` 只是必要条件，绿色仍要求 MacBook 下游和切换后系统/Clash 数据面共同验证。
+Guardian 的 `ready` 现在必须同时满足 `en0` 载波、预期地址与路由、共享拓扑、Network Sharing 进程、`net.inet.ip.forwarding=1` 和 Mini 自身上游探测。Helper 与 Guardian 对同一事实不一致时显示“共享状态证据冲突”；进程 running 但 forwarding=0 时显示“Mac mini 上游正常 · 共享转发未就绪”，期间保持 Wi-Fi。较新的 macOS/SIP 不允许对该关键系统服务执行 `launchctl kickstart -k`，因此 Guardian 会严格验证 `/usr/libexec/InternetSharing` 的进程身份，再终止旧实例并让 launchd 原生重建；它不直接强写 forwarding。若公司 VPN 随即再次关闭 forwarding，Guardian 进入退避并继续保持 Wi-Fi，不与 VPN 循环争夺。`forwarding=1` 只是必要条件，绿色仍要求 MacBook 下游和切换后系统/Clash 数据面共同验证。
 
 状态语义：红色表示雷雳本地链路不可用；黄色表示 Mini 无载波、地址/共享恢复中、证据冲突、内核转发未就绪、配置漂移、退避、出口抖动或 Clash/TUN 未收敛；绿色只表示固定链路、Mini Guardian 与绑定物理出口均已验证。明确链路故障立即回退；只有公网 HTTPS 不确定故障才需要三轮失败。Apple 与 Cloudflare 目标中至少一个返回预期状态即可通过，避免单目标被公司网络屏蔽导致误判。降级计时从首次确认 Mini 故障开始，即使 Wi-Fi 候选暂时不可用也会在 5 分钟后进入慢速探测；同一候选失败在网络事件或退避到期前不会重复执行和刷日志。
 
