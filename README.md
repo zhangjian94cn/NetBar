@@ -125,11 +125,13 @@ Direct Full 版本会在弹出面板中显示“Mac mini 链路”卡片：
 
 回退后的前 5 分钟是 Mini 积极恢复窗口：Wi-Fi 已经保网，同时每 10 秒检查 Mini。满 5 分钟仍不可用会进入稳定 Wi-Fi 降级，Mini 检查降为每 60 秒一次；这 5 分钟不是断网等待时间。10 分钟内重复自动切回再失败会熔断 10 分钟，避免两个出口反复抖动。
 
-首次初始化需要在 Mac mini 终端和本机各完成一次管理员授权。Mini Helper v3 仅允许 `status`、`apply`、`rollback` 三个固定命令；本机 Route Safety Helper 仅允许 `status`、`prefer-wifi`、`prefer-mini`、`rollback`。NetBar 不接收或保存管理员密码。SSH 连接严格复用 `192.168.2.1` 已登记的主机密钥，不自动接受未知或变化的密钥。
+首次初始化需要在 Mac mini 终端和本机各完成一次管理员授权。Mini Helper v4 仅允许 `status`、`apply`、`rollback`、`report-egress-failure` 四个固定无参数命令；最后一个命令只写入带时间戳的下游失败标记，由 Guardian 独立决定是否恢复。当前本机 Route Safety Helper 仅允许 `status`、`prefer-wifi`、`prefer-mini`、`rollback`。NetBar 不接收或保存管理员密码。SSH 连接严格复用 `192.168.2.1` 已登记的主机密钥，不自动接受未知或变化的密钥。
 
 Mac mini 的上游固定为内置以太网 `en0`。`en0` 断开时，雷雳本地链路和 `192.168.2.1` 访问仍保持可用，MacBook 自动回退 Wi-Fi。Mini Guardian 不会重置无载波的网口；载波恢复后先等待 macOS 自行收敛，必要时只重新应用既定 Manual IPv4 和重拉 `com.apple.NetworkSharing`。它不调用 `-setdnsservers`，因此用户为公司网络配置的 DNS 保持不变。NetBar 不自动改用 Mini 的 USB 网卡或 Wi-Fi，原生 Internet Sharing 继续唯一管理 NAT/DHCP。
 
-状态语义：红色表示雷雳本地链路不可用；黄色表示 Mini 无载波、地址/共享恢复中、配置漂移、退避、出口抖动或 Clash/TUN 未收敛；绿色只表示固定链路、Mini Guardian 与绑定物理出口均已验证。明确链路故障立即回退；只有公网 HTTPS 不确定故障才需要三轮失败。Apple 与 Cloudflare 目标中至少一个返回预期状态即可通过，避免单目标被公司网络屏蔽导致误判。
+Guardian 的 `ready` 现在必须同时满足 `en0` 载波、预期地址与路由、共享拓扑、Network Sharing 进程、`net.inet.ip.forwarding=1` 和 Mini 自身上游探测。Helper 与 Guardian 对同一事实不一致时显示“共享状态证据冲突”；进程 running 但 forwarding=0 时显示“Mac mini 上游正常 · 共享转发未就绪”，期间保持 Wi-Fi 并由 Guardian 受退避约束地恢复原生共享。`forwarding=1` 只是必要条件，绿色仍要求 MacBook 下游和切换后系统/Clash 数据面共同验证。
+
+状态语义：红色表示雷雳本地链路不可用；黄色表示 Mini 无载波、地址/共享恢复中、证据冲突、内核转发未就绪、配置漂移、退避、出口抖动或 Clash/TUN 未收敛；绿色只表示固定链路、Mini Guardian 与绑定物理出口均已验证。明确链路故障立即回退；只有公网 HTTPS 不确定故障才需要三轮失败。Apple 与 Cloudflare 目标中至少一个返回预期状态即可通过，避免单目标被公司网络屏蔽导致误判。降级计时从首次确认 Mini 故障开始，即使 Wi-Fi 候选暂时不可用也会在 5 分钟后进入慢速探测；同一候选失败在网络事件或退避到期前不会重复执行和刷日志。
 
 Wi-Fi 先验证载波、IPv4 和网关；能绑定 `en0` 直连 HTTPS 时采用 make-before-break。部分公司网络会同时阻断 Wi-Fi 与雷雳出口上绕过代理的 HTTPS：Wi-Fi 以“实际物理出口为 `en0` 且系统 HTTPS、Clash HTTPS 均成功”确认保网；Mini 切换前以固定链路、绑定公网 ICMP 与 Guardian `ready` 确认可尝试，切换后以“实际物理出口为 `bridge0` 且系统 HTTPS、Clash HTTPS 均成功”确认可用。这样不会让 VPN/TUN 单独冒充 Mini 出口，也不会把公司网络的直连限制误判为 Mini 断网。若目标策略和实际出口都是 Mini、但系统服务顺序仍把 Wi-Fi 排在前面，NetBar 会立即纠正顺序，避免 macOS 随后又落回 Wi-Fi。每当实际物理出口在 `bridge0` 与 `en0` 之间变化，NetBar 都会通过 Mihomo Unix Socket 调用一次 `DELETE /connections`，关闭旧 underlay 上的运行中连接，再等待并验证新连接；这也覆盖雷雳热插拔、自动回退、自动切回和手动切换。它不退出、重启或重载 Clash，不切换 TUN，也不修改 Clash 配置。同一出口的重复检查不会重复清理，失败只按受控间隔重试。
 
@@ -148,6 +150,16 @@ JSONL 只记录状态转换和修复动作，候选以 SHA-256 短标识保存�
 sudo -n /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper status
 log show --last 1h --style compact --predicate 'subsystem == "com.zjah.NetBarMiniNetworkGuardian"'
 ```
+
+仓库提供三个只读诊断入口：
+
+```bash
+./scripts/network-readiness-diagnostics.sh sharing-facts-consistency
+./scripts/network-readiness-diagnostics.sh mini-end-to-end-readiness
+./scripts/network-readiness-diagnostics.sh network-trace-replay
+```
+
+它们分别验证远端 Helper/Guardian/`launchctl`/`sysctl` 一致性、完整 Mini 下游路径，以及脱敏故障轨迹能否收敛而不重复报告或刷回退日志。
 
 该功能不关闭或重启 Clash、aTrust、Tailscale、Amnezia 等 VPN，也不修改 Clash 配置。Clash 持久配置（包括 IPv6）继续由 `dual-vpn-config` 独占治理。VPN 开启时公网 IP 仍可能显示 VPN 出口；卡片展示的是 VPN 下层的物理出口。系统设置即使仍显示黄色“未知状态”，也不影响 NetBar 根据载波、IP、网关、绑定 HTTPS 和默认路由给出的实测结果。
 

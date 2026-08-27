@@ -23,6 +23,8 @@ private enum GuardianState: String, Codable {
 
 private struct GuardianStatus: Codable {
     var state: GuardianState
+    var observedAt: String?
+    var generation: UInt64
     var lastTransition: String?
     var lastCarrierChange: String? = nil
     var lastAction: String?
@@ -31,6 +33,7 @@ private struct GuardianStatus: Codable {
     var addressReady: Bool
     var routeReady: Bool
     var sharingRunning: Bool
+    var forwardingEnabled: Bool
     var sharingConfigured: Bool
     var upstreamReachable: Bool
     var nextRetryAt: String?
@@ -68,6 +71,7 @@ private final class CommandRunner {
 private final class MiniNetworkGuardian {
     private let profileURL = URL(fileURLWithPath: "/Library/Application Support/NetBar/MacMiniLinkProfile.plist")
     private let statusURL = URL(fileURLWithPath: "/Library/Application Support/NetBar/MiniGuardian/status.json")
+    private let downstreamEgressFailureURL = URL(fileURLWithPath: "/Library/Application Support/NetBar/MiniGuardian/downstream-egress-failure.txt")
     private let natProfileURL = URL(fileURLWithPath: "/Library/Preferences/SystemConfiguration/com.apple.nat.plist")
     private let runner = CommandRunner()
     private let queue = DispatchQueue(label: "com.zjah.NetBarMiniNetworkGuardian")
@@ -80,6 +84,8 @@ private final class MiniNetworkGuardian {
     private var sharingWaitStarted: Date?
     private var pendingRepairVerification = false
     private var healthySince: Date?
+    private var lastUpstreamProbeAt: Date?
+    private var cachedUpstreamReachable = false
     private var previousCarrier: Bool?
     private var status: GuardianStatus
     private let profile: GuardianProfile
@@ -93,6 +99,8 @@ private final class MiniNetworkGuardian {
         profile = decoded
         status = Self.loadStatus(from: statusURL) ?? GuardianStatus(
             state: .recoveryBackoff,
+            observedAt: nil,
+            generation: 0,
             lastTransition: nil,
             lastAction: nil,
             lastError: "guardian starting",
@@ -100,6 +108,7 @@ private final class MiniNetworkGuardian {
             addressReady: false,
             routeReady: false,
             sharingRunning: false,
+            forwardingEnabled: false,
             sharingConfigured: false,
             upstreamReachable: false,
             nextRetryAt: nil,
@@ -163,18 +172,25 @@ private final class MiniNetworkGuardian {
 
     private func evaluate() {
         let now = Date()
+        status.observedAt = iso8601.string(from: now)
+        status.generation &+= 1
         let carrier = interfaceIsActive()
         let addressReady = interfaceHasExpectedAddress()
         let routeReady = scopedDefaultRouteIsExpected()
         let sharingConfigured = sharingConfigurationMatches()
         let sharingRunning = internetSharingIsRunning()
-        let reachable = addressReady && routeReady && boundUpstreamIsReachable()
+        let forwardingEnabled = kernelForwardingIsEnabled()
+        let reachable = addressReady && routeReady && upstreamReachability(at: now)
+        let freshDownstreamFailure = consumeFreshDownstreamEgressFailure(at: now)
+        let downstreamRecoveryRequested = freshDownstreamFailure && carrier && addressReady && routeReady &&
+            sharingConfigured && sharingRunning && forwardingEnabled && reachable
 
         status.carrierActive = carrier
         status.addressReady = addressReady
         status.routeReady = routeReady
         status.sharingConfigured = sharingConfigured
         status.sharingRunning = sharingRunning
+        status.forwardingEnabled = forwardingEnabled
         status.upstreamReachable = reachable
 
         if previousCarrier != carrier {
@@ -183,12 +199,14 @@ private final class MiniNetworkGuardian {
             addressWaitStarted = nil
             sharingWaitStarted = nil
             pendingRepairVerification = false
+            lastUpstreamProbeAt = nil
+            cachedUpstreamReachable = false
             status.failureCount = 0
             status.nextRetryAt = nil
             transition(to: carrier ? .addressRecovering : .carrierDown, action: "carrier \(carrier ? "active" : "inactive")")
         }
 
-        let fullyHealthy = carrier && addressReady && routeReady && sharingRunning && reachable
+        let fullyHealthy = carrier && addressReady && routeReady && sharingRunning && forwardingEnabled && reachable
         if fullyHealthy {
             if healthySince == nil { healthySince = now }
         } else {
@@ -203,6 +221,8 @@ private final class MiniNetworkGuardian {
                 addressReady: addressReady,
                 routeReady: routeReady,
                 sharingRunning: sharingRunning,
+                forwardingEnabled: forwardingEnabled,
+                downstreamEgressFailureReported: downstreamRecoveryRequested,
                 upstreamReachable: reachable,
                 pendingRepairVerification: pendingRepairVerification,
                 retryRemaining: retryRemaining,
@@ -215,16 +235,18 @@ private final class MiniNetworkGuardian {
         switch decision {
         case .carrierDown:
             transition(to: .carrierDown)
+            scheduleEvaluation(after: 15)
 
         case .configurationDrift(let message):
             transition(to: .configurationDrift, error: message)
+            scheduleEvaluation(after: 15)
 
         case .readyStabilizing(let delay):
             addressWaitStarted = nil
             sharingWaitStarted = nil
             pendingRepairVerification = false
             transition(to: .readyStabilizing)
-            scheduleEvaluation(after: delay)
+            scheduleEvaluation(after: min(15, delay))
 
         case .ready(let resetBackoff):
             addressWaitStarted = nil
@@ -235,8 +257,7 @@ private final class MiniNetworkGuardian {
                 status.nextRetryAt = nil
             }
             transition(to: .ready, action: status.lastAction)
-            let healthyDuration = healthySince.map { now.timeIntervalSince($0) } ?? 30
-            scheduleEvaluation(after: resetBackoff ? 60 : max(1, 60 - healthyDuration))
+            scheduleEvaluation(after: 15)
 
         case .repairFailed:
             pendingRepairVerification = false
@@ -313,7 +334,7 @@ private final class MiniNetworkGuardian {
         status.lastError = error
         writeStatus()
         if previousState != status.state || previousAction != status.lastAction || previousError != status.lastError {
-            self.log.notice("state=\(self.status.state.rawValue, privacy: .public) carrier=\(self.status.carrierActive) address=\(self.status.addressReady) route=\(self.status.routeReady) sharing=\(self.status.sharingRunning) egress=\(self.status.upstreamReachable) action=\(self.status.lastAction ?? "-", privacy: .public) error=\(self.status.lastError ?? "-", privacy: .public)")
+            self.log.notice("state=\(self.status.state.rawValue, privacy: .public) carrier=\(self.status.carrierActive) address=\(self.status.addressReady) route=\(self.status.routeReady) sharing=\(self.status.sharingRunning) forwarding=\(self.status.forwardingEnabled) egress=\(self.status.upstreamReachable) action=\(self.status.lastAction ?? "-", privacy: .public) error=\(self.status.lastError ?? "-", privacy: .public)")
         }
     }
 
@@ -360,6 +381,11 @@ private final class MiniNetworkGuardian {
         return output.contains("state = running") && output.contains("/usr/libexec/InternetSharing")
     }
 
+    private func kernelForwardingIsEnabled() -> Bool {
+        let result = runner.run("/usr/sbin/sysctl", ["-n", "net.inet.ip.forwarding"])
+        return result.succeeded && result.output.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+    }
+
     private func boundUpstreamIsReachable() -> Bool {
         profile.probeTargets.contains { target in
             runner.run("/sbin/ping", [
@@ -368,6 +394,27 @@ private final class MiniNetworkGuardian {
                 "-c", "1", "-W", "700", target
             ]).succeeded
         }
+    }
+
+    private func upstreamReachability(at now: Date) -> Bool {
+        if let lastUpstreamProbeAt, now.timeIntervalSince(lastUpstreamProbeAt) < 60 {
+            return cachedUpstreamReachable
+        }
+        cachedUpstreamReachable = boundUpstreamIsReachable()
+        lastUpstreamProbeAt = now
+        return cachedUpstreamReachable
+    }
+
+    private func consumeFreshDownstreamEgressFailure(at now: Date) -> Bool {
+        guard let raw = try? String(contentsOf: downstreamEgressFailureURL, encoding: .utf8) else {
+            return false
+        }
+        try? FileManager.default.removeItem(at: downstreamEgressFailureURL)
+        guard let reportedAt = iso8601.date(from: raw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return false
+        }
+        let age = now.timeIntervalSince(reportedAt)
+        return age >= -5 && age <= 60
     }
 
     private func preferencesMatchExpectedConfiguration() -> Bool {

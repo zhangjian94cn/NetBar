@@ -10,6 +10,9 @@ SED=/usr/bin/sed
 MKDIR=/bin/mkdir
 CHMOD=/bin/chmod
 SLEEP=/bin/sleep
+LAUNCHCTL=/bin/launchctl
+SYSCTL=/usr/sbin/sysctl
+DATE=/bin/date
 
 PROFILE=/Library/Application\ Support/NetBar/MacMiniLinkProfile.plist
 NAT_PROFILE=/Library/Preferences/SystemConfiguration/com.apple.nat.plist
@@ -17,17 +20,27 @@ STATE_DIR=/Library/Application\ Support/NetBar/ThunderboltLink
 BACKUP_PLIST="$STATE_DIR/mini-network-backup.plist"
 BACKUP_DNS="$STATE_DIR/mini-dns-backup.txt"
 GUARDIAN_STATUS=/Library/Application\ Support/NetBar/MiniGuardian/status.json
+EGRESS_FAILURE_MARKER=/Library/Application\ Support/NetBar/MiniGuardian/downstream-egress-failure.txt
 
 fail() {
     print -u2 -- "$1"
     exit 1
 }
 
-[[ "$#" -eq 1 ]] || fail "usage: netbar-mini-link-helper status|apply|rollback"
+[[ "$#" -eq 1 ]] || fail "usage: netbar-mini-link-helper status|apply|rollback|report-egress-failure"
 case "$1" in
-    status|apply|rollback) ACTION="$1" ;;
+    status|apply|rollback|report-egress-failure) ACTION="$1" ;;
     *) fail "unsupported command" ;;
 esac
+
+if [[ "$ACTION" == "report-egress-failure" ]]; then
+    "$MKDIR" -p "${EGRESS_FAILURE_MARKER:h}"
+    "$CHMOD" 700 "${EGRESS_FAILURE_MARKER:h}"
+    "$DATE" -u '+%Y-%m-%dT%H:%M:%SZ' > "$EGRESS_FAILURE_MARKER"
+    "$CHMOD" 600 "$EGRESS_FAILURE_MARKER"
+    print -r -- '{"protocolVersion":4,"reported":true}'
+    exit 0
+fi
 
 [[ -r "$PROFILE" ]] || fail "profile missing"
 
@@ -119,22 +132,42 @@ restore_dns() {
 }
 
 emit_status() {
-    local info ip upstream_active sharing_running sharing_configured configured primary_device
+    local info ip upstream_active sharing_process_running forwarding_enabled sharing_configured configured primary_device
     info="$($NETWORKSETUP -getinfo "$BRIDGE_SERVICE")"
     ip="$(network_value "IP address" "$info")"
-    "$IFCONFIG" bridge0 | "$GREP" -q "inet $GATEWAY_ADDRESS " && configured=true || configured=false
-    "$IFCONFIG" "$UPSTREAM_DEVICE" | "$GREP" -q 'status: active' && upstream_active=true || upstream_active=false
-    /bin/ps -axo command | "$GREP" -q '[/]usr/libexec/InternetSharing' && sharing_running=true || sharing_running=false
+    local bridge_info upstream_info sharing_output forwarding_value
+    bridge_info="$($IFCONFIG bridge0 2>/dev/null || true)"
+    upstream_info="$($IFCONFIG "$UPSTREAM_DEVICE" 2>/dev/null || true)"
+    sharing_output="$($LAUNCHCTL print system/com.apple.NetworkSharing 2>/dev/null || true)"
+    forwarding_value="$($SYSCTL -n net.inet.ip.forwarding 2>/dev/null || true)"
+    [[ "$bridge_info" == *"inet $GATEWAY_ADDRESS "* ]] && configured=true || configured=false
+    [[ "$upstream_info" == *"status: active"* ]] && upstream_active=true || upstream_active=false
+    [[ "$sharing_output" == *"state = running"* && "$sharing_output" == *"/usr/libexec/InternetSharing"* ]] && sharing_process_running=true || sharing_process_running=false
+    [[ "${forwarding_value//$'\n'/}" == "1" ]] && forwarding_enabled=true || forwarding_enabled=false
     primary_device="$($PLUTIL -extract NAT.PrimaryInterface.Device raw -o - "$NAT_PROFILE" 2>/dev/null || true)"
     [[ "$primary_device" == "$UPSTREAM_DEVICE" ]] && sharing_includes_bridge && sharing_configured=true || sharing_configured=false
-    local guardian
+    local guardian evidence_conflict guardian_observed_at guardian_generation guardian_sharing guardian_forwarding
     guardian='null'
+    evidence_conflict=false
+    guardian_observed_at='null'
+    guardian_generation='null'
     if [[ -r "$GUARDIAN_STATUS" ]]; then
         local normalized_guardian
         normalized_guardian="$("$PLUTIL" -convert json -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
-        [[ -n "$normalized_guardian" ]] && guardian="$normalized_guardian"
+        if [[ -n "$normalized_guardian" ]]; then
+            guardian="$normalized_guardian"
+            guardian_sharing="$("$PLUTIL" -extract sharingRunning raw -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
+            guardian_forwarding="$("$PLUTIL" -extract forwardingEnabled raw -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
+            [[ -n "$guardian_sharing" && "$guardian_sharing" != "$sharing_process_running" ]] && evidence_conflict=true
+            [[ -n "$guardian_forwarding" && "$guardian_forwarding" != "$forwarding_enabled" ]] && evidence_conflict=true
+            local observed generation
+            observed="$("$PLUTIL" -extract observedAt raw -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
+            generation="$("$PLUTIL" -extract generation raw -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
+            [[ -n "$observed" ]] && guardian_observed_at="\"$(json_escape "$observed")\""
+            [[ "$generation" == <-> ]] && guardian_generation="$generation"
+        fi
     fi
-    print -r -- "{\"protocolVersion\":3,\"service\":\"$(json_escape "$BRIDGE_SERVICE")\",\"configured\":$configured,\"serviceIPv4\":\"$(json_escape "${ip:-}")\",\"gatewayIPv4\":\"$GATEWAY_ADDRESS\",\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"internetSharingRunning\":$sharing_running,\"guardian\":$guardian}"
+    print -r -- "{\"protocolVersion\":4,\"service\":\"$(json_escape "$BRIDGE_SERVICE")\",\"configured\":$configured,\"serviceIPv4\":\"$(json_escape "${ip:-}")\",\"gatewayIPv4\":\"$GATEWAY_ADDRESS\",\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"sharingProcessRunning\":$sharing_process_running,\"forwardingEnabled\":$forwarding_enabled,\"guardianObservedAt\":$guardian_observed_at,\"guardianGeneration\":$guardian_generation,\"evidenceConflict\":$evidence_conflict,\"guardian\":$guardian}"
 }
 
 wait_for_gateway_address() {

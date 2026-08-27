@@ -1,11 +1,12 @@
 # ADR: 连通性优先的候选池故障转移与 Mihomo 无重启收敛
 
 - 日期: 2026-08-26
-- 状态: accepted
+- 状态: partially superseded（控制器内联决策由 2026-08-27 ADR 分阶段取代）
 - 范围: NetBar Direct Full / MacBook 物理出口候选与 Clash 数据面收敛
 - 相关源码: [NetworkConnectivity.swift](../Sources/NetBar/Monitors/NetworkConnectivity.swift)、[NetworkModeController.swift](../Sources/NetBar/Monitors/NetworkModeController.swift)、[NetworkRoutePolicy.swift](../Sources/NetBar/Monitors/NetworkRoutePolicy.swift)、[MihomoClient.swift](../Sources/NetBar/Monitors/MihomoClient.swift)、[NetworkModeCard.swift](../Sources/NetBar/Views/Components/NetworkModeCard.swift)
 - 部分取代: [2026-08-26-mac-mini-preferred-route-self-healing-adr.md](2026-08-26-mac-mini-preferred-route-self-healing-adr.md) 中固定 Mini/Wi-Fi 双候选、固定 10 秒检查和 VPN/TUN 完全只读的选择
 - 上位原则: [engineering-principles.md](../../../docs/engineering-principles.md)
+- 取代决策: [2026-08-27-evidence-driven-network-policy-machine-adr.md](2026-08-27-evidence-driven-network-policy-machine-adr.md)
 
 ## Context and Problem Statement
 

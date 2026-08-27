@@ -188,10 +188,10 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.failure("missing")))
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success("{}")))
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
-            "{\"protocolVersion\":2}"
+            "{\"protocolVersion\":3}"
         )))
         XCTAssertTrue(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
-            "{\"protocolVersion\":3}"
+            "{\"protocolVersion\":4}"
         )))
     }
 
@@ -312,6 +312,7 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper status"))
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper apply"))
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper rollback"))
+        XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper report-egress-failure"))
         XCTAssertFalse(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper *"))
         XCTAssertTrue(installerSource.contains("visudo -cf"))
         XCTAssertTrue(installerSource.contains(
@@ -323,7 +324,11 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(installerSource.contains("/bin/rm -f \"$LEGACY_SUDOERS_TARGET\""))
         XCTAssertTrue(helperSource.contains("NAT.SharingDevices.$index"))
         XCTAssertFalse(helperSource.contains("NAT.SharingDevices json"))
-        XCTAssertTrue(helperSource.contains("protocolVersion\\\":3"))
+        XCTAssertTrue(helperSource.contains("protocolVersion\\\":4"))
+        XCTAssertTrue(helperSource.contains("system/com.apple.NetworkSharing"))
+        XCTAssertTrue(helperSource.contains("net.inet.ip.forwarding"))
+        XCTAssertTrue(helperSource.contains("evidenceConflict"))
+        XCTAssertFalse(helperSource.contains("ps -axo command"))
         XCTAssertTrue(helperSource.contains("-convert json -o - \"$GUARDIAN_STATUS\""))
         XCTAssertFalse(helperSource.contains("-lint \"$GUARDIAN_STATUS\""))
         XCTAssertTrue(installerSource.contains("com.zjah.NetBarMiniNetworkGuardian"))
@@ -406,7 +411,7 @@ final class NetworkStaticLinkTests: XCTestCase {
     }
 
     private static let readyHelperJSON = """
-    {"protocolVersion":3,"configured":true,"serviceIPv4":"192.168.2.1","gatewayIPv4":"192.168.2.1","upstreamDevice":"en0","upstreamActive":true,"sharingConfigured":true,"internetSharingRunning":true,"guardian":{"state":"ready","lastTransition":null,"lastCarrierChange":null,"lastAction":null,"lastError":null,"carrierActive":true,"addressReady":true,"routeReady":true,"sharingRunning":true,"sharingConfigured":true,"upstreamReachable":true,"nextRetryAt":null}}
+    {"protocolVersion":4,"configured":true,"serviceIPv4":"192.168.2.1","gatewayIPv4":"192.168.2.1","upstreamDevice":"en0","upstreamActive":true,"sharingConfigured":true,"sharingProcessRunning":true,"forwardingEnabled":true,"guardianObservedAt":"2026-08-27T08:39:00Z","guardianGeneration":1,"evidenceConflict":false,"guardian":{"state":"ready","observedAt":"2026-08-27T08:39:00Z","generation":1,"lastTransition":null,"lastCarrierChange":null,"lastAction":null,"lastError":null,"carrierActive":true,"addressReady":true,"routeReady":true,"sharingRunning":true,"forwardingEnabled":true,"sharingConfigured":true,"upstreamReachable":true,"nextRetryAt":null}}
     """
 }
 
@@ -541,7 +546,7 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
                 remoteActions.append(action)
                 if action == "status" {
                     return remoteHelperInstalled
-                        ? .success("{\"protocolVersion\":3}")
+                        ? .success("{\"protocolVersion\":4}")
                         : .failure("missing")
                 }
                 if action == "rollback" { return remoteRollbackSucceeds ? .success("{}") : .failure("rollback failed") }
