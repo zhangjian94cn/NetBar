@@ -864,9 +864,22 @@ final class NetworkModeController: ObservableObject {
                 self?.performPolicyCheck(force: true)
             }
         }
-        networkChangeObserver.start { [weak self] in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                self?.performPolicyCheck(force: true)
+        networkChangeObserver.start { [weak self] event in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if event == .physicalLink {
+                    Log.network.info("收到物理链路变化事件，立即重新评估出口")
+                }
+                let reaction = event.reaction(
+                    preference: self.routePreference,
+                    activeMode: self.snapshot?.effectiveMode
+                )
+                if let message = reaction.message {
+                    self.policyMessage = message
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + reaction.delay) { [weak self] in
+                    self?.performPolicyCheck(force: true)
+                }
             }
         }
         guard policyTimer == nil else { return }

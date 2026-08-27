@@ -470,12 +470,68 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
     }
 }
 
+enum NetworkChangeEvent: Equatable {
+    case physicalLink
+    case addressing
+    case routing
+    case other
+
+    static func classify(changedKeys: [String]) -> NetworkChangeEvent {
+        if changedKeys.contains(where: { $0.hasSuffix("/Link") }) {
+            return .physicalLink
+        }
+        if changedKeys.contains(where: { $0.hasSuffix("/IPv4") && $0.contains("/Interface/") }) {
+            return .addressing
+        }
+        if changedKeys.contains("State:/Network/Global/IPv4") {
+            return .routing
+        }
+        return .other
+    }
+
+    func reaction(
+        preference: NetworkRoutePreference,
+        activeMode: NetworkRouteMode?
+    ) -> NetworkChangeReaction {
+        switch self {
+        case .physicalLink:
+            return NetworkChangeReaction(
+                delay: 0.1,
+                message: preference == .miniPreferred && activeMode == .macMiniGateway
+                    ? "检测到雷雳链路变化，正在确认并回退 Wi-Fi…"
+                    : nil
+            )
+        case .addressing, .routing:
+            return NetworkChangeReaction(delay: 0.2, message: nil)
+        case .other:
+            return NetworkChangeReaction(delay: 0.5, message: nil)
+        }
+    }
+}
+
+struct NetworkChangeReaction: Equatable {
+    let delay: TimeInterval
+    let message: String?
+}
+
 final class NetworkChangeObserver {
+    static let notificationKeys = [
+        "State:/Network/Global/IPv4",
+        "State:/Network/Interface/en0/IPv4",
+        "State:/Network/Interface/en0/Link",
+        "State:/Network/Interface/bridge0/IPv4",
+        "State:/Network/Interface/bridge0/Link"
+    ]
+    static let notificationPatterns = [
+        #"State:/Network/Interface/.*/Link"#,
+        #"State:/Network/Interface/.*/IPv4"#
+    ]
+
     private var store: SCDynamicStore?
     private var source: CFRunLoopSource?
-    private var onChange: (() -> Void)?
+    private var onChange: ((NetworkChangeEvent) -> Void)?
 
-    func start(onChange: @escaping () -> Void) {
+    func start(onChange: @escaping (NetworkChangeEvent) -> Void) {
         stop()
         self.onChange = onChange
         var context = SCDynamicStoreContext(
@@ -485,19 +541,18 @@ final class NetworkChangeObserver {
             release: nil,
             copyDescription: nil
         )
-        let callback: SCDynamicStoreCallBack = { _, _, info in
+        let callback: SCDynamicStoreCallBack = { _, changedKeys, info in
             guard let info else { return }
-            Unmanaged<NetworkChangeObserver>.fromOpaque(info).takeUnretainedValue().onChange?()
+            let keys = changedKeys as? [String] ?? []
+            let observer = Unmanaged<NetworkChangeObserver>.fromOpaque(info).takeUnretainedValue()
+            observer.onChange?(NetworkChangeEvent.classify(changedKeys: keys))
         }
         guard let store = SCDynamicStoreCreate(nil, "com.zjah.NetBar.network-change" as CFString, callback, &context) else { return }
-        let keys = [
-            "State:/Network/Global/IPv4",
-            "State:/Network/Interface/en0/IPv4",
-            "State:/Network/Interface/en0/Link",
-            "State:/Network/Interface/bridge0/IPv4",
-            "State:/Network/Interface/bridge0/Link"
-        ] as CFArray
-        SCDynamicStoreSetNotificationKeys(store, keys, nil)
+        SCDynamicStoreSetNotificationKeys(
+            store,
+            Self.notificationKeys as CFArray,
+            Self.notificationPatterns as CFArray
+        )
         guard let source = SCDynamicStoreCreateRunLoopSource(nil, store, 0) else { return }
         self.store = store
         self.source = source
