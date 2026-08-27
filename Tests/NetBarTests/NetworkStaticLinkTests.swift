@@ -354,6 +354,7 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(source.contains("system/com.apple.NetworkSharing"))
         XCTAssertTrue(source.contains("/bin/kill"))
         XCTAssertTrue(source.contains("NativeSharingProcessIdentity.pid"))
+        XCTAssertTrue(source.contains("[\"kickstart\", \"system/com.apple.NetworkSharing\"]"))
         XCTAssertFalse(source.contains("\"kickstart\", \"-k\""))
         XCTAssertFalse(source.contains("\"-w\", \"net.inet.ip.forwarding"))
         XCTAssertTrue(source.contains("-setmanual"))

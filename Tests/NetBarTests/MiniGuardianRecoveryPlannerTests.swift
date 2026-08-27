@@ -86,6 +86,15 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
             of: "pid = 22136",
             with: "pid = 22136; /bin/sh"
         )))
+
+        let stopped = valid.replacingOccurrences(of: "state = running", with: "state = not running")
+            .replacingOccurrences(of: "pid = 22136", with: "")
+        XCTAssertTrue(NativeSharingProcessIdentity.isStoppedNativeService(launchctlPrint: stopped))
+        XCTAssertFalse(NativeSharingProcessIdentity.isStoppedNativeService(launchctlPrint: valid))
+        XCTAssertFalse(NativeSharingProcessIdentity.isStoppedNativeService(launchctlPrint: stopped.replacingOccurrences(
+            of: "/usr/libexec/InternetSharing",
+            with: "/tmp/InternetSharing"
+        )))
     }
 
     func testPersistedKickstartSIPFailureResetsObsoleteBackoffAfterUpgrade() {

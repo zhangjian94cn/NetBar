@@ -304,12 +304,12 @@ private final class MiniNetworkGuardian {
             scheduleEvaluation(after: delay)
 
         case .restartSharing:
-            let result = terminateNativeSharingForRestart()
+            let result = relaunchNativeSharing()
             guard result.succeeded else {
                 registerFailure(now: now, message: result.output)
                 return
             }
-            status.lastAction = "terminated stale InternetSharing process for launchd restart"
+            status.lastAction = "relaunched native InternetSharing service"
             status.lastError = nil
             pendingRepairVerification = true
             sharingWaitStarted = nil
@@ -386,13 +386,28 @@ private final class MiniNetworkGuardian {
         return output.contains("state = running") && output.contains("/usr/libexec/InternetSharing")
     }
 
-    private func terminateNativeSharingForRestart() -> CommandResult {
-        let status = runner.run("/bin/launchctl", ["print", "system/com.apple.NetworkSharing"])
-        guard status.succeeded,
-              let pid = NativeSharingProcessIdentity.pid(fromLaunchctlPrint: status.output) else {
-            return CommandResult(status: 1, output: "unable to identify running /usr/libexec/InternetSharing")
+    private func relaunchNativeSharing() -> CommandResult {
+        var service = runner.run("/bin/launchctl", ["print", "system/com.apple.NetworkSharing"])
+        guard service.succeeded else { return service }
+
+        if let pid = NativeSharingProcessIdentity.pid(fromLaunchctlPrint: service.output) {
+            let terminated = runner.run("/bin/kill", ["-TERM", String(pid)])
+            guard terminated.succeeded else { return terminated }
+            for _ in 0..<20 {
+                Thread.sleep(forTimeInterval: 0.25)
+                service = runner.run("/bin/launchctl", ["print", "system/com.apple.NetworkSharing"])
+                if service.succeeded,
+                   NativeSharingProcessIdentity.isStoppedNativeService(launchctlPrint: service.output) {
+                    break
+                }
+            }
         }
-        return runner.run("/bin/kill", ["-TERM", String(pid)])
+
+        guard service.succeeded,
+              NativeSharingProcessIdentity.isStoppedNativeService(launchctlPrint: service.output) else {
+            return CommandResult(status: 1, output: "native InternetSharing did not reach a stopped state")
+        }
+        return runner.run("/bin/launchctl", ["kickstart", "system/com.apple.NetworkSharing"])
     }
 
     private func kernelForwardingIsEnabled() -> Bool {
