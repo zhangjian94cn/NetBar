@@ -216,6 +216,19 @@ final class AppConfig: ObservableObject {
         set { defaults.set(newValue, forKey: Keys.refreshInterval) }
     }
 
+    var selectedPopoverSection: PopoverSection {
+        get {
+            PopoverSection.resolve(
+                storedValue: defaults.string(forKey: Keys.selectedPopoverSection),
+                flavor: DistributionFlavor.current
+            )
+        }
+        set {
+            objectWillChange.send()
+            defaults.set(newValue.rawValue, forKey: Keys.selectedPopoverSection)
+        }
+    }
+
     // MARK: - Legacy Migration
 
     private func decodeStoredVPSConfigs() -> [VPSConfig]? {
@@ -297,5 +310,6 @@ final class AppConfig: ObservableObject {
         static let ping0APIKey = "ping0_api_key"
         static let vpsConfigs = "vps_configs_v2"
         static let refreshInterval = "refresh_interval"
+        static let selectedPopoverSection = "popover_selected_section_v1"
     }
 }
