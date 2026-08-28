@@ -1287,6 +1287,8 @@ final class NetworkModeController: ObservableObject {
             DispatchQueue.main.async { [weak self] in self?.onNetworkChanged() }
         } else {
             if result.succeeded { _ = routeSafetyController.rollback() }
+            policyState.recordFailedAutomaticReturn(at: checkDate)
+            persistPolicyState()
             let restored = fallbackToVerifiedWiFi(at: checkDate, reason: "自动切回验证失败", automatic: true)
             if !restored {
                 let refreshed = (try? provider.readSnapshot()) ?? current

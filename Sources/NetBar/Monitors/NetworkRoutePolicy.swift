@@ -163,6 +163,17 @@ struct NetworkRoutePolicyState: Equatable {
         lastAutomaticReturnAt = now
     }
 
+    mutating func recordFailedAutomaticReturn(at now: Date) {
+        readySince = nil
+        lastAutomaticReturnAt = nil
+        automaticFallbacks = automaticFallbacks.filter { now.timeIntervalSince($0) <= 600 }
+        automaticFallbacks.append(now)
+        if automaticFallbacks.count >= 2 {
+            circuitBreakerUntil = now.addingTimeInterval(600)
+            phase = .routeFlapping
+        }
+    }
+
     mutating func beginWiFiFallback(at now: Date) {
         if fallbackStartedAt == nil {
             fallbackStartedAt = now

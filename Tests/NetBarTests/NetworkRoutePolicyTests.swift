@@ -68,6 +68,23 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertNil(state.circuitBreakerUntil)
     }
 
+    func testFailedAutomaticReturnRequiresRequalificationAndSecondFailureOpensCircuit() {
+        let start = Date(timeIntervalSince1970: 2_500)
+        var state = NetworkRoutePolicyState(preference: .miniPreferred)
+
+        state.recordHealthy(at: start)
+        XCTAssertEqual(state.stableDuration(at: start.addingTimeInterval(30)), 30)
+
+        state.recordFailedAutomaticReturn(at: start.addingTimeInterval(30))
+        XCTAssertEqual(state.stableDuration(at: start.addingTimeInterval(31)), 0)
+        XCTAssertEqual(state.automaticFallbacks, [start.addingTimeInterval(30)])
+        XCTAssertNil(state.circuitBreakerUntil)
+
+        state.recordFailedAutomaticReturn(at: start.addingTimeInterval(90))
+        XCTAssertEqual(state.circuitBreakerUntil, start.addingTimeInterval(690))
+        XCTAssertEqual(state.phase, .routeFlapping)
+    }
+
     func testControllerFallsBackImmediatelyForDefinitiveCarrierLoss() throws {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "bridge0", gateway: .carrierDown),
@@ -512,7 +529,8 @@ final class NetworkRoutePolicyTests: XCTestCase {
             policySnapshot(interface: "en0", gateway: .ready),
             policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable),
             policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable),
-            policySnapshot(interface: "en0", gateway: .boundEgressUnavailable)
+            policySnapshot(interface: "en0", gateway: .boundEgressUnavailable),
+            policySnapshot(interface: "en0", gateway: .ready)
         ])
         provider.helperStatus = readyHelperStatus(observedAt: currentTime.addingTimeInterval(31))
         let routeSafety = RecordingRouteSafetyController()
@@ -545,6 +563,16 @@ final class NetworkRoutePolicyTests: XCTestCase {
         )
         XCTAssertTrue(waitUntil { routeSafety.rollbackCount == 1 })
         XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
+
+        currentTime = currentTime.addingTimeInterval(10)
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { provider.readCount >= 6 })
+        XCTAssertEqual(
+            routeSafety.appliedModes,
+            [.macMiniGateway, .localWiFi],
+            "首次试切失败后必须重新累计 30 秒健康窗口，不能立即再次切换"
+        )
+        XCTAssertEqual(controller.stabilizationRemaining, 30)
     }
 
     func testHelperV4DecodesRawFactsAndClassifiesSpecificFailure() throws {
