@@ -30,7 +30,7 @@
 
 采用方案 4。Mini 与 MacBook 分别使用 `10.254.254.1/30`、`10.254.254.2/30` 作为 `bridge0` 的管理别名；Thunderbolt 网络服务使用 DHCP。SSH 连接目标改为管理别名，但 `HostKeyAlias` 保留 `192.168.2.1`，继续使用已登记的主机身份。
 
-NetBar 从 DHCP 配置和实际路由发现共享 IPv4 与网关，不再把管理 Peer 当作默认网关。Guardian 维护管理别名并观察 Apple 共享；只有配置意图、Apple DHCP、服务、forwarding、上游与下游证据收敛后才允许 Mini 出口。系统共享总开关关闭，或 `/etc/bootpd.plist` 明确显示 `dhcp_enabled=0` 时进入 `sharingManualPending`（运维语义 `manual_pending`），不写私有偏好；布尔 `true` 和 Apple 在当前系统写入的任意正整数值均视为启用。进程运行但 Apple DHCP 关闭不能产生 `ready`，也不能触发循环 `kickstart`；用户须通过系统设置关闭并重新开启共享，让 macOS 重建 DHCP/NAT 状态。
+NetBar 从 DHCP 配置和实际路由发现共享 IPv4 与网关，不再把管理 Peer 当作默认网关。Guardian 维护管理别名并观察 Apple 共享；只有配置意图、Apple DHCP、服务、forwarding、上游与下游证据收敛后才允许 Mini 出口。系统共享总开关关闭，或 `/etc/bootpd.plist` 的 `dhcp_enabled` 未明确包含 `bridge0` 时进入 `sharingManualPending`（运维语义 `manual_pending`），不写私有偏好；兼容旧系统的布尔 `true`/整数 `1`，但当前系统的接口数组必须逐项识别，不能把数组长度误当成启用状态。进程运行但 Apple DHCP 关闭不能产生 `ready`，也不能触发循环 `kickstart`；用户须通过系统设置关闭并重新开启共享，让 macOS 重建 DHCP/NAT 状态。
 
 共享总开关只通过 Apple 支持的“系统设置 → 通用 → 共享 → 互联网共享”路径配置，参见 [Apple Internet Sharing 使用说明](https://support.apple.com/guide/mac-help/share-internet-connection-mac-network-users-mchlp1540/mac)。服务恢复继续使用身份校验后的 `TERM` 和普通 `launchctl kickstart`，不使用 macOS 14.4 起受 SIP 限制的 `kickstart -k`，参见 [macOS 14.4 Release Notes](https://developer.apple.com/documentation/macos-release-notes/macos_14_4_release_notes)。
 
