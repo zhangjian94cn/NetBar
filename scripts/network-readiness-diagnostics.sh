@@ -5,6 +5,7 @@ SSH=/usr/bin/ssh
 PLUTIL=/usr/bin/plutil
 IFCONFIG=/sbin/ifconfig
 PING=/sbin/ping
+CURL=/usr/bin/curl
 SWIFT=/usr/bin/swift
 ROOT_DIR="${0:A:h:h}"
 REMOTE_HOST=192.168.2.1
@@ -50,25 +51,32 @@ sharing_facts_consistency() {
 
 mini_end_to_end_readiness() {
     sharing_facts_consistency
-    local bridge_output success=false target
+    local bridge_output success=false target http_code
     bridge_output="$($IFCONFIG bridge0 2>/dev/null || true)"
     [[ "$bridge_output" == *"status: active"* ]] || fail "bridge0 carrier inactive"
     [[ "$bridge_output" == *"inet 192.168.2.2 "* ]] || fail "bridge0 fixed address missing"
     "$PING" -b bridge0 -S 192.168.2.2 -c 1 -W 700 192.168.2.1 >/dev/null \
         || fail "Mac mini peer unreachable"
-    for target in 1.1.1.1 114.114.114.114; do
-        if "$PING" -b bridge0 -S 192.168.2.2 -c 1 -W 700 "$target" >/dev/null 2>&1; then
+    for target in \
+        https://www.apple.com/library/test/success.html \
+        https://cp.cloudflare.com/generate_204; do
+        http_code="$($CURL -sS -o /dev/null -w '%{http_code}' \
+            --connect-timeout 2 --max-time 4 --max-redirs 0 \
+            --interface bridge0 --noproxy '*' "$target" 2>/dev/null || true)"
+        if [[ "$http_code" == "200" || "$http_code" == "204" ]]; then
             success=true
             break
         fi
     done
-    [[ "$success" == "true" ]] || fail "MacBook downstream egress unavailable through bridge0"
-    print -- "mini-end-to-end-readiness: PASS peer=true downstream=true"
+    [[ "$success" == "true" ]] \
+        || fail "MacBook bound TCP/TLS egress unavailable through bridge0 (ICMP is not used as readiness evidence)"
+    print -- "mini-end-to-end-readiness: PASS peer=true boundTLS=true"
 }
 
 network_trace_replay() {
-    (cd "$ROOT_DIR" && "$SWIFT" test --filter NetworkRoutePolicyTests/testDownstreamFailureStartsEpisodeAndReportsGuardianOnlyOnceWhenWiFiFallbackFails)
-    print -- "network-trace-replay: PASS stable fallback episode reached without repeated report/log effects"
+    (cd "$ROOT_DIR" && "$SWIFT" test --filter NetworkPolicyMachineTests/testTraceReplayOfRepeatedFailureHasBoundedSideEffects)
+    (cd "$ROOT_DIR" && "$SWIFT" test --filter NetworkPolicyShadowCoordinatorTests/testRapidEventsCoalesceIntoOneGeneration)
+    print -- "network-trace-replay: PASS repeated failure is bounded and rapid events coalesce into one generation"
 }
 
 [[ "$#" -eq 1 ]] || fail "usage: network-readiness-diagnostics.sh sharing-facts-consistency|mini-end-to-end-readiness|network-trace-replay"
