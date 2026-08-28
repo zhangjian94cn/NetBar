@@ -364,6 +364,32 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(logger.events.filter { $0 == "wifi_fallback_started" }.count, 1)
     }
 
+    func testInactiveMiniPreflightFailureDoesNotRestartRemoteSharing() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .boundEgressUnavailable)
+        ])
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: RecordingRouteSafetyController(),
+            wifiCandidateController: SequencedWiFiCandidateController(
+                names: ["Unavailable"],
+                results: [.unavailable]
+            ),
+            connectivityProber: PolicyConnectivityProber { interface in
+                Self.probe(interface: interface, ready: interface == "en0")
+            },
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { provider.readCount == 1 })
+        XCTAssertEqual(provider.egressReportCount, 0)
+    }
+
     func testHealthyMiniRouteDoesNotReadRemoteHelper() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "bridge0", gateway: .ready)

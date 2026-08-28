@@ -402,9 +402,13 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
                 gatewayState = .ready
             } else if let remoteStatus = readMacMiniHelperStatus() {
                 let remoteState = remoteStatus.gatewayState
-                gatewayState = (remoteState == .ready || remoteState == .unknown)
-                    ? .boundEgressUnavailable
-                    : remoteState
+                // A managed upstream may reject direct-bypass HTTPS even though
+                // the fixed link, forwarding and native sharing are locally
+                // healthy.  Remote `ready` is sufficient to *qualify* a trial
+                // switch; the route transaction still has to prove the MacBook
+                // system/Clash/TUN data plane before commit.  Unknown remote
+                // evidence remains unknown and never qualifies a switch.
+                gatewayState = remoteState
             } else {
                 gatewayState = .remoteStatusUnavailable
             }
@@ -1460,7 +1464,8 @@ final class NetworkModeController: ObservableObject {
         policyState.beginWiFiFallback(at: checkDate)
         persistPolicyState()
 
-        if current.linkState == .connected,
+        if current.effectiveMode == .macMiniGateway,
+           current.linkState == .connected,
            current.gatewayState == .boundEgressUnavailable,
            !reportedMiniEgressFailure {
             reportedMiniEgressFailure = true
