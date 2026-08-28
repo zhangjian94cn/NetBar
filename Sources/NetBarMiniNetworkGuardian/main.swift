@@ -48,6 +48,7 @@ private struct GuardianStatus: Codable {
     var managementAddressReady: Bool
     var bridgeUsesDHCP: Bool
     var sharingIntentEnabled: Bool
+    var dhcpServerEnabled: Bool? = nil
     var hotspotAPConfigured: Bool
     var hotspotAPActive: Bool
     var hotspotClientObserved: Bool
@@ -86,6 +87,7 @@ private final class MiniNetworkGuardian {
     private let statusURL = URL(fileURLWithPath: "/Library/Application Support/NetBar/MiniGuardian/status.json")
     private let downstreamEgressFailureURL = URL(fileURLWithPath: "/Library/Application Support/NetBar/MiniGuardian/downstream-egress-failure.txt")
     private let natProfileURL = URL(fileURLWithPath: "/Library/Preferences/SystemConfiguration/com.apple.nat.plist")
+    private let bootpdProfileURL = URL(fileURLWithPath: "/etc/bootpd.plist")
     private let runner = CommandRunner()
     private let queue = DispatchQueue(label: "com.zjah.NetBarMiniNetworkGuardian")
     private let iso8601 = ISO8601DateFormatter()
@@ -129,6 +131,7 @@ private final class MiniNetworkGuardian {
             managementAddressReady: false,
             bridgeUsesDHCP: false,
             sharingIntentEnabled: false,
+            dhcpServerEnabled: nil,
             hotspotAPConfigured: false,
             hotspotAPActive: false,
             hotspotClientObserved: false
@@ -203,6 +206,7 @@ private final class MiniNetworkGuardian {
         let routeReady = scopedDefaultRouteIsExpected()
         let sharingConfigured = sharingConfigurationMatches()
         let sharingIntentEnabled = sharingIntentIsEnabled()
+        let dhcpServerEnabled = bootpdDHCPIsEnabled()
         let managementAddressReady = managementAliasIsReady()
         let bridgeUsesDHCP = bridgeServiceUsesDHCP()
         let sharedAddressReady = sharedBridgeAddressIsReady()
@@ -226,6 +230,7 @@ private final class MiniNetworkGuardian {
         status.managementAddressReady = managementAddressReady
         status.bridgeUsesDHCP = bridgeUsesDHCP
         status.sharingIntentEnabled = sharingIntentEnabled
+        status.dhcpServerEnabled = dhcpServerEnabled
         status.hotspotAPConfigured = hotspotAPConfigured
         status.hotspotAPActive = hotspotAPActive
         status.hotspotClientObserved = hotspotClientObserved
@@ -244,7 +249,8 @@ private final class MiniNetworkGuardian {
         }
 
         let fullyHealthy = carrier && addressReady && routeReady && managementAddressReady &&
-            bridgeUsesDHCP && sharedAddressReady && hotspotAPActive && sharingRunning && forwardingEnabled && reachable
+            bridgeUsesDHCP && sharedAddressReady && hotspotAPActive && dhcpServerEnabled &&
+            sharingRunning && forwardingEnabled && reachable
         if fullyHealthy {
             if healthySince == nil { healthySince = now }
         } else {
@@ -257,6 +263,7 @@ private final class MiniNetworkGuardian {
                 preferencesMatch: carrier ? preferencesMatchExpectedConfiguration() : true,
                 sharingConfigured: sharingConfigured,
                 sharingIntentEnabled: sharingIntentEnabled,
+                dhcpServerEnabled: dhcpServerEnabled,
                 managementAddressReady: managementAddressReady,
                 bridgeUsesDHCP: bridgeUsesDHCP,
                 sharedAddressReady: sharedAddressReady,
@@ -286,7 +293,10 @@ private final class MiniNetworkGuardian {
 
         case .sharingManualPending:
             pendingRepairVerification = false
-            transition(to: .sharingManualPending, error: "enable Internet Sharing in System Settings")
+            let message = sharingIntentEnabled
+                ? "Apple DHCP is disabled; toggle Internet Sharing off and on in System Settings"
+                : "enable Internet Sharing in System Settings"
+            transition(to: .sharingManualPending, error: message)
             scheduleEvaluation(after: 15)
 
         case .reapplyManagementAlias:
@@ -518,6 +528,15 @@ private final class MiniNetworkGuardian {
         }
         if let enabled = nat["Enabled"] as? Bool { return enabled }
         if let enabled = nat["Enabled"] as? Int { return enabled == 1 }
+        return false
+    }
+
+    private func bootpdDHCPIsEnabled() -> Bool {
+        guard let data = try? Data(contentsOf: bootpdProfileURL),
+              let object = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return false }
+        if let value = object["dhcp_enabled"] as? Bool { return value }
+        if let value = object["dhcp_enabled"] as? NSNumber { return value.boolValue }
         return false
     }
 

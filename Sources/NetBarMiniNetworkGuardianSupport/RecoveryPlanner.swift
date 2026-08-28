@@ -44,6 +44,7 @@ public struct MiniGuardianRecoveryInput: Equatable {
     public let preferencesMatch: Bool
     public let sharingConfigured: Bool
     public let sharingIntentEnabled: Bool
+    public let dhcpServerEnabled: Bool
     public let managementAddressReady: Bool
     public let bridgeUsesDHCP: Bool
     public let sharedAddressReady: Bool
@@ -65,6 +66,7 @@ public struct MiniGuardianRecoveryInput: Equatable {
         preferencesMatch: Bool,
         sharingConfigured: Bool,
         sharingIntentEnabled: Bool,
+        dhcpServerEnabled: Bool,
         managementAddressReady: Bool,
         bridgeUsesDHCP: Bool,
         sharedAddressReady: Bool,
@@ -85,6 +87,7 @@ public struct MiniGuardianRecoveryInput: Equatable {
         self.preferencesMatch = preferencesMatch
         self.sharingConfigured = sharingConfigured
         self.sharingIntentEnabled = sharingIntentEnabled
+        self.dhcpServerEnabled = dhcpServerEnabled
         self.managementAddressReady = managementAddressReady
         self.bridgeUsesDHCP = bridgeUsesDHCP
         self.sharedAddressReady = sharedAddressReady
@@ -127,6 +130,7 @@ public enum MiniGuardianRecoveryPlanner {
             return .configurationDrift("Internet Sharing must use en0 and include Wi-Fi plus bridge0")
         }
         guard input.sharingIntentEnabled else { return .sharingManualPending }
+        guard input.dhcpServerEnabled else { return .sharingManualPending }
         guard input.bridgeUsesDHCP else {
             return .configurationDrift("Thunderbolt Bridge must use DHCP; fixed IPv4 conflicts with Internet Sharing")
         }

@@ -98,7 +98,7 @@ enum MacMiniGatewayState: String, Codable, Equatable {
         case .sharingForwardingUnavailable:
             return "Mac mini 共享转发未就绪"
         case .sharingManualPending:
-            return "请在 Mac mini 系统设置中开启互联网共享"
+            return "请在 Mac mini 系统设置中重新开启互联网共享"
         case .managementLinkRecovering:
             return "Mac mini 管理链路正在恢复"
         case .dhcpLeaseRecovering:
@@ -132,6 +132,7 @@ struct MacMiniGuardianStatus: Codable, Equatable {
     let managementAddressReady: Bool?
     let bridgeUsesDHCP: Bool?
     let sharingIntentEnabled: Bool?
+    var dhcpServerEnabled: Bool? = nil
     let hotspotAPConfigured: Bool?
     var hotspotAPActive: Bool? = nil
     var hotspotClientObserved: Bool? = nil
@@ -146,6 +147,7 @@ struct MacMiniHelperStatus: Codable, Equatable {
     let managementPeerIPv4: String?
     let bridgeUsesDHCP: Bool
     let sharingIntentEnabled: Bool
+    var dhcpServerEnabled: Bool? = nil
     let hotspotAPConfigured: Bool
     var hotspotAPActive: Bool? = nil
     var hotspotClientObserved: Bool? = nil
@@ -173,7 +175,9 @@ struct MacMiniHelperStatus: Codable, Equatable {
         if !configured { return .managementLinkRecovering }
         if !sharingConfigured { return .configurationDrift }
         if !sharingIntentEnabled { return .sharingManualPending }
+        if dhcpServerEnabled == false || guardian?.dhcpServerEnabled == false { return .sharingManualPending }
         if evidenceConflict { return .remoteEvidenceConflict }
+        if guardian?.state == .sharingManualPending { return .sharingManualPending }
         if !sharingProcessRunning { return .sharingRecovering }
         if !forwardingEnabled { return .sharingForwardingUnavailable }
         if !bridgeUsesDHCP || serviceIPv4 == nil || gatewayIPv4 == nil { return .dhcpLeaseRecovering }

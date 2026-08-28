@@ -24,6 +24,13 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
         )
     }
 
+    func testDisabledAppleDHCPIsManualPendingAndNeverRestartsTheSharingProcess() {
+        XCTAssertEqual(
+            decide(dhcpServerEnabled: false, sharingRunning: true, sharingWaitElapsed: 900),
+            .sharingManualPending
+        )
+    }
+
     func testManagementAliasIsRepairedButBridgeMustRemainDHCP() {
         XCTAssertEqual(decide(managementAddressReady: false), .reapplyManagementAlias)
         XCTAssertEqual(
@@ -178,6 +185,7 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
         preferencesMatch: Bool = true,
         sharingConfigured: Bool = true,
         sharingIntentEnabled: Bool = true,
+        dhcpServerEnabled: Bool = true,
         managementAddressReady: Bool = true,
         bridgeUsesDHCP: Bool = true,
         sharedAddressReady: Bool = true,
@@ -200,6 +208,7 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
                 preferencesMatch: preferencesMatch,
                 sharingConfigured: sharingConfigured,
                 sharingIntentEnabled: sharingIntentEnabled,
+                dhcpServerEnabled: dhcpServerEnabled,
                 managementAddressReady: managementAddressReady,
                 bridgeUsesDHCP: bridgeUsesDHCP,
                 sharedAddressReady: sharedAddressReady,

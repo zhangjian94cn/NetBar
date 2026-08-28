@@ -818,6 +818,18 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(status.gatewayState, .carrierDown)
         XCTAssertEqual(status.hotspotAPActive, true)
         XCTAssertEqual(status.hotspotClientObserved, false)
+
+        let disabledDHCPJSON = json
+            .replacingOccurrences(of: "\"upstreamActive\": false", with: "\"upstreamActive\": true")
+            .replacingOccurrences(
+                of: "\"sharingIntentEnabled\": true,",
+                with: "\"sharingIntentEnabled\": true, \"dhcpServerEnabled\": false,"
+            )
+        let disabledDHCPStatus = try JSONDecoder().decode(
+            MacMiniHelperStatus.self,
+            from: Data(disabledDHCPJSON.utf8)
+        )
+        XCTAssertEqual(disabledDHCPStatus.gatewayState, .sharingManualPending)
         XCTAssertEqual(status.guardian?.lastCarrierChange, "2026-08-25T17:47:11Z")
         XCTAssertEqual(status.guardian?.lastAction, "carrier inactive")
     }
