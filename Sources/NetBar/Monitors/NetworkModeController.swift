@@ -748,6 +748,7 @@ final class NetworkModeController: ObservableObject {
     @Published private(set) var snapshot: NetworkModeSnapshot?
     @Published private(set) var isSwitching = false
     @Published private(set) var isProvisioning = false
+    @Published private(set) var isRepairingDNS = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var requiresManualRecovery = false
     @Published private(set) var routePreference: NetworkRoutePreference
@@ -761,6 +762,9 @@ final class NetworkModeController: ObservableObject {
     @Published private(set) var activeCandidateName: String?
     @Published private(set) var lastClashAction: String?
     @Published private(set) var currentUnderlayVerified = false
+    @Published private(set) var dnsPathFacts: DNSPathFacts?
+    @Published private(set) var applicationPathFacts: ApplicationPathFacts?
+    @Published private(set) var connectivityProofLevel: ConnectivityProofLevel = .unavailable
 
     private let provider: NetworkModeSystemProviding
     private let switchEngine: NetworkModeSwitchEngine
@@ -979,6 +983,78 @@ final class NetworkModeController: ObservableObject {
         }
     }
 
+    func repairWiFiDNS() {
+        guard !isSwitching, !isProvisioning, !isRepairingDNS else { return }
+        guard DistributionFlavor.current.supportsNetworkModeSwitch else {
+            errorMessage = "App Store Lite 不支持 DNS 修复"
+            return
+        }
+        guard dnsPathFacts?.dependency == .miniDependent else {
+            errorMessage = "当前 Wi-Fi DNS 不依赖 Mac mini，无需自动修复"
+            return
+        }
+        isRepairingDNS = true
+        errorMessage = nil
+
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            let status = self.routeSafetyController.status()
+            guard status?.protocolVersion == 3 else {
+                DispatchQueue.main.async {
+                    self.isRepairingDNS = false
+                    self.errorMessage = "请先安装或更新自动切换组件"
+                }
+                return
+            }
+            let start = self.routeSafetyController.repairWiFiDNS()
+            guard start.succeeded else {
+                DispatchQueue.main.async {
+                    self.isRepairingDNS = false
+                    self.errorMessage = start.combinedMessage.isEmpty ? "Wi-Fi DNS 修复未开始" : start.combinedMessage
+                }
+                return
+            }
+
+            let interface = status?.wifiDevice.isEmpty == false ? (status?.wifiDevice ?? "en0") : "en0"
+            var verified: ConnectivityProbeResult?
+            for attempt in 0..<6 {
+                let probe = self.connectivityProber.probe(interfaceName: interface)
+                self.publishConnectivityFacts(probe)
+                if probe.dnsPath.configurationSource == .automatic,
+                   probe.dnsPath.systemResolutionReady,
+                   probe.dnsPath.dependency != .miniDependent,
+                   probe.dnsPath.dependency != .unreachable,
+                   probe.routedInternetReady {
+                    verified = probe
+                    break
+                }
+                if attempt < 5 { self.sleeper(2) }
+            }
+            let transactionResult = verified == nil
+                ? self.routeSafetyController.rollback()
+                : self.routeSafetyController.commit()
+            let succeeded = verified != nil && transactionResult.succeeded
+            self.eventLogger.record(
+                event: "wifi_dns_repair",
+                detail: "\(verified == nil ? "rollback" : "commit"): \(transactionResult.succeeded ? "success" : "failed")",
+                candidateSSID: nil
+            )
+            DispatchQueue.main.async {
+                self.isRepairingDNS = false
+                if succeeded {
+                    self.policyMessage = "Wi-Fi 已恢复自动 DNS，端到端数据面验证通过"
+                    self.errorMessage = nil
+                    self.onNetworkChanged()
+                } else {
+                    self.errorMessage = transactionResult.succeeded
+                        ? "自动 DNS 未在时限内恢复网络，已还原原配置"
+                        : "DNS 事务无法完整恢复，需要手动检查网络设置"
+                    self.requiresManualRecovery = !transactionResult.succeeded
+                }
+            }
+        }
+    }
+
     func switchMode(to target: NetworkRouteMode) {
         guard !isSwitching, !isProvisioning else { return }
         isSwitching = true
@@ -1176,6 +1252,7 @@ final class NetworkModeController: ObservableObject {
         helperAvailable: Bool
     ) {
         let miniProbe = connectivityProber.probe(interfaceName: current.thunderboltDevice ?? "bridge0")
+        publishConnectivityFacts(miniProbe)
         let boundMiniReachable = current.linkState == .connected && current.gatewayState == .ready
         guard miniProbe.directInternetReady || boundMiniReachable else {
             handleUnhealthySnapshot(current, at: checkDate, helperAvailable: helperAvailable)
@@ -1323,6 +1400,7 @@ final class NetworkModeController: ObservableObject {
             var consecutiveHTTPSFailures = 0
             for attempt in 0..<3 {
                 let probe = connectivityProber.probe(interfaceName: current.thunderboltDevice ?? "bridge0")
+                publishConnectivityFacts(probe)
                 if probe.directInternetReady {
                     policyState.consecutiveFailures = 0
                     if current.effectiveMode == .localWiFi {
@@ -1364,6 +1442,7 @@ final class NetworkModeController: ObservableObject {
         if current.effectiveMode == .localWiFi,
            current.intendedMode == .localWiFi {
             let wifiProbe = connectivityProber.probe(interfaceName: current.wifiDevice ?? "en0")
+            publishConnectivityFacts(wifiProbe)
             if wifiProbe.routedInternetReady {
                 policyState.beginWiFiFallback(at: checkDate)
                 persistPolicyState()
@@ -1404,7 +1483,12 @@ final class NetworkModeController: ObservableObject {
             eventLogger.record(event: "wifi_fallback_started", detail: reason, candidateSSID: nil)
             lastLoggedFallbackFailureReason = reason
         }
-        let restored = fallbackToVerifiedWiFi(at: checkDate, reason: reason, automatic: true)
+        let restored = fallbackToVerifiedWiFi(
+            at: checkDate,
+            reason: reason,
+            automatic: true,
+            keepRouteWhenSourceUnavailable: true
+        )
         if !restored {
             nextWiFiFallbackAttemptAt = checkDate.addingTimeInterval(60)
             let refreshed = (try? provider.readSnapshot()) ?? current
@@ -1419,7 +1503,12 @@ final class NetworkModeController: ObservableObject {
     }
 
     @discardableResult
-    private func fallbackToVerifiedWiFi(at checkDate: Date, reason: String, automatic: Bool) -> Bool {
+    private func fallbackToVerifiedWiFi(
+        at checkDate: Date,
+        reason: String,
+        automatic: Bool,
+        keepRouteWhenSourceUnavailable: Bool = false
+    ) -> Bool {
         fallbackFailureMessage = nil
         let pinned = candidateStore.load()
         let wifi = wifiCandidateController.snapshot(pinnedSSIDs: pinned)
@@ -1464,10 +1553,12 @@ final class NetworkModeController: ObservableObject {
             }
 
             var directProbe = connectivityProber.probe(interfaceName: wifiInterface)
+            publishConnectivityFacts(directProbe)
             if !directProbe.hasLocalNetwork {
                 for _ in 0..<2 {
                     sleeper(1)
                     directProbe = connectivityProber.probe(interfaceName: wifiInterface)
+                    publishConnectivityFacts(directProbe)
                     if directProbe.hasLocalNetwork { break }
                 }
             }
@@ -1533,7 +1624,8 @@ final class NetworkModeController: ObservableObject {
                 at: checkDate
             )
             if routeTransactionStarted {
-                let physicalPathVerified = directProbe.directInternetReady || convergence
+                let physicalPathVerified = directProbe.directInternetReady || convergence ||
+                    (keepRouteWhenSourceUnavailable && directProbe.hasLocalNetwork)
                 if physicalPathVerified {
                     guard routeSafetyController.commit().succeeded else {
                         _ = routeSafetyController.rollback()
@@ -1690,7 +1782,17 @@ final class NetworkModeController: ObservableObject {
             sleeper(2)
             probe = connectivityProber.probe(interfaceName: interfaceName)
         }
+        publishConnectivityFacts(probe)
         return probe
+    }
+
+    private func publishConnectivityFacts(_ probe: ConnectivityProbeResult) {
+        DispatchQueue.main.async { [weak self] in
+            self?.dnsPathFacts = probe.dnsPath
+            self?.applicationPathFacts = probe.applicationPath
+            self?.connectivityProofLevel = probe.proofLevel
+            self?.currentUnderlayVerified = probe.proofLevel == .activeVerified
+        }
     }
 
     private func publishPolicy(
@@ -1713,7 +1815,7 @@ final class NetworkModeController: ObservableObject {
                 self.currentUnderlayVerified = false
                 self.errorMessage = message
             } else if !self.requiresManualRecovery {
-                self.currentUnderlayVerified = snapshot.effectiveMode != nil
+                self.currentUnderlayVerified = self.connectivityProofLevel == .activeVerified
                 self.errorMessage = nil
             }
         }
@@ -1723,6 +1825,30 @@ final class NetworkModeController: ObservableObject {
         guard let status = routeSafetyController.status(), status.pendingTransaction else { return }
         workQueue.async { [weak self] in
             guard let self else { return }
+            if status.pendingKind == "dns" {
+                let probe = self.connectivityProber.probe(interfaceName: status.wifiDevice)
+                self.publishConnectivityFacts(probe)
+                let verified = status.wifiDNSMode == "automatic" &&
+                    status.wifiDNSMiniDependent != true &&
+                    probe.dnsPath.systemResolutionReady &&
+                    probe.dnsPath.dependency != .miniDependent &&
+                    probe.routedInternetReady
+                let result = verified
+                    ? self.routeSafetyController.commit()
+                    : self.routeSafetyController.rollback()
+                self.eventLogger.record(
+                    event: "dns_transaction_recovered",
+                    detail: "\(verified ? "commit" : "rollback"): \(result.succeeded ? "success" : "failed")",
+                    candidateSSID: nil
+                )
+                if !result.succeeded {
+                    DispatchQueue.main.async {
+                        self.requiresManualRecovery = true
+                        self.errorMessage = "未完成的 DNS 事务无法自动恢复"
+                    }
+                }
+                return
+            }
             let target: NetworkRouteMode
             switch status.pendingTarget {
             case "mini": target = .macMiniGateway

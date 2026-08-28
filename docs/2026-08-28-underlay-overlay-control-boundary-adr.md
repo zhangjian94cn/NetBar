@@ -35,7 +35,7 @@
 
 Clash 模式事务严格只修改顶层唯一 `enable_tun_mode` 标量，并通过 Mihomo Unix Socket PATCH 对应 runtime TUN。事务先保存 SHA-256 备份和原权限，再依次验证 runtime、持久值、指向当前 mixed-port 的 loopback 系统代理、显式代理 HTTPS 与系统 HTTPS；失败按相反顺序恢复。`TUN 全局` 额外要求 `ipv6=false` 以及 aTrust、LAN、Tailscale、WireGuard 共存排除基线。其他 Clash 字段仍由 `dual-vpn-config` 独占。
 
-Route Safety Helper 升级为协议 v2。`prefer-*` 写入完整原服务顺序和 pending target；NetBar 完成实际路由及数据面验证后必须调用 `commit`，失败调用 `rollback`。启动时发现 pending 事务会重新验证后提交或恢复。v1 只留下备份、没有 pending target 的状态在一次性安装时视作已提交遗留并清理；v2 pending 事务绝不由安装器删除。
+Route Safety Helper 在本决策中升级为协议 v2。`prefer-*` 写入完整原服务顺序和 pending target；NetBar 完成实际路由及数据面验证后必须调用 `commit`，失败调用 `rollback`。启动时发现 pending 事务会重新验证后提交或恢复。v1 只留下备份、没有 pending target 的状态在一次性安装时视作已提交遗留并清理；v2 pending 事务绝不由安装器删除。其后续 v3 DNS 窄权限与回滚边界见 [端到端 DNS ADR](2026-08-28-end-to-end-dns-overlay-failover-adr.md)。
 
 ## Consequences
 
@@ -51,6 +51,6 @@ Route Safety Helper 升级为协议 v2。`prefer-*` 写入完整原服务顺序�
 ## Verification and Rollout
 
 - [ClashOverlayModeControllerTests.swift](../Tests/NetBarTests/ClashOverlayModeControllerTests.swift) 覆盖唯一标量、备份、外部修改冲突、runtime 失败、数据面失败、回滚、成功提交和重复点击无副作用。
-- [NetworkRoutePolicyTests.swift](../Tests/NetBarTests/NetworkRoutePolicyTests.swift) 覆盖 Helper v2 固定命令、commit/rollback 终态及物理出口变化的单次连接刷新。
+- [NetworkRoutePolicyTests.swift](../Tests/NetBarTests/NetworkRoutePolicyTests.swift) 覆盖 Helper v3 固定命令、路由/DNS commit/rollback 终态及物理出口变化的单次连接刷新。
 - [build-appstore.sh](../scripts/build-appstore.sh) 验证 Lite 产物不携带 Helper、SSH 或 Clash 模式写入实现。
 - 纯 `NetworkPolicyMachine` 仍必须先只读影子运行 24 小时；该门禁通过前，本文不授权其接管真实路由副作用。

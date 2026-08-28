@@ -4,6 +4,111 @@ import CryptoKit
 import Foundation
 import SystemConfiguration
 
+enum DNSConfigurationSource: String, Codable, Equatable {
+    case automatic
+    case manual
+    case loopback
+    case unknown
+}
+
+enum DNSResolverDependency: String, Codable, Equatable {
+    case independent
+    case miniDependent
+    case unreachable
+    case overlayOnly
+    case unknown
+
+    var displayName: String {
+        switch self {
+        case .independent: return "DNS 独立可用"
+        case .miniDependent: return "DNS 仍依赖 Mac mini"
+        case .unreachable: return "DNS 不可用"
+        case .overlayOnly: return "DNS 由 TUN/本机代理接管"
+        case .unknown: return "DNS 待检测"
+        }
+    }
+}
+
+struct DNSPathFacts: Equatable {
+    let serviceName: String?
+    let interfaceName: String
+    let configurationSource: DNSConfigurationSource
+    let dependency: DNSResolverDependency
+    let resolverCount: Int
+    let systemResolutionReady: Bool
+    let generation: UInt64
+    let observedAt: Date
+
+    static func unknown(interfaceName: String) -> DNSPathFacts {
+        .init(
+            serviceName: nil,
+            interfaceName: interfaceName,
+            configurationSource: .unknown,
+            dependency: .unknown,
+            resolverCount: 0,
+            systemResolutionReady: false,
+            generation: 0,
+            observedAt: .distantPast
+        )
+    }
+}
+
+struct ApplicationPathFacts: Equatable {
+    let systemProxyAwareHTTPSReady: Bool
+    let explicitClashHTTPSReady: Bool
+    let proxyUnawareHTTPSReady: Bool
+    let zcodeDiagnosticReady: Bool
+    let zcodeHTTPStatus: Int?
+    let generation: UInt64
+    let observedAt: Date
+
+    init(
+        systemProxyAwareHTTPSReady: Bool,
+        explicitClashHTTPSReady: Bool,
+        proxyUnawareHTTPSReady: Bool,
+        zcodeDiagnosticReady: Bool,
+        zcodeHTTPStatus: Int?,
+        generation: UInt64 = 0,
+        observedAt: Date = Date()
+    ) {
+        self.systemProxyAwareHTTPSReady = systemProxyAwareHTTPSReady
+        self.explicitClashHTTPSReady = explicitClashHTTPSReady
+        self.proxyUnawareHTTPSReady = proxyUnawareHTTPSReady
+        self.zcodeDiagnosticReady = zcodeDiagnosticReady
+        self.zcodeHTTPStatus = zcodeHTTPStatus
+        self.generation = generation
+        self.observedAt = observedAt
+    }
+
+    static let unknown = ApplicationPathFacts(
+        systemProxyAwareHTTPSReady: false,
+        explicitClashHTTPSReady: false,
+        proxyUnawareHTTPSReady: false,
+        zcodeDiagnosticReady: false,
+        zcodeHTTPStatus: nil,
+        generation: 0,
+        observedAt: .distantPast
+    )
+}
+
+enum ConnectivityProofLevel: String, Codable, Equatable {
+    case unavailable
+    case routeEligible
+    case preflightEligible
+    case activeVerified
+    case degradedActive
+}
+
+enum NetworkConnectivityReasonCode: String, Codable, Equatable {
+    case wifiDNSDependsOnMini
+    case dnsResolverUnavailable
+    case proxyUnawarePathUnavailable
+    case tunDataPlaneUnavailable
+    case zcodeEndpointUnavailable
+    case miniDownstreamUnavailable
+    case routeActiveDataPlaneDegraded
+}
+
 enum NetworkAccessCandidateKind: String, Codable, Equatable {
     case macMini
     case wifi
@@ -52,6 +157,34 @@ struct ConnectivityProbeResult: Equatable {
     let clashHTTPSReachable: Bool
     let systemHTTPSReachable: Bool
     let physicalDefaultInterface: String?
+    let dnsPath: DNSPathFacts
+    let applicationPath: ApplicationPathFacts
+
+    init(
+        interfaceName: String,
+        carrierActive: Bool,
+        ipv4Address: String?,
+        gateway: String?,
+        directHTTPSReachable: Bool,
+        clashControllerReachable: Bool,
+        clashHTTPSReachable: Bool,
+        systemHTTPSReachable: Bool,
+        physicalDefaultInterface: String?,
+        dnsPath: DNSPathFacts? = nil,
+        applicationPath: ApplicationPathFacts? = nil
+    ) {
+        self.interfaceName = interfaceName
+        self.carrierActive = carrierActive
+        self.ipv4Address = ipv4Address
+        self.gateway = gateway
+        self.directHTTPSReachable = directHTTPSReachable
+        self.clashControllerReachable = clashControllerReachable
+        self.clashHTTPSReachable = clashHTTPSReachable
+        self.systemHTTPSReachable = systemHTTPSReachable
+        self.physicalDefaultInterface = physicalDefaultInterface
+        self.dnsPath = dnsPath ?? .unknown(interfaceName: interfaceName)
+        self.applicationPath = applicationPath ?? .unknown
+    }
 
     var hasLocalNetwork: Bool {
         carrierActive && ipv4Address != nil && gateway != nil
@@ -75,6 +208,24 @@ struct ConnectivityProbeResult: Equatable {
         guard hasLocalNetwork, systemHTTPSReachable else { return false }
         if clashControllerReachable { return clashHTTPSReachable }
         return directHTTPSReachable
+    }
+
+    var proofLevel: ConnectivityProofLevel {
+        guard hasLocalNetwork else { return .unavailable }
+        let physicalMatches = physicalDefaultInterface == interfaceName
+        let resolverReady = dnsPath.systemResolutionReady &&
+            dnsPath.dependency != .miniDependent &&
+            dnsPath.dependency != .unreachable &&
+            dnsPath.dependency != .unknown
+        let applicationReady = applicationPath.systemProxyAwareHTTPSReady &&
+            (!clashControllerReachable || applicationPath.explicitClashHTTPSReady)
+        guard resolverReady, applicationReady else {
+            return physicalMatches ? .degradedActive : .routeEligible
+        }
+        guard applicationPath.proxyUnawareHTTPSReady else {
+            return physicalMatches ? .degradedActive : .preflightEligible
+        }
+        return physicalMatches ? .activeVerified : .preflightEligible
     }
 }
 
@@ -281,6 +432,7 @@ final class LiveConnectivityProber: ConnectivityProbing {
         "https://www.apple.com/library/test/success.html",
         "https://cp.cloudflare.com/generate_204"
     ]
+    private let miniGateway = "192.168.2.1"
 
     init(
         runner: NetworkModeCommandRunning = DefaultNetworkModeCommandRunner(),
@@ -302,9 +454,18 @@ final class LiveConnectivityProber: ConnectivityProbing {
             ? LiveNetworkModeSystemProvider.parseRouteGateway(route.standardOutput)
             : nil
         let defaultRoute = runner.run(executable: "/sbin/route", arguments: ["-n", "get", "default"])
-        let physical = defaultRoute.succeeded
+        var physical = defaultRoute.succeeded
             ? LiveNetworkModeSystemProvider.parseRouteInterface(defaultRoute.standardOutput)
             : nil
+        if physical?.hasPrefix("utun") == true || physical == nil {
+            let nwi = runner.run(executable: "/usr/sbin/scutil", arguments: ["--nwi"])
+            if nwi.succeeded {
+                physical = LiveNetworkModeSystemProvider.parseNWIPrimaryPhysicalInterface(
+                    nwi.standardOutput,
+                    candidates: [interfaceName]
+                )
+            }
+        }
 
         let directReady = carrier && ipv4 != nil && gateway != nil && directTargets.contains { target in
             httpProbe(target: target, arguments: ["--interface", interfaceName, "--noproxy", "*"])
@@ -312,6 +473,22 @@ final class LiveConnectivityProber: ConnectivityProbing {
         let controllerReady = mihomo.isControllerAvailable()
         let clashReady = controllerReady && mihomo.probeHTTPS()
         let systemReady = directTargets.contains { httpProbe(target: $0, arguments: []) }
+        let proxyUnawareReady = directTargets.contains {
+            httpProbe(target: $0, arguments: ["--noproxy", "*"])
+        }
+        let dnsPath = inspectDNS(interfaceName: interfaceName)
+        let zcode = httpStatus(
+            target: "https://zcode.z.ai/api/v1/oauth/token",
+            arguments: ["--noproxy", "*"]
+        )
+        let zcodeReady = zcode.map(Self.isAcceptableAnonymousApplicationStatus) ?? false
+        let applicationPath = ApplicationPathFacts(
+            systemProxyAwareHTTPSReady: systemReady,
+            explicitClashHTTPSReady: clashReady,
+            proxyUnawareHTTPSReady: proxyUnawareReady,
+            zcodeDiagnosticReady: zcodeReady,
+            zcodeHTTPStatus: zcode
+        )
 
         return ConnectivityProbeResult(
             interfaceName: interfaceName,
@@ -322,11 +499,122 @@ final class LiveConnectivityProber: ConnectivityProbing {
             clashControllerReachable: controllerReady,
             clashHTTPSReachable: clashReady,
             systemHTTPSReachable: systemReady,
-            physicalDefaultInterface: physical
+            physicalDefaultInterface: physical,
+            dnsPath: dnsPath,
+            applicationPath: applicationPath
         )
     }
 
+    private func inspectDNS(interfaceName: String) -> DNSPathFacts {
+        let order = runner.run(executable: "/usr/sbin/networksetup", arguments: ["-listnetworkserviceorder"])
+        let service = order.succeeded
+            ? LiveNetworkModeSystemProvider.parseServiceOrder(order.standardOutput).first(where: { $0.device == interfaceName })
+            : nil
+        let configured = service.map {
+            runner.run(executable: "/usr/sbin/networksetup", arguments: ["-getdnsservers", $0.name])
+        }
+        let configuredServers = configured.flatMap { result -> [String]? in
+            guard result.succeeded else { return nil }
+            if result.standardOutput.contains("There aren't any DNS Servers") { return [] }
+            return Self.parseDNSServers(result.standardOutput)
+        }
+        let scoped = runner.run(executable: "/usr/sbin/scutil", arguments: ["--dns"])
+        let scopedServers = scoped.succeeded
+            ? Self.parseScopedDNSServers(scoped.standardOutput, interfaceName: interfaceName)
+            : []
+        let resolvers = (configuredServers?.isEmpty == false ? configuredServers! : scopedServers)
+        let resolution = runner.run(
+            executable: "/usr/bin/dscacheutil",
+            arguments: ["-q", "host", "-a", "name", "www.apple.com"]
+        )
+        let resolutionReady = resolution.succeeded && resolution.standardOutput.contains("ip_address:")
+        let source: DNSConfigurationSource
+        if resolvers.allSatisfy({ $0 == "127.0.0.1" || $0 == "::1" }), !resolvers.isEmpty {
+            source = .loopback
+        } else if let configuredServers {
+            source = configuredServers.isEmpty ? .automatic : .manual
+        } else {
+            source = .unknown
+        }
+        let dependency: DNSResolverDependency
+        if interfaceName != "bridge0", resolvers.contains(miniGateway) {
+            dependency = .miniDependent
+        } else if source == .loopback {
+            dependency = resolutionReady ? .overlayOnly : .unreachable
+        } else if !resolutionReady {
+            dependency = .unreachable
+        } else if resolvers.isEmpty {
+            dependency = .unknown
+        } else {
+            let routeInterfaces = resolvers.compactMap { resolver -> String? in
+                let route = runner.run(executable: "/sbin/route", arguments: ["-n", "get", resolver])
+                return route.succeeded
+                    ? LiveNetworkModeSystemProvider.parseRouteInterface(route.standardOutput)
+                    : nil
+            }
+            if routeInterfaces.contains(where: { $0.hasPrefix("utun") }) {
+                dependency = .overlayOnly
+            } else if interfaceName != "bridge0", routeInterfaces.contains("bridge0") {
+                dependency = .miniDependent
+            } else {
+                dependency = .independent
+            }
+        }
+        return DNSPathFacts(
+            serviceName: service?.name,
+            interfaceName: interfaceName,
+            configurationSource: source,
+            dependency: dependency,
+            resolverCount: resolvers.count,
+            systemResolutionReady: resolutionReady,
+            generation: 0,
+            observedAt: Date()
+        )
+    }
+
+    static func parseDNSServers(_ output: String) -> [String] {
+        output.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !$0.contains("There aren't any DNS Servers") }
+    }
+
+    static func isAcceptableAnonymousApplicationStatus(_ status: Int) -> Bool {
+        (200..<500).contains(status)
+    }
+
+    static func parseScopedDNSServers(_ output: String, interfaceName: String) -> [String] {
+        var currentServers: [String] = []
+        var currentInterface: String?
+        var result: [String] = []
+        func flush() {
+            if currentInterface == interfaceName { result.append(contentsOf: currentServers) }
+            currentServers = []
+            currentInterface = nil
+        }
+        for line in output.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("resolver #") { flush() }
+            if trimmed.hasPrefix("nameserver[") {
+                if let value = trimmed.split(separator: ":", maxSplits: 1).last {
+                    currentServers.append(value.trimmingCharacters(in: .whitespaces))
+                }
+            }
+            if trimmed.hasPrefix("if_index"), let open = trimmed.lastIndex(of: "(") {
+                let suffix = trimmed[trimmed.index(after: open)...]
+                currentInterface = suffix.split(separator: ")").first.map(String.init)
+            }
+        }
+        flush()
+        return Array(Set(result)).sorted()
+    }
+
     private func httpProbe(target: String, arguments: [String]) -> Bool {
+        guard let status = httpStatus(target: target, arguments: arguments) else { return false }
+        if target.contains("generate_204") { return status == 204 }
+        return status == 200
+    }
+
+    private func httpStatus(target: String, arguments: [String]) -> Int? {
         let result = runner.run(
             executable: "/usr/bin/curl",
             arguments: [
@@ -334,12 +622,8 @@ final class LiveConnectivityProber: ConnectivityProbing {
                 "--connect-timeout", "2", "--max-time", "4", "--max-redirs", "0"
             ] + arguments + [target]
         )
-        guard result.succeeded,
-              let status = Int(result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            return false
-        }
-        if target.contains("generate_204") { return status == 204 }
-        return status == 200
+        guard result.succeeded else { return nil }
+        return Int(result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 }
 
@@ -496,6 +780,7 @@ enum NetworkChangeEvent: Equatable {
     case physicalLink
     case addressing
     case routing
+    case dns
     case other
 
     static func classify(changedKeys: [String]) -> NetworkChangeEvent {
@@ -507,6 +792,9 @@ enum NetworkChangeEvent: Equatable {
         }
         if changedKeys.contains("State:/Network/Global/IPv4") {
             return .routing
+        }
+        if changedKeys.contains(where: { $0.hasSuffix("/DNS") }) {
+            return .dns
         }
         return .other
     }
@@ -523,7 +811,7 @@ enum NetworkChangeEvent: Equatable {
                     ? "检测到雷雳链路变化，正在确认并回退 Wi-Fi…"
                     : nil
             )
-        case .addressing, .routing:
+        case .addressing, .routing, .dns:
             return NetworkChangeReaction(delay: 0.2, message: nil)
         case .other:
             return NetworkChangeReaction(delay: 0.5, message: nil)
@@ -539,6 +827,7 @@ struct NetworkChangeReaction: Equatable {
 final class NetworkChangeObserver {
     static let notificationKeys = [
         "State:/Network/Global/IPv4",
+        "State:/Network/Global/DNS",
         "State:/Network/Interface/en0/IPv4",
         "State:/Network/Interface/en0/Link",
         "State:/Network/Interface/bridge0/IPv4",
@@ -546,7 +835,9 @@ final class NetworkChangeObserver {
     ]
     static let notificationPatterns = [
         #"State:/Network/Interface/.*/Link"#,
-        #"State:/Network/Interface/.*/IPv4"#
+        #"State:/Network/Interface/.*/IPv4"#,
+        #"State:/Network/Service/.*/DNS"#,
+        #"Setup:/Network/Service/.*/DNS"#
     ]
 
     private var store: SCDynamicStore?

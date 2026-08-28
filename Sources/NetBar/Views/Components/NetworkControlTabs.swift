@@ -49,9 +49,9 @@ struct NetworkControlTabs: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Circle()
-                    .fill(isOnline ? Color.green : Color.orange)
+                    .fill(summaryColor)
                     .frame(width: 7, height: 7)
-                Text(isOnline ? "在线" : "正在恢复")
+                Text(summaryStatus)
                     .font(.system(size: 11, weight: .semibold))
                 Spacer()
                 Text("当前出口：\(outletText)")
@@ -61,6 +61,7 @@ struct NetworkControlTabs: View {
 
             HStack(spacing: 12) {
                 Label("Clash：\(overlayModeText)", systemImage: "shield")
+                Label("DNS：\(dnsText)", systemImage: "server.rack")
                 if let reasonText {
                     Text(reasonText)
                         .lineLimit(1)
@@ -74,7 +75,7 @@ struct NetworkControlTabs: View {
         .padding(9)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(isOnline ? Color.green.opacity(0.08) : Color.orange.opacity(0.08))
+                .fill(summaryColor.opacity(0.08))
         )
     }
 
@@ -102,7 +103,21 @@ struct NetworkControlTabs: View {
     }
 
     private var isOnline: Bool {
-        networkController.currentUnderlayVerified && overlayController.snapshot.dataPlaneReady
+        networkController.connectivityProofLevel == .activeVerified && overlayController.snapshot.dataPlaneReady
+    }
+
+    private var summaryStatus: String {
+        if isOnline { return "在线" }
+        if networkController.connectivityProofLevel == .degradedActive { return "受限在线" }
+        return "正在恢复"
+    }
+
+    private var summaryColor: Color {
+        isOnline ? .green : .orange
+    }
+
+    private var dnsText: String {
+        networkController.dnsPathFacts?.dependency.displayName ?? "待检测"
     }
 
     private var outletText: String {

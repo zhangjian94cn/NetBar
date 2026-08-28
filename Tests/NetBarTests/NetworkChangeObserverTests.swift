@@ -28,4 +28,15 @@ final class NetworkChangeObserverTests: XCTestCase {
         XCTAssertEqual(reaction.delay, 0.1)
         XCTAssertEqual(reaction.message, "检测到雷雳链路变化，正在确认并回退 Wi-Fi…")
     }
+
+    func testServiceAndGlobalDNSChangesCreateDNSGenerationEvent() {
+        XCTAssertEqual(
+            NetworkChangeEvent.classify(changedKeys: ["State:/Network/Global/DNS"]),
+            .dns
+        )
+        XCTAssertEqual(
+            NetworkChangeEvent.classify(changedKeys: ["State:/Network/Service/ABC/DNS"]),
+            .dns
+        )
+    }
 }

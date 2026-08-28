@@ -246,9 +246,17 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertEqual(backup.method, .dhcp)
         XCTAssertEqual(runner.privilegedConfigurations.count, 2)
         XCTAssertTrue(runner.privilegedConfigurations.allSatisfy { $0.configuration.method == .manual })
-        XCTAssertTrue(runner.privilegedConfigurations.allSatisfy {
-            $0.configuration.dnsServers == ["192.168.2.1"]
-        })
+        XCTAssertTrue(runner.privilegedConfigurations.allSatisfy { $0.configuration.dnsServers.isEmpty })
+    }
+
+    func testProvisionerPreservesExistingThunderboltDNSInsteadOfForcingMiniResolver() {
+        let runner = ProvisioningCommandRunner()
+        runner.localDNSOutput = "1.1.1.1\n114.114.114.114"
+        let outcome = makeProvisioner(runner: runner, backupDirectory: temporaryDirectory()).provision()
+
+        XCTAssertEqual(outcome.kind, .success)
+        XCTAssertEqual(runner.privilegedConfigurations.first?.configuration.dnsServers, ["1.1.1.1", "114.114.114.114"])
+        XCTAssertFalse(runner.privilegedConfigurations.contains { $0.configuration.dnsServers == ["192.168.2.1"] })
     }
 
     func testProvisionerRollsBackBothEndsAndUsesSavedOriginalConfiguration() throws {
