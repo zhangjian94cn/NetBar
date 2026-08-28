@@ -37,6 +37,8 @@
 
 只有 `activeVerified` 可以显示“Mac mini 当前出口正常”。
 
+当实际物理出口已经是 `bridge0` 或 Wi-Fi 时，同接口的新鲜 `activeVerified` 证明可以覆盖旧的 direct-bypass 失败分类；这用于保住公司网络下已经工作的 TUN/代理路径。它不能把尚未激活的候选直接提升为可切换状态，也不能覆盖载波、地址、共享进程或 forwarding 的明确故障。
+
 ## 动作所有权
 
 - Mini Helper v4：只报告事实，或写入固定的下游失败标记；`apply/rollback` 只管理 Mini `bridge0` 固定地址。

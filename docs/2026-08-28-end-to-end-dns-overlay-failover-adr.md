@@ -32,6 +32,8 @@
 
 采用方案 4。`DNSPathFacts` 记录服务、配置来源、scoped resolver、依赖分类、系统解析与采样 generation；`ApplicationPathFacts` 分开记录系统代理感知、显式 Clash、代理不感知/TUN 和 ZCode 匿名传输诊断。物理候选依次获得 `routeEligible`、`preflightEligible`、`activeVerified` 或 `degradedActive` 证明。
 
+对于已经是实际物理出口的路径，最新的 `activeVerified` 端到端证明优先于旧的“绑定接口直连 HTTPS 失败”分类。公司网络可能限制 direct bypass，而 TUN/代理数据面仍完整可用；这种情况下不得仅因 `boundEgressUnavailable`、远端状态暂时未知或证据冲突就拆掉当前健康路径。该优先级只适用于已经激活且物理接口一致的路径，不得用于资格确认一个尚未切入的候选；明确的载波、地址、sharing 或 forwarding 故障仍然 fail closed。
+
 Mini 明确断线或下游共享失效时，只要 Wi-Fi 具备载波、IPv4 和网关，就允许提交 Wi-Fi 物理路由。DNS 或 overlay 未恢复时显示 `degradedActive`，不得回滚到已知失效的 Mini。若原路径仍健康，目标路径验证失败仍按原事务回滚。
 
 Route Safety Helper 升级到 v3，并增加唯一固定命令 `repair-wifi-dns`。它动态识别 Wi-Fi 服务，仅接受当前手动 DNS 中精确包含 `192.168.2.1` 且物理模式已经是 Wi-Fi 的场景；原值、服务身份与 SHA-256 保存到 root-only 事务记录。NetBar 验证自动 resolver 和数据面后 `commit`，否则 `rollback`；普通网络事件不调用该命令。

@@ -53,6 +53,38 @@ final class NetworkPolicyShadowCoordinatorTests: XCTestCase {
         XCTAssertEqual(observation.miniProof, .unavailable(.sharingUnavailable))
     }
 
+    func testActiveMiniProofOverridesLegacyBoundDirectFailure() {
+        let observation = NetworkPolicyShadowObservation.make(
+            snapshot: makeSnapshot(gateway: .boundEgressUnavailable, interface: "bridge0"),
+            preference: .miniPreferred,
+            currentUnderlayVerified: false,
+            wifiCandidates: [],
+            connectivityProofLevel: .activeVerified,
+            dnsPath: DNSPathFacts(
+                serviceName: "Thunderbolt Bridge",
+                interfaceName: "bridge0",
+                configurationSource: .manual,
+                dependency: .overlayOnly,
+                resolverCount: 1,
+                systemResolutionReady: true,
+                generation: 2,
+                observedAt: observedAt
+            ),
+            applicationPath: ApplicationPathFacts(
+                systemProxyAwareHTTPSReady: true,
+                explicitClashHTTPSReady: true,
+                proxyUnawareHTTPSReady: true,
+                zcodeDiagnosticReady: true,
+                zcodeHTTPStatus: 404,
+                generation: 2,
+                observedAt: observedAt
+            ),
+            observedAt: observedAt
+        )
+
+        XCTAssertEqual(observation.miniProof, .activeVerified)
+    }
+
     func testHealthyCurrentWiFiIsNotDisturbedWhenMiniIsUnknown() async {
         let logger = ShadowRecordingLogger()
         let coordinator = NetworkPolicyShadowCoordinator(eventLogger: logger)
@@ -235,7 +267,10 @@ final class NetworkPolicyShadowCoordinatorTests: XCTestCase {
         XCTAssertTrue(logger.events(named: "network_policy_shadow_proposal").isEmpty)
     }
 
-    private func makeSnapshot(gateway: MacMiniGatewayState) -> NetworkModeSnapshot {
+    private func makeSnapshot(
+        gateway: MacMiniGatewayState,
+        interface: String = "en0"
+    ) -> NetworkModeSnapshot {
         NetworkModeSnapshot(
             services: [
                 .init(name: "Thunderbolt Bridge", hardwarePort: "Thunderbolt Bridge", device: "bridge0", isDisabled: false),
@@ -247,7 +282,7 @@ final class NetworkPolicyShadowCoordinatorTests: XCTestCase {
             thunderboltDevice: "bridge0",
             bridgeIPv4: "192.168.2.2",
             miniGateway: "192.168.2.1",
-            physicalDefaultInterface: "en0",
+            physicalDefaultInterface: interface,
             linkState: .connected,
             gatewayState: gateway
         )

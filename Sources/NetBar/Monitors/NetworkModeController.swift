@@ -1225,6 +1225,30 @@ final class NetworkModeController: ObservableObject {
                 self?.miniGuardianAvailable = guardianAvailable
             }
 
+            // A managed network can reject interface-bound direct HTTPS while the
+            // selected TUN/proxy data plane remains healthy.  When Mini is already
+            // the real physical underlay, prefer the fresh end-to-end proof over
+            // the legacy bound-direct gateway classification.  This path never
+            // qualifies an inactive Mini candidate and therefore cannot trigger a
+            // speculative switch.
+            if current.effectiveMode == .macMiniGateway,
+               current.gatewayState != .ready {
+                let activeProbe = self.connectivityProber.probe(
+                    interfaceName: current.thunderboltDevice ?? "bridge0"
+                )
+                self.publishConnectivityFacts(activeProbe)
+                if activeProbe.physicalDefaultInterface == (current.thunderboltDevice ?? "bridge0"),
+                   activeProbe.proofLevel == .activeVerified {
+                    self.handleHealthySnapshot(
+                        current,
+                        at: checkDate,
+                        helperAvailable: helperAvailable,
+                        initialProbe: activeProbe
+                    )
+                    return
+                }
+            }
+
             if current.linkState == .connected, current.gatewayState == .ready {
                 self.handleHealthySnapshot(current, at: checkDate, helperAvailable: helperAvailable)
             } else {
@@ -1255,12 +1279,18 @@ final class NetworkModeController: ObservableObject {
     private func handleHealthySnapshot(
         _ current: NetworkModeSnapshot,
         at checkDate: Date,
-        helperAvailable: Bool
+        helperAvailable: Bool,
+        initialProbe: ConnectivityProbeResult? = nil
     ) {
-        let miniProbe = connectivityProber.probe(interfaceName: current.thunderboltDevice ?? "bridge0")
+        let miniProbe = initialProbe ?? connectivityProber.probe(
+            interfaceName: current.thunderboltDevice ?? "bridge0"
+        )
         publishConnectivityFacts(miniProbe)
         let boundMiniReachable = current.linkState == .connected && current.gatewayState == .ready
-        guard miniProbe.directInternetReady || boundMiniReachable else {
+        let activeEndToEndVerified = current.effectiveMode == .macMiniGateway &&
+            miniProbe.physicalDefaultInterface == (current.thunderboltDevice ?? "bridge0") &&
+            miniProbe.proofLevel == .activeVerified
+        guard miniProbe.directInternetReady || boundMiniReachable || activeEndToEndVerified else {
             handleUnhealthySnapshot(current, at: checkDate, helperAvailable: helperAvailable)
             return
         }
