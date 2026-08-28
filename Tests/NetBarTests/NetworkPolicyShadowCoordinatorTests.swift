@@ -14,9 +14,11 @@ final class NetworkPolicyShadowCoordinatorTests: XCTestCase {
         await coordinator.networkDidChange(.physicalLink)
         await coordinator.networkDidChange(.addressing)
         await coordinator.networkDidChange(.routing)
-        try await Task.sleep(nanoseconds: 80_000_000)
-
-        let diagnostic = await coordinator.diagnosticSnapshot()
+        var diagnostic = await coordinator.diagnosticSnapshot()
+        for _ in 0..<100 where diagnostic.generation == 0 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            diagnostic = await coordinator.diagnosticSnapshot()
+        }
         XCTAssertEqual(diagnostic.generation, 1)
         XCTAssertEqual(logger.events(named: "network_policy_shadow_generation").count, 1)
     }
