@@ -36,7 +36,7 @@ final class NetworkStaticLinkTests: XCTestCase {
         ))
     }
 
-    func testLiveSnapshotDistinguishesFixedLinkAndBoundGateway() throws {
+    func testLiveSnapshotSeparatesManagementAliasFromAppleDHCPGateway() throws {
         let runner = SnapshotCommandRunner(
             bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
             router: "192.168.2.1"
@@ -47,6 +47,7 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertEqual(snapshot.linkState, .connected)
         XCTAssertEqual(snapshot.gatewayState, .ready)
         XCTAssertEqual(snapshot.bridgeIPv4, "192.168.2.2")
+        XCTAssertEqual(snapshot.miniGateway, "192.168.2.1")
         XCTAssertTrue(runner.invocations.contains { invocation in
             invocation.executable == "/usr/bin/curl" &&
                 invocation.arguments.contains("--interface") &&
@@ -55,10 +56,31 @@ final class NetworkStaticLinkTests: XCTestCase {
         })
     }
 
-    func testLiveSnapshotTreatsLinkLocalWrongAndMissingAddressAsNotProvisioned() throws {
+    func testLiveSnapshotUsesDHCPLeaseWhenOldAndNewSharingAddressesCoexist() throws {
+        let bridge = """
+        bridge0: flags=8863<UP,RUNNING>
+            inet 10.254.254.2 netmask 0xfffffffc
+            inet 192.168.2.2 netmask 0xffffff00
+            inet 192.168.3.2 netmask 0xffffff00
+            status: active
+        """
+        let runner = SnapshotCommandRunner(
+            bridgeOutput: bridge,
+            router: "192.168.3.1",
+            serviceAddress: "192.168.3.2"
+        )
+
+        let snapshot = try LiveNetworkModeSystemProvider(commandRunner: runner).readSnapshot()
+
+        XCTAssertEqual(snapshot.bridgeIPv4, "192.168.3.2")
+        XCTAssertEqual(snapshot.miniGateway, "192.168.3.1")
+        XCTAssertEqual(snapshot.gatewayState, .ready)
+    }
+
+    func testLiveSnapshotRejectsMissingManagementAlias() throws {
         for address in ["169.254.4.8", "192.168.3.2", nil] {
             let runner = SnapshotCommandRunner(
-                bridgeOutput: Self.bridge(address: address, active: true),
+                bridgeOutput: Self.bridge(address: address, active: true, includeManagement: false),
                 router: address == nil ? nil : "192.168.2.1"
             )
 
@@ -69,11 +91,11 @@ final class NetworkStaticLinkTests: XCTestCase {
         }
     }
 
-    func testLiveSnapshotTreatsCorrectDHCPLeaseAsNotProvisioned() throws {
+    func testLiveSnapshotRejectsManualConfigurationEvenWithBothAddresses() throws {
         let runner = SnapshotCommandRunner(
             bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
             router: "192.168.2.1",
-            manualConfiguration: false
+            manualConfiguration: true
         )
 
         let snapshot = try LiveNetworkModeSystemProvider(commandRunner: runner).readSnapshot()
@@ -82,7 +104,7 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertEqual(snapshot.gatewayState, .unknown)
     }
 
-    func testLiveSnapshotDoesNotCoupleFixedLinkReadinessToDNSChoice() throws {
+    func testLiveSnapshotDoesNotCoupleSplitLinkReadinessToDNSChoice() throws {
         let runner = SnapshotCommandRunner(
             bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
             router: "192.168.2.1",
@@ -144,7 +166,7 @@ final class NetworkStaticLinkTests: XCTestCase {
 
         XCTAssertEqual(snapshot.gatewayState, .ready)
         XCTAssertFalse(runner.invocations.contains { invocation in
-            invocation.executable == "/sbin/ping" && invocation.arguments.last != "192.168.2.1"
+            invocation.executable == "/sbin/ping" && invocation.arguments.last != "10.254.254.1"
         })
     }
 
@@ -197,11 +219,29 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.failure("missing")))
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success("{}")))
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
-            "{\"protocolVersion\":3}"
-        )))
-        XCTAssertTrue(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
             "{\"protocolVersion\":4}"
         )))
+        XCTAssertTrue(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
+            "{\"protocolVersion\":5}"
+        )))
+    }
+
+    func testManagementSubnetPreflightRejectsForeignAddressAndRoute() {
+        XCTAssertTrue(NetworkLinkProvisioner.hasManagementSubnetConflict(
+            ifconfigOutput: "en7: flags=8863<UP,RUNNING>\n\tinet 10.254.254.3 netmask 0xfffffffc",
+            routeOutput: "Routing tables",
+            allowedAddress: "10.254.254.2"
+        ))
+        XCTAssertTrue(NetworkLinkProvisioner.hasManagementSubnetConflict(
+            ifconfigOutput: "bridge0: flags=8863<UP,RUNNING>\n\tinet 10.254.254.2 netmask 0xfffffffc",
+            routeOutput: "10.254.254/30  192.0.2.1  UGSc  en7",
+            allowedAddress: "10.254.254.2"
+        ))
+        XCTAssertFalse(NetworkLinkProvisioner.hasManagementSubnetConflict(
+            ifconfigOutput: "bridge0: flags=8863<UP,RUNNING>\n\tinet 10.254.254.2 netmask 0xfffffffc",
+            routeOutput: "10.254.254/30  link#22  UCS  bridge0",
+            allowedAddress: "10.254.254.2"
+        ))
     }
 
     func testSSHArgumentsRequireRegisteredHostIdentity() {
@@ -238,14 +278,14 @@ final class NetworkStaticLinkTests: XCTestCase {
         let provisioner = makeProvisioner(runner: runner, backupDirectory: directory)
 
         XCTAssertEqual(provisioner.provision().kind, .success)
-        runner.localInfo = "Manual Configuration\nIP address: 192.168.2.2\nSubnet mask: 255.255.255.0\nRouter: 192.168.2.1"
+        runner.localInfo = "DHCP Configuration\nIP address: 192.168.3.2\nSubnet mask: 255.255.255.0\nRouter: 192.168.3.1"
         XCTAssertEqual(provisioner.provision().kind, .success)
 
-        let backupData = try Data(contentsOf: directory.appendingPathComponent("thunderbolt-link-local-backup.json"))
+        let backupData = try Data(contentsOf: directory.appendingPathComponent("thunderbolt-address-plane-v5-backup.json"))
         let backup = try JSONDecoder().decode(NetworkServiceConfiguration.self, from: backupData)
         XCTAssertEqual(backup.method, .dhcp)
         XCTAssertEqual(runner.privilegedConfigurations.count, 2)
-        XCTAssertTrue(runner.privilegedConfigurations.allSatisfy { $0.configuration.method == .manual })
+        XCTAssertTrue(runner.privilegedConfigurations.allSatisfy { $0.configuration.method == .dhcp })
         XCTAssertTrue(runner.privilegedConfigurations.allSatisfy { $0.configuration.dnsServers.isEmpty })
     }
 
@@ -269,7 +309,7 @@ final class NetworkStaticLinkTests: XCTestCase {
 
         XCTAssertEqual(outcome.kind, .failed)
         XCTAssertTrue(outcome.message.contains("已恢复两端原配置"))
-        XCTAssertEqual(runner.privilegedConfigurations.map(\.configuration.method), [.manual, .dhcp])
+        XCTAssertEqual(runner.privilegedConfigurations.map(\.configuration.method), [.dhcp, .dhcp])
         XCTAssertTrue(runner.remoteActions.contains("rollback"))
     }
 
@@ -294,7 +334,7 @@ final class NetworkStaticLinkTests: XCTestCase {
         let outcome = makeProvisioner(runner: runner).provision()
 
         XCTAssertEqual(outcome.kind, .recoveryRequired)
-        XCTAssertTrue(outcome.message.contains("本机固定链路配置失败"))
+        XCTAssertTrue(outcome.message.contains("本机地址面迁移失败"))
     }
 
     func testMiniHelperRejectsUnknownCommandsAndHasExactSudoersContract() throws {
@@ -327,8 +367,10 @@ final class NetworkStaticLinkTests: XCTestCase {
         let helperSource = try String(contentsOf: helper)
         let sudoersSource = try String(contentsOf: sudoers)
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper status"))
-        XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper apply"))
+        XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper prepare"))
+        XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper migrate"))
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper rollback"))
+        XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper finalize-rollback"))
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper report-egress-failure"))
         XCTAssertFalse(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper *"))
         XCTAssertTrue(installerSource.contains("visudo -cf"))
@@ -341,10 +383,14 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(installerSource.contains("/bin/rm -f \"$LEGACY_SUDOERS_TARGET\""))
         XCTAssertTrue(helperSource.contains("NAT.SharingDevices.$index"))
         XCTAssertFalse(helperSource.contains("NAT.SharingDevices json"))
-        XCTAssertTrue(helperSource.contains("protocolVersion\\\":4"))
+        XCTAssertTrue(helperSource.contains("protocolVersion\\\":5"))
         XCTAssertTrue(helperSource.contains("system/com.apple.NetworkSharing"))
         XCTAssertTrue(helperSource.contains("net.inet.ip.forwarding"))
         XCTAssertTrue(helperSource.contains("evidenceConflict"))
+        XCTAssertTrue(helperSource.contains("hotspotAPActive"))
+        XCTAssertTrue(helperSource.contains("hotspotClientObserved"))
+        XCTAssertFalse(helperSource.contains("NetworkPassword"))
+        XCTAssertFalse(helperSource.contains("NetworkName"))
         XCTAssertFalse(helperSource.contains("ps -axo command"))
         XCTAssertTrue(helperSource.contains("-convert json -o - \"$GUARDIAN_STATUS\""))
         XCTAssertFalse(helperSource.contains("-lint \"$GUARDIAN_STATUS\""))
@@ -353,7 +399,7 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(guardianPlistSource.contains("com.zjah.NetBarMiniNetworkGuardian"))
         XCTAssertTrue(guardianPlistSource.contains("<key>KeepAlive</key>"))
         XCTAssertTrue(helperSource.contains("SLEEP=/bin/sleep"))
-        XCTAssertTrue(helperSource.contains("wait_for_gateway_address"))
+        XCTAssertTrue(helperSource.contains("wait_for_management_alias"))
         XCTAssertTrue(helperSource.contains("for attempt in {1..10}"))
     }
 
@@ -376,9 +422,11 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertFalse(source.contains("\"-w\", \"net.inet.ip.forwarding"))
         XCTAssertTrue(source.contains("GuardianEvaluationCadence.duringRecoveryBackoff"))
         XCTAssertTrue(source.contains("transition(to: .recoveryBackoff, error: status.lastError)"))
-        XCTAssertTrue(source.contains("-setmanual"))
+        XCTAssertFalse(source.contains("-setmanual"))
         XCTAssertFalse(source.contains("-setdnsservers"))
         XCTAssertFalse(source.contains("-setnetworkserviceenabled"))
+        XCTAssertTrue(source.contains("/usr/sbin/system_profiler"))
+        XCTAssertTrue(source.contains("/usr/sbin/arp"))
         XCTAssertFalse(source.contains("en8"))
     }
 
@@ -427,15 +475,20 @@ final class NetworkStaticLinkTests: XCTestCase {
         }
     }
 
-    private static func bridge(address: String?, active: Bool) -> String {
+    private static func bridge(
+        address: String?,
+        active: Bool,
+        includeManagement: Bool = true
+    ) -> String {
         var lines = ["bridge0: flags=8863<UP,RUNNING>"]
+        if includeManagement { lines.append("\tinet 10.254.254.2 netmask 0xfffffffc") }
         if let address { lines.append("\tinet \(address) netmask 0xffffff00") }
         lines.append("\tstatus: \(active ? "active" : "inactive")")
         return lines.joined(separator: "\n")
     }
 
     private static let readyHelperJSON = """
-    {"protocolVersion":4,"configured":true,"serviceIPv4":"192.168.2.1","gatewayIPv4":"192.168.2.1","upstreamDevice":"en0","upstreamActive":true,"sharingConfigured":true,"sharingProcessRunning":true,"forwardingEnabled":true,"guardianObservedAt":"2026-08-27T08:39:00Z","guardianGeneration":1,"evidenceConflict":false,"guardian":{"state":"ready","observedAt":"2026-08-27T08:39:00Z","generation":1,"lastTransition":null,"lastCarrierChange":null,"lastAction":null,"lastError":null,"carrierActive":true,"addressReady":true,"routeReady":true,"sharingRunning":true,"forwardingEnabled":true,"sharingConfigured":true,"upstreamReachable":true,"nextRetryAt":null}}
+    {"protocolVersion":5,"configured":true,"serviceIPv4":"192.168.2.1","gatewayIPv4":"192.168.2.1","managementIPv4":"10.254.254.1","managementPeerIPv4":"10.254.254.2","bridgeUsesDHCP":true,"sharingIntentEnabled":true,"hotspotAPConfigured":true,"upstreamDevice":"en0","upstreamActive":true,"sharingConfigured":true,"sharingProcessRunning":true,"forwardingEnabled":true,"guardianObservedAt":"2026-08-27T08:39:00Z","guardianGeneration":1,"evidenceConflict":false,"guardian":{"state":"ready","observedAt":"2026-08-27T08:39:00Z","generation":1,"lastTransition":null,"lastCarrierChange":null,"lastAction":null,"lastError":null,"carrierActive":true,"addressReady":true,"routeReady":true,"sharingRunning":true,"forwardingEnabled":true,"sharingConfigured":true,"upstreamReachable":true,"nextRetryAt":null,"managementAddressReady":true,"bridgeUsesDHCP":true,"sharingIntentEnabled":true,"hotspotAPConfigured":true}}
     """
 }
 
@@ -455,6 +508,7 @@ private final class SnapshotCommandRunner: NetworkModeCommandRunning {
     let remoteHelperJSON: String?
     let defaultRouteInterface: String
     let nwiPrimaryInterface: String?
+    let serviceAddress: String
     private(set) var invocations: [Invocation] = []
 
     init(
@@ -463,11 +517,12 @@ private final class SnapshotCommandRunner: NetworkModeCommandRunning {
         peerReachable: Bool = true,
         boundEgressReachable: Bool = true,
         reachableProbeTargets: Set<String>? = nil,
-        manualConfiguration: Bool = true,
+        manualConfiguration: Bool = false,
         dnsConfigured: Bool = true,
         remoteHelperJSON: String? = nil,
         defaultRouteInterface: String = "en0",
-        nwiPrimaryInterface: String? = nil
+        nwiPrimaryInterface: String? = nil,
+        serviceAddress: String = "192.168.2.2"
     ) {
         self.bridgeOutput = bridgeOutput
         self.router = router
@@ -479,6 +534,7 @@ private final class SnapshotCommandRunner: NetworkModeCommandRunning {
         self.remoteHelperJSON = remoteHelperJSON
         self.defaultRouteInterface = defaultRouteInterface
         self.nwiPrimaryInterface = nwiPrimaryInterface
+        self.serviceAddress = serviceAddress
     }
 
     func run(executable: String, arguments: [String]) -> NetworkModeCommandResult {
@@ -489,7 +545,7 @@ private final class SnapshotCommandRunner: NetworkModeCommandRunning {
         if executable == "/sbin/ifconfig" { return .success(bridgeOutput) }
         if executable == "/usr/sbin/networksetup", arguments.first == "-getinfo" {
             let method = manualConfiguration ? "Manual Configuration" : "DHCP Configuration"
-            return .success("\(method)\nIP address: 192.168.2.2\nSubnet mask: 255.255.255.0\nRouter: \(router ?? "none")")
+            return .success("\(method)\nIP address: \(serviceAddress)\nSubnet mask: 255.255.255.0\nRouter: \(router ?? "none")")
         }
         if executable == "/usr/sbin/networksetup", arguments.first == "-getdnsservers" {
             return .success(dnsConfigured
@@ -501,7 +557,7 @@ private final class SnapshotCommandRunner: NetworkModeCommandRunning {
             return .success("Network interfaces: \(nwiPrimaryInterface) en0")
         }
         if executable == "/sbin/ping" {
-            if arguments.last == "192.168.2.1" { return peerReachable ? .success() : .failure("timeout") }
+            if arguments.last == "10.254.254.1" { return peerReachable ? .success() : .failure("timeout") }
             return .failure("public ICMP must not be used as readiness evidence")
         }
         if executable == "/usr/bin/curl" {
@@ -571,11 +627,12 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
             if arguments.last == "/usr/bin/true" {
                 return remoteIdentityValid ? .success() : .failure("REMOTE HOST IDENTIFICATION HAS CHANGED")
             }
-            if let action = arguments.last, ["status", "apply", "rollback"].contains(action) {
+            if let action = arguments.last,
+               ["status", "prepare", "migrate", "rollback", "finalize-rollback"].contains(action) {
                 remoteActions.append(action)
                 if action == "status" {
                     return remoteHelperInstalled
-                        ? .success("{\"protocolVersion\":4}")
+                        ? .success("{\"protocolVersion\":5}")
                         : .failure("missing")
                 }
                 if action == "rollback" { return remoteRollbackSucceeds ? .success("{}") : .failure("rollback failed") }
@@ -589,6 +646,10 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
         if executable == "/usr/sbin/networksetup", arguments.first == "-getdnsservers" {
             return .success(localDNSOutput)
         }
+        if executable == "/sbin/ifconfig", arguments == ["-a"] {
+            return .success("bridge0: flags=8863<UP,RUNNING>")
+        }
+        if executable == "/usr/sbin/netstat" { return .success("Routing tables") }
         if executable == "/sbin/ifconfig" {
             addressVerificationChecks += 1
             if addressVerificationFailuresRemaining > 0 {
@@ -596,13 +657,40 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
                 return .success("inet 169.254.2.4 netmask 0xffff0000\nstatus: active")
             }
             return fixedLinkVerificationSucceeds
-                ? .success("inet 192.168.2.2 netmask 0xffffff00\nstatus: active")
+                ? .success("inet 10.254.254.2 netmask 0xfffffffc\ninet 192.168.3.2 netmask 0xffffff00\nstatus: active")
                 : .success("inet 169.254.2.4 netmask 0xffff0000\nstatus: active")
         }
         return .failure("unexpected command: \(executable) \(arguments)")
     }
 
     func runPrivilegedNetworkServiceOrder(_ serviceNames: [String]) -> NetworkModeCommandResult { .success() }
+
+    func runPrivilegedEnsureManagementAlias(address: String, subnetMask: String) -> NetworkModeCommandResult {
+        .success()
+    }
+
+    func runPrivilegedManagementMigration(
+        serviceName: String,
+        address: String,
+        subnetMask: String,
+        dnsServers: [String]
+    ) -> NetworkModeCommandResult {
+        let configuration = NetworkServiceConfiguration(
+            method: .dhcp,
+            ipAddress: nil,
+            subnetMask: nil,
+            router: nil,
+            dnsServers: dnsServers
+        )
+        privilegedConfigurations.append((serviceName, configuration))
+        localDNSOutput = dnsServers.isEmpty
+            ? "There aren't any DNS Servers set on Thunderbolt Bridge."
+            : dnsServers.joined(separator: "\n")
+        localInfo = "DHCP Configuration\nIP address: 192.168.3.2\nSubnet mask: 255.255.255.0\nRouter: 192.168.3.1"
+        return localApplySucceeds ? .success() : .failure("本机地址面迁移失败")
+    }
+
+    func runPrivilegedRemoveManagementAlias(address: String) -> NetworkModeCommandResult { .success() }
 
     func runPrivilegedNetworkConfiguration(
         serviceName: String,

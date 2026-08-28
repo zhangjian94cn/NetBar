@@ -41,6 +41,33 @@ struct NetworkModeCard: View {
                     .lineLimit(1)
             }
 
+            VStack(spacing: 5) {
+                HStack(spacing: 10) {
+                    evidenceItem(
+                        title: "固定管理链路",
+                        value: managementEvidenceText,
+                        healthy: managementEvidenceReady
+                    )
+                    evidenceItem(
+                        title: "雷雳共享出口",
+                        value: sharingOutletEvidenceText,
+                        healthy: controller.snapshot?.gatewayState == .ready
+                    )
+                }
+                HStack(spacing: 10) {
+                    evidenceItem(
+                        title: "热点 AP",
+                        value: hotspotAPEvidenceText,
+                        healthy: controller.miniHelperStatus?.hotspotAPActive == true
+                    )
+                    evidenceItem(
+                        title: "客户端证据",
+                        value: hotspotClientEvidenceText,
+                        healthy: controller.miniHelperStatus?.hotspotClientObserved == true
+                    )
+                }
+            }
+
             HStack(spacing: 5) {
                 Text("当前出口")
                     .foregroundColor(.secondary)
@@ -308,6 +335,33 @@ struct NetworkModeCard: View {
         let local = snapshot.bridgeIPv4 ?? "—"
         let mini = snapshot.miniGateway ?? "—"
         return "本机 \(local) · Mini \(mini)"
+    }
+
+    private var managementEvidenceReady: Bool {
+        controller.miniHelperStatus?.managementIPv4 == MacMiniLinkProfile.defaults.managementMiniAddress &&
+            controller.snapshot?.linkState == .connected
+    }
+
+    private var managementEvidenceText: String {
+        managementEvidenceReady ? "10.254.254.2 → 10.254.254.1" : "待验证"
+    }
+
+    private var sharingOutletEvidenceText: String {
+        guard let snapshot = controller.snapshot,
+              let address = snapshot.bridgeIPv4,
+              let gateway = snapshot.miniGateway else { return "等待 Apple DHCP" }
+        return "\(address) → \(gateway)"
+    }
+
+    private var hotspotAPEvidenceText: String {
+        guard let status = controller.miniHelperStatus else { return "待检测" }
+        if status.hotspotAPActive == true { return "AP 已建立" }
+        return status.hotspotAPConfigured ? "已配置，尚未建立" : "未配置"
+    }
+
+    private var hotspotClientEvidenceText: String {
+        if controller.miniHelperStatus?.hotspotClientObserved == true { return "客户端已观测" }
+        return "热点已配置，客户端出口未验证"
     }
 
     private var candidateCountText: String {

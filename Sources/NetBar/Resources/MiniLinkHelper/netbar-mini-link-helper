@@ -6,73 +6,60 @@ IFCONFIG=/sbin/ifconfig
 PLUTIL=/usr/bin/plutil
 GREP=/usr/bin/grep
 AWK=/usr/bin/awk
-SED=/usr/bin/sed
 MKDIR=/bin/mkdir
 CHMOD=/bin/chmod
 SLEEP=/bin/sleep
 LAUNCHCTL=/bin/launchctl
 SYSCTL=/usr/sbin/sysctl
 DATE=/bin/date
+SYSTEM_PROFILER=/usr/sbin/system_profiler
+NETSTAT=/usr/sbin/netstat
+ARP=/usr/sbin/arp
 
 PROFILE=/Library/Application\ Support/NetBar/MacMiniLinkProfile.plist
 NAT_PROFILE=/Library/Preferences/SystemConfiguration/com.apple.nat.plist
 STATE_DIR=/Library/Application\ Support/NetBar/ThunderboltLink
-BACKUP_PLIST="$STATE_DIR/mini-network-backup.plist"
-BACKUP_DNS="$STATE_DIR/mini-dns-backup.txt"
+BACKUP_PLIST="$STATE_DIR/mini-network-backup-v5.plist"
+BACKUP_DNS="$STATE_DIR/mini-dns-backup-v5.txt"
 GUARDIAN_STATUS=/Library/Application\ Support/NetBar/MiniGuardian/status.json
 EGRESS_FAILURE_MARKER=/Library/Application\ Support/NetBar/MiniGuardian/downstream-egress-failure.txt
 
-fail() {
-    print -u2 -- "$1"
-    exit 1
-}
+fail() { print -u2 -- "$1"; exit 1 }
 
-[[ "$#" -eq 1 ]] || fail "usage: netbar-mini-link-helper status|apply|rollback|report-egress-failure"
+[[ "$#" -eq 1 ]] || fail "usage: netbar-mini-link-helper status|prepare|migrate|rollback|finalize-rollback|report-egress-failure"
 case "$1" in
-    status|apply|rollback|report-egress-failure) ACTION="$1" ;;
+    status|prepare|migrate|rollback|finalize-rollback|report-egress-failure) ACTION="$1" ;;
     *) fail "unsupported command" ;;
 esac
 
-if [[ "$ACTION" == "report-egress-failure" ]]; then
+if [[ "$ACTION" == report-egress-failure ]]; then
     "$MKDIR" -p "${EGRESS_FAILURE_MARKER:h}"
     "$CHMOD" 700 "${EGRESS_FAILURE_MARKER:h}"
     "$DATE" -u '+%Y-%m-%dT%H:%M:%SZ' > "$EGRESS_FAILURE_MARKER"
     "$CHMOD" 600 "$EGRESS_FAILURE_MARKER"
-    print -r -- '{"protocolVersion":4,"reported":true}'
+    print -r -- '{"protocolVersion":5,"reported":true}'
     exit 0
 fi
 
 [[ -r "$PROFILE" ]] || fail "profile missing"
+profile_value() { "$PLUTIL" -extract "$1" raw -o - "$PROFILE" }
 
-profile_value() {
-    "$PLUTIL" -extract "$1" raw -o - "$PROFILE"
-}
-
-GATEWAY_ADDRESS="$(profile_value gatewayAddress)"
-SUBNET_MASK="$(profile_value subnetMask)"
+MANAGEMENT_MINI_ADDRESS="$(profile_value managementMiniAddress)"
+MANAGEMENT_LOCAL_ADDRESS="$(profile_value managementLocalAddress)"
+MANAGEMENT_SUBNET_MASK="$(profile_value managementSubnetMask)"
 UPSTREAM_DEVICE="$(profile_value miniUpstreamDevice)"
 
 find_bridge_service() {
     "$NETWORKSETUP" -listnetworkserviceorder | "$AWK" '
-        /^\([0-9]+\) / {
-            name=$0
-            sub(/^\([0-9]+\) /, "", name)
-            sub(/^\*/, "", name)
-        }
+        /^\([0-9]+\) / { name=$0; sub(/^\([0-9]+\) /, "", name); sub(/^\*/, "", name) }
         /Device: bridge0\)$/ { print name; exit }
     '
 }
 
 network_value() {
-    local key="$1"
-    local info="$2"
+    local key="$1" info="$2"
     print -r -- "$info" | "$AWK" -v prefix="$key:" '
-        index($0, prefix) == 1 {
-            sub(prefix, "")
-            sub(/^[[:space:]]+/, "")
-            print
-            exit
-        }
+        index($0, prefix) == 1 { sub(prefix, ""); sub(/^[[:space:]]+/, ""); print; exit }
     '
 }
 
@@ -83,13 +70,22 @@ json_escape() {
     print -rn -- "$value"
 }
 
-sharing_includes_bridge() {
-    local count index device
+json_optional_string() {
+    local value="$1"
+    if [[ -n "$value" && "$value" != none && "$value" != 0.0.0.0 ]]; then
+        print -rn -- "\"$(json_escape "$value")\""
+    else
+        print -rn -- null
+    fi
+}
+
+sharing_devices_include() {
+    local wanted="$1" count index device
     count="$($PLUTIL -extract NAT.SharingDevices raw -o - "$NAT_PROFILE" 2>/dev/null)" || return 1
     [[ "$count" == <-> ]] || return 1
     for (( index = 0; index < count; index++ )); do
         device="$($PLUTIL -extract "NAT.SharingDevices.$index" raw -o - "$NAT_PROFILE" 2>/dev/null)" || return 1
-        [[ "$device" == "bridge0" ]] && return 0
+        [[ "$device" == "$wanted" ]] && return 0
     done
     return 1
 }
@@ -97,20 +93,51 @@ sharing_includes_bridge() {
 BRIDGE_SERVICE="$(find_bridge_service)"
 [[ -n "$BRIDGE_SERVICE" ]] || fail "Thunderbolt Bridge service not found"
 
+bridge_has_address() { "$IFCONFIG" bridge0 2>/dev/null | "$GREP" -q "inet $1 " }
+bridge_uses_dhcp() { "$NETWORKSETUP" -getinfo "$BRIDGE_SERVICE" | "$GREP" -q '^DHCP Configuration' }
+
+check_management_conflict() {
+    local conflicts route_conflicts
+    conflicts="$($IFCONFIG -a | "$AWK" -v mini="$MANAGEMENT_MINI_ADDRESS" -v local="$MANAGEMENT_LOCAL_ADDRESS" '
+        /^[a-z0-9]+:/ { interface=$1; sub(/:$/, "", interface) }
+        /inet 10\.254\.254\.[0-3] / {
+            address=$2
+            if (interface != "bridge0" || (address != mini && address != local)) print interface ":" address
+        }
+    ')"
+    [[ -z "$conflicts" ]] || fail "management subnet conflict"
+    route_conflicts="$($NETSTAT -rn -f inet | "$AWK" '
+        $1 == "10.254.254/30" || $1 == "10.254.254.0/30" || $1 == "10.254.254" {
+            if ($NF != "bridge0") print $0
+        }
+    ')"
+    [[ -z "$route_conflicts" ]] || fail "management subnet route conflict"
+}
+
+ensure_management_alias() {
+    check_management_conflict
+    bridge_has_address "$MANAGEMENT_MINI_ADDRESS" && return 0
+    "$IFCONFIG" bridge0 alias "$MANAGEMENT_MINI_ADDRESS" netmask "$MANAGEMENT_SUBNET_MASK"
+}
+
+remove_management_alias() {
+    bridge_has_address "$MANAGEMENT_MINI_ADDRESS" || return 0
+    "$IFCONFIG" bridge0 -alias "$MANAGEMENT_MINI_ADDRESS"
+}
+
 save_backup_once() {
     [[ -f "$BACKUP_PLIST" ]] && return
     "$MKDIR" -p "$STATE_DIR"
     "$CHMOD" 700 "$STATE_DIR"
-
     local info method ip subnet router
     info="$($NETWORKSETUP -getinfo "$BRIDGE_SERVICE")"
-    method="DHCP"
-    print -r -- "$info" | "$GREP" -q '^Manual Configuration' && method="Manual"
+    method=DHCP
+    print -r -- "$info" | "$GREP" -q '^Manual Configuration' && method=Manual
     ip="$(network_value "IP address" "$info")"
     subnet="$(network_value "Subnet mask" "$info")"
     router="$(network_value "Router" "$info")"
-
     "$PLUTIL" -create xml1 "$BACKUP_PLIST"
+    "$PLUTIL" -insert protocolVersion -integer 5 "$BACKUP_PLIST"
     "$PLUTIL" -insert method -string "$method" "$BACKUP_PLIST"
     "$PLUTIL" -insert service -string "$BRIDGE_SERVICE" "$BACKUP_PLIST"
     "$PLUTIL" -insert ip -string "${ip:-}" "$BACKUP_PLIST"
@@ -126,88 +153,125 @@ restore_dns() {
         "$NETWORKSETUP" -setdnsservers "$BRIDGE_SERVICE" Empty
         return
     fi
-    local dns_values
+    local -a dns_values
     dns_values=("${(@f)$(<"$BACKUP_DNS")}")
     "$NETWORKSETUP" -setdnsservers "$BRIDGE_SERVICE" "${dns_values[@]}"
 }
 
+shared_bridge_address() {
+    local info="$1" leased
+    leased="$(network_value "IP address" "$info")"
+    if [[ -n "$leased" && "$leased" != "$MANAGEMENT_MINI_ADDRESS" && "$leased" != 169.254.* ]] && bridge_has_address "$leased"; then
+        print -r -- "$leased"
+        return
+    fi
+    "$IFCONFIG" bridge0 2>/dev/null | "$AWK" -v management="$MANAGEMENT_MINI_ADDRESS" '
+        $1 == "inet" && $2 != management && $2 !~ /^169\.254\./ { print $2; exit }
+    '
+}
+
+sharing_configuration_matches() {
+    [[ -r "$NAT_PROFILE" ]] || return 1
+    local primary_device
+    primary_device="$($PLUTIL -extract NAT.PrimaryInterface.Device raw -o - "$NAT_PROFILE" 2>/dev/null || true)"
+    [[ "$primary_device" == "$UPSTREAM_DEVICE" ]] && sharing_devices_include bridge0 && sharing_devices_include en1
+}
+
+sharing_intent_enabled() {
+    local enabled
+    enabled="$($PLUTIL -extract NAT.Enabled raw -o - "$NAT_PROFILE" 2>/dev/null || true)"
+    [[ "$enabled" == true || "$enabled" == 1 ]]
+}
+
+hotspot_ap_active() {
+    "$SYSTEM_PROFILER" SPAirPortDataType 2>/dev/null | "$GREP" -q 'Network Type: Wi-Fi Internet Sharing'
+}
+
+hotspot_client_observed() {
+    "$ARP" -an -i ap1 2>/dev/null | "$GREP" -q ' at '
+}
+
 emit_status() {
-    local info ip upstream_active sharing_process_running forwarding_enabled sharing_configured configured primary_device
+    local info router shared_ip upstream_active sharing_process_running forwarding_enabled
+    local sharing_configured sharing_intent hotspot_configured hotspot_active hotspot_client configured bridge_dhcp
+    local upstream_info sharing_output forwarding_value
     info="$($NETWORKSETUP -getinfo "$BRIDGE_SERVICE")"
-    ip="$(network_value "IP address" "$info")"
-    local bridge_info upstream_info sharing_output forwarding_value
-    bridge_info="$($IFCONFIG bridge0 2>/dev/null || true)"
+    router="$(network_value "Router" "$info")"
+    shared_ip="$(shared_bridge_address "$info")"
+    [[ -n "$router" && "$router" != none && "$router" != 0.0.0.0 ]] || router="$shared_ip"
     upstream_info="$($IFCONFIG "$UPSTREAM_DEVICE" 2>/dev/null || true)"
     sharing_output="$($LAUNCHCTL print system/com.apple.NetworkSharing 2>/dev/null || true)"
     forwarding_value="$($SYSCTL -n net.inet.ip.forwarding 2>/dev/null || true)"
-    [[ "$bridge_info" == *"inet $GATEWAY_ADDRESS "* ]] && configured=true || configured=false
+    bridge_has_address "$MANAGEMENT_MINI_ADDRESS" && configured=true || configured=false
+    bridge_uses_dhcp && bridge_dhcp=true || bridge_dhcp=false
     [[ "$upstream_info" == *"status: active"* ]] && upstream_active=true || upstream_active=false
     [[ "$sharing_output" == *"state = running"* && "$sharing_output" == *"/usr/libexec/InternetSharing"* ]] && sharing_process_running=true || sharing_process_running=false
-    [[ "${forwarding_value//$'\n'/}" == "1" ]] && forwarding_enabled=true || forwarding_enabled=false
-    primary_device="$($PLUTIL -extract NAT.PrimaryInterface.Device raw -o - "$NAT_PROFILE" 2>/dev/null || true)"
-    [[ "$primary_device" == "$UPSTREAM_DEVICE" ]] && sharing_includes_bridge && sharing_configured=true || sharing_configured=false
+    [[ "${forwarding_value//$'\n'/}" == 1 ]] && forwarding_enabled=true || forwarding_enabled=false
+    sharing_configuration_matches && sharing_configured=true || sharing_configured=false
+    sharing_intent_enabled && sharing_intent=true || sharing_intent=false
+    sharing_devices_include en1 && hotspot_configured=true || hotspot_configured=false
+    hotspot_ap_active && hotspot_active=true || hotspot_active=false
+    hotspot_client_observed && hotspot_client=true || hotspot_client=false
+
     local guardian evidence_conflict guardian_observed_at guardian_generation guardian_sharing guardian_forwarding
-    guardian='null'
+    guardian=null
     evidence_conflict=false
-    guardian_observed_at='null'
-    guardian_generation='null'
+    guardian_observed_at=null
+    guardian_generation=null
     if [[ -r "$GUARDIAN_STATUS" ]]; then
-        local normalized_guardian
-        normalized_guardian="$("$PLUTIL" -convert json -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
+        local normalized_guardian observed generation
+        normalized_guardian="$($PLUTIL -convert json -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
         if [[ -n "$normalized_guardian" ]]; then
             guardian="$normalized_guardian"
-            guardian_sharing="$("$PLUTIL" -extract sharingRunning raw -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
-            guardian_forwarding="$("$PLUTIL" -extract forwardingEnabled raw -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
+            guardian_sharing="$($PLUTIL -extract sharingRunning raw -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
+            guardian_forwarding="$($PLUTIL -extract forwardingEnabled raw -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
             [[ -n "$guardian_sharing" && "$guardian_sharing" != "$sharing_process_running" ]] && evidence_conflict=true
             [[ -n "$guardian_forwarding" && "$guardian_forwarding" != "$forwarding_enabled" ]] && evidence_conflict=true
-            local observed generation
-            observed="$("$PLUTIL" -extract observedAt raw -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
-            generation="$("$PLUTIL" -extract generation raw -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
+            observed="$($PLUTIL -extract observedAt raw -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
+            generation="$($PLUTIL -extract generation raw -o - "$GUARDIAN_STATUS" 2>/dev/null || true)"
             [[ -n "$observed" ]] && guardian_observed_at="\"$(json_escape "$observed")\""
             [[ "$generation" == <-> ]] && guardian_generation="$generation"
         fi
     fi
-    print -r -- "{\"protocolVersion\":4,\"service\":\"$(json_escape "$BRIDGE_SERVICE")\",\"configured\":$configured,\"serviceIPv4\":\"$(json_escape "${ip:-}")\",\"gatewayIPv4\":\"$GATEWAY_ADDRESS\",\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"sharingProcessRunning\":$sharing_process_running,\"forwardingEnabled\":$forwarding_enabled,\"guardianObservedAt\":$guardian_observed_at,\"guardianGeneration\":$guardian_generation,\"evidenceConflict\":$evidence_conflict,\"guardian\":$guardian}"
+    print -r -- "{\"protocolVersion\":5,\"configured\":$configured,\"serviceIPv4\":$(json_optional_string "$shared_ip"),\"gatewayIPv4\":$(json_optional_string "$router"),\"managementIPv4\":\"$MANAGEMENT_MINI_ADDRESS\",\"managementPeerIPv4\":\"$MANAGEMENT_LOCAL_ADDRESS\",\"bridgeUsesDHCP\":$bridge_dhcp,\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"sharingIntentEnabled\":$sharing_intent,\"hotspotAPConfigured\":$hotspot_configured,\"hotspotAPActive\":$hotspot_active,\"hotspotClientObserved\":$hotspot_client,\"sharingProcessRunning\":$sharing_process_running,\"forwardingEnabled\":$forwarding_enabled,\"guardianObservedAt\":$guardian_observed_at,\"guardianGeneration\":$guardian_generation,\"evidenceConflict\":$evidence_conflict,\"guardian\":$guardian}"
 }
 
-wait_for_gateway_address() {
+wait_for_management_alias() {
     local attempt
     for attempt in {1..10}; do
-        if "$IFCONFIG" bridge0 | "$GREP" -q "inet $GATEWAY_ADDRESS "; then
-            return 0
-        fi
-        if [[ "$attempt" -lt 10 ]]; then
-            "$SLEEP" 1
-        fi
+        bridge_has_address "$MANAGEMENT_MINI_ADDRESS" && return 0
+        (( attempt < 10 )) && "$SLEEP" 1
     done
     return 1
-}
-
-validate_sharing_configuration() {
-    local primary_device
-    [[ -r "$NAT_PROFILE" ]] || fail "Internet Sharing configuration missing"
-    primary_device="$($PLUTIL -extract NAT.PrimaryInterface.Device raw -o - "$NAT_PROFILE")"
-    [[ "$primary_device" == "$UPSTREAM_DEVICE" ]] || fail "Internet Sharing source must be $UPSTREAM_DEVICE"
-    sharing_includes_bridge || fail "Internet Sharing target must include bridge0"
 }
 
 case "$ACTION" in
     status)
         emit_status
         ;;
-    apply)
-        validate_sharing_configuration
+    prepare)
+        sharing_configuration_matches || fail "Internet Sharing must use en0 and include Wi-Fi plus bridge0"
         save_backup_once
-        "$NETWORKSETUP" -setmanual "$BRIDGE_SERVICE" "$GATEWAY_ADDRESS" "$SUBNET_MASK" 0.0.0.0
-        wait_for_gateway_address || fail "fixed gateway address verification failed after waiting for link settlement"
+        ensure_management_alias
+        wait_for_management_alias || fail "management alias verification failed"
+        emit_status
+        ;;
+    migrate)
+        [[ -r "$BACKUP_PLIST" ]] || fail "backup missing"
+        sharing_configuration_matches || fail "Internet Sharing must use en0 and include Wi-Fi plus bridge0"
+        ensure_management_alias
+        "$NETWORKSETUP" -setdhcp "$BRIDGE_SERVICE"
+        ensure_management_alias
+        wait_for_management_alias || fail "management alias verification failed"
+        bridge_uses_dhcp || fail "Thunderbolt Bridge did not converge to DHCP"
         emit_status
         ;;
     rollback)
         [[ -r "$BACKUP_PLIST" ]] || fail "backup missing"
         method="$($PLUTIL -extract method raw -o - "$BACKUP_PLIST")"
-        if [[ "$method" == "DHCP" ]]; then
+        if [[ "$method" == DHCP ]]; then
             "$NETWORKSETUP" -setdhcp "$BRIDGE_SERVICE"
-        elif [[ "$method" == "Manual" ]]; then
+        elif [[ "$method" == Manual ]]; then
             ip="$($PLUTIL -extract ip raw -o - "$BACKUP_PLIST")"
             subnet="$($PLUTIL -extract subnet raw -o - "$BACKUP_PLIST")"
             router="$($PLUTIL -extract router raw -o - "$BACKUP_PLIST")"
@@ -217,6 +281,11 @@ case "$ACTION" in
             fail "unsupported backup method"
         fi
         restore_dns
+        emit_status
+        ;;
+    finalize-rollback)
+        [[ -r "$BACKUP_PLIST" ]] || fail "backup missing"
+        remove_management_alias
         emit_status
         ;;
 esac

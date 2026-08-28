@@ -79,10 +79,10 @@ struct NetworkPolicyShadowObservation: Equatable {
                         ? .activeVerified
                         : .preflightEligible
                 }
-            case .carrierDown, .addressRecovering:
+            case .carrierDown, .addressRecovering, .managementLinkRecovering:
                 miniProof = .unavailable(.miniUpstreamUnavailable)
             case .sharingRecovering, .sharingForwardingUnavailable, .configurationDrift,
-                 .recoveryBackoff:
+                 .recoveryBackoff, .sharingManualPending, .dhcpLeaseRecovering:
                 miniProof = .unavailable(.sharingUnavailable)
             case .boundEgressUnavailable:
                 // Interface-bound direct HTTPS can be blocked by the managed
@@ -99,7 +99,8 @@ struct NetworkPolicyShadowObservation: Equatable {
                 miniProof = underlay == .mini && observedPathProof == .activeVerified
                     ? .activeVerified
                     : .unavailable(.evidenceConflict)
-            case .readyStabilizing, .routeFlapping, .remoteStatusUnavailable, .unknown:
+            case .readyStabilizing, .routeFlapping, .remoteStatusUnavailable,
+                 .hotspotClientUnverified, .unknown:
                 miniProof = underlay == .mini && observedPathProof == .activeVerified
                     ? .activeVerified
                     : .unknown

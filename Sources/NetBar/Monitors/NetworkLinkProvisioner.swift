@@ -28,7 +28,7 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
 #else
 final class NetworkLinkProvisioner: NetworkLinkProvisioning {
     static let miniHelperPath = "/Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper"
-    static let miniHelperProtocolVersion = 4
+    static let miniHelperProtocolVersion = 5
 
     private let runner: NetworkModeCommandRunning
     private let profile: MacMiniLinkProfile
@@ -87,6 +87,9 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
         guard verifyRemoteIdentity() else {
             return .init(kind: .failed, message: "Mac mini SSH 主机密钥变化、身份验证失败或主机不可达，已拒绝初始化")
         }
+        guard managementSubnetIsAvailable() else {
+            return .init(kind: .failed, message: "本机已存在 10.254.254.0/30 地址或路由冲突，保持原配置")
+        }
 
         if !Self.isCompatibleHelperStatus(remoteHelperStatus()) {
             let installResult = installRemoteHelper()
@@ -101,49 +104,85 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
             return .init(kind: .failed, message: "保存本机网络配置失败：\(error.localizedDescription)")
         }
 
-        let remoteApply = runRemoteHelper("apply")
-        guard remoteApply.succeeded else {
+        let localAlias = runner.runPrivilegedEnsureManagementAlias(
+            address: profile.managementLocalAddress,
+            subnetMask: profile.managementSubnetMask
+        )
+        guard localAlias.succeeded else {
             return .init(
                 kind: .failed,
-                message: remoteApply.combinedMessage.isEmpty ? "Mac mini 固定链路配置失败" : remoteApply.combinedMessage
+                message: localAlias.combinedMessage.isEmpty ? "本机管理别名配置失败" : localAlias.combinedMessage
             )
         }
 
-        let fixedConfiguration = NetworkServiceConfiguration(
-            method: .manual,
-            ipAddress: profile.localAddress,
-            subnetMask: profile.subnetMask,
-            router: profile.gatewayAddress,
-            dnsServers: originalConfiguration.dnsServers
-        )
-        let localApply = runner.runPrivilegedNetworkConfiguration(
-            serviceName: service.name,
-            configuration: fixedConfiguration
-        )
-        guard localApply.succeeded else {
+        let remotePrepare = runRemoteHelper("prepare")
+        guard remotePrepare.succeeded else {
+            _ = runner.runPrivilegedRemoveManagementAlias(address: profile.managementLocalAddress)
+            return .init(
+                kind: .failed,
+                message: remotePrepare.combinedMessage.isEmpty ? "Mac mini 管理别名配置失败" : remotePrepare.combinedMessage
+            )
+        }
+
+        guard verifyRemoteIdentity(host: profile.managementMiniAddress) else {
             let remoteRollback = runRemoteHelper("rollback")
+            _ = runRemoteHelper("finalize-rollback")
+            _ = runner.runPrivilegedRemoveManagementAlias(address: profile.managementLocalAddress)
             return .init(
                 kind: remoteRollback.succeeded ? .failed : .recoveryRequired,
-                message: localApply.combinedMessage.isEmpty ? "本机固定链路配置失败" : localApply.combinedMessage
+                message: "新管理地址 SSH 身份或连通性验证失败"
             )
         }
 
-        if verifyFixedLink(serviceName: service.name) {
-            return .init(kind: .success, message: "固定雷雳链路已初始化")
+        let remoteMigrate = runRemoteHelper("migrate", host: profile.managementMiniAddress)
+        guard remoteMigrate.succeeded || remoteManagementStatusIsConfigured() else {
+            return rollbackAfterMigrationFailure(
+                serviceName: service.name,
+                originalConfiguration: originalConfiguration,
+                reason: remoteMigrate.combinedMessage.isEmpty ? "Mac mini 地址面迁移失败" : remoteMigrate.combinedMessage
+            )
+        }
+
+        let localApply = runner.runPrivilegedManagementMigration(
+            serviceName: service.name,
+            address: profile.managementLocalAddress,
+            subnetMask: profile.managementSubnetMask,
+            dnsServers: originalConfiguration.dnsServers
+        )
+        guard localApply.succeeded else {
+            return rollbackAfterMigrationFailure(
+                serviceName: service.name,
+                originalConfiguration: originalConfiguration,
+                reason: localApply.combinedMessage.isEmpty ? "本机地址面迁移失败" : localApply.combinedMessage
+            )
+        }
+
+        if verifyManagementLink(serviceName: service.name) {
+            return .init(kind: .success, message: "雷雳管理链路已迁移，数据面由 Apple DHCP 管理")
         }
 
         let rollbackConfiguration = (try? readLocalBackup()) ?? originalConfiguration
+        let remoteRollback = runRemoteHelper("rollback")
         let localRollback = runner.runPrivilegedNetworkConfiguration(
             serviceName: service.name,
             configuration: rollbackConfiguration
         )
-        let remoteRollback = runRemoteHelper("rollback")
-        let recoverySucceeded = localRollback.succeeded && remoteRollback.succeeded
+        let legacyVerified = remoteRollback.succeeded && verifyRollbackAccess(configuration: rollbackConfiguration)
+        let remoteAliasRemoval = legacyVerified ? runRemoteHelper("finalize-rollback") : .init(
+            exitCode: 1,
+            standardOutput: "",
+            standardError: "旧链路未验证，保留 Mini 管理别名"
+        )
+        let aliasRemoval = legacyVerified
+            ? runner.runPrivilegedRemoveManagementAlias(address: profile.managementLocalAddress)
+            : .init(exitCode: 1, standardOutput: "", standardError: "旧链路未验证，保留本机管理别名")
+        let recoverySucceeded = localRollback.succeeded && remoteRollback.succeeded && legacyVerified &&
+            remoteAliasRemoval.succeeded && aliasRemoval.succeeded
         return .init(
             kind: recoverySucceeded ? .failed : .recoveryRequired,
             message: recoverySucceeded
-                ? "固定链路验证失败，已恢复两端原配置"
-                : "固定链路验证失败，且无法完整恢复两端配置"
+                ? "管理链路验证失败，已恢复两端原配置"
+                : "管理链路验证失败，且无法完整恢复两端配置"
         )
     }
 
@@ -177,6 +216,33 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
         return version == miniHelperProtocolVersion
     }
 
+    static func hasManagementSubnetConflict(
+        ifconfigOutput: String,
+        routeOutput: String,
+        allowedAddress: String
+    ) -> Bool {
+        var interface = ""
+        for rawLine in ifconfigOutput.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if !rawLine.hasPrefix("\t"), let colon = line.firstIndex(of: ":") {
+                interface = String(line[..<colon])
+                continue
+            }
+            let fields = line.split(whereSeparator: \.isWhitespace).map(String.init)
+            if fields.count >= 2, fields[0] == "inet", fields[1].hasPrefix("10.254.254.") {
+                if interface != "bridge0" || fields[1] != allowedAddress { return true }
+            }
+        }
+        for rawLine in routeOutput.components(separatedBy: .newlines) {
+            let fields = rawLine.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard let destination = fields.first else { continue }
+            let targetsManagementSubnet = destination == "10.254.254/30" ||
+                destination == "10.254.254.0/30" || destination == "10.254.254"
+            if targetsManagementSubnet && fields.last != "bridge0" { return true }
+        }
+        return false
+    }
+
     static func sshArguments(profile: MacMiniLinkProfile, host: String, remoteArguments: [String]) -> [String] {
         [
             "-o", "BatchMode=yes",
@@ -195,12 +261,23 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
         return result.succeeded && !result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func verifyRemoteIdentity() -> Bool {
+    private func managementSubnetIsAvailable() -> Bool {
+        let interfaces = runner.run(executable: "/sbin/ifconfig", arguments: ["-a"])
+        let routes = runner.run(executable: "/usr/sbin/netstat", arguments: ["-rn", "-f", "inet"])
+        guard interfaces.succeeded, routes.succeeded else { return false }
+        return !Self.hasManagementSubnetConflict(
+            ifconfigOutput: interfaces.standardOutput,
+            routeOutput: routes.standardOutput,
+            allowedAddress: profile.managementLocalAddress
+        )
+    }
+
+    private func verifyRemoteIdentity(host: String? = nil) -> Bool {
         let result = runner.run(
             executable: "/usr/bin/ssh",
             arguments: Self.sshArguments(
                 profile: profile,
-                host: remoteHost(),
+                host: host ?? remoteHost(),
                 remoteArguments: ["/usr/bin/true"]
             )
         )
@@ -208,19 +285,24 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
     }
 
     private func remoteHost() -> String {
-        let ping = runner.run(
+        let managementPing = runner.run(
             executable: "/sbin/ping",
-            arguments: ["-c", "1", "-W", "500", profile.gatewayAddress]
+            arguments: ["-c", "1", "-W", "500", profile.managementMiniAddress]
         )
-        return ping.succeeded ? profile.gatewayAddress : profile.miniBonjourHost
+        if managementPing.succeeded { return profile.managementMiniAddress }
+        let legacyPing = runner.run(
+            executable: "/sbin/ping",
+            arguments: ["-c", "1", "-W", "500", profile.sshHostKeyAlias]
+        )
+        return legacyPing.succeeded ? profile.sshHostKeyAlias : profile.miniBonjourHost
     }
 
-    private func runRemoteHelper(_ action: String) -> NetworkModeCommandResult {
+    private func runRemoteHelper(_ action: String, host: String? = nil) -> NetworkModeCommandResult {
         runner.run(
             executable: "/usr/bin/ssh",
             arguments: Self.sshArguments(
                 profile: profile,
-                host: remoteHost(),
+                host: host ?? remoteHost(),
                 remoteArguments: ["/usr/bin/sudo", "-n", Self.miniHelperPath, action]
             )
         )
@@ -228,6 +310,52 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
 
     private func remoteHelperStatus() -> NetworkModeCommandResult {
         runRemoteHelper("status")
+    }
+
+    private func rollbackAfterMigrationFailure(
+        serviceName: String,
+        originalConfiguration: NetworkServiceConfiguration,
+        reason: String
+    ) -> NetworkLinkProvisioningOutcome {
+        let remoteRollback = runRemoteHelper("rollback", host: profile.managementMiniAddress)
+        let localRollback = runner.runPrivilegedNetworkConfiguration(
+            serviceName: serviceName,
+            configuration: originalConfiguration
+        )
+        let legacyVerified = remoteRollback.succeeded && localRollback.succeeded &&
+            verifyRollbackAccess(configuration: originalConfiguration)
+        let remoteAliasRemoval = legacyVerified ? runRemoteHelper("finalize-rollback") : .init(
+            exitCode: 1,
+            standardOutput: "",
+            standardError: "旧链路未验证，保留 Mini 管理别名"
+        )
+        let localAliasRemoval = legacyVerified
+            ? runner.runPrivilegedRemoveManagementAlias(address: profile.managementLocalAddress)
+            : .init(exitCode: 1, standardOutput: "", standardError: "旧链路未验证，保留本机管理别名")
+        let recovered = remoteRollback.succeeded && localRollback.succeeded && legacyVerified &&
+            remoteAliasRemoval.succeeded && localAliasRemoval.succeeded
+        return .init(
+            kind: recovered ? .failed : .recoveryRequired,
+            message: recovered ? "\(reason)；已恢复并验证旧链路" : "\(reason)；自动回滚不完整，已保留管理别名"
+        )
+    }
+
+    private func verifyRollbackAccess(configuration: NetworkServiceConfiguration) -> Bool {
+        if configuration.method == .manual,
+           configuration.router == profile.sshHostKeyAlias || configuration.ipAddress != nil {
+            return verifyRemoteIdentity(host: profile.sshHostKeyAlias)
+        }
+        return verifyRemoteIdentity(host: profile.miniBonjourHost)
+    }
+
+    private func remoteManagementStatusIsConfigured() -> Bool {
+        let result = remoteHelperStatus()
+        guard result.succeeded,
+              let data = result.standardOutput.data(using: .utf8),
+              let status = try? JSONDecoder().decode(MacMiniHelperStatus.self, from: data) else {
+            return false
+        }
+        return status.protocolVersion == Self.miniHelperProtocolVersion && status.configured && status.bridgeUsesDHCP
     }
 
     private func installRemoteHelper() -> NetworkLinkProvisioningOutcome {
@@ -380,19 +508,26 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
     }
 
     private func localBackupURL(in directory: URL) -> URL {
-        directory.appendingPathComponent("thunderbolt-link-local-backup.json")
+        directory.appendingPathComponent("thunderbolt-address-plane-v5-backup.json")
     }
 
-    private func verifyFixedLink(serviceName: String) -> Bool {
+    private func verifyManagementLink(serviceName: String) -> Bool {
         for attempt in 0..<verificationAttempts {
             let ifconfig = runner.run(executable: "/sbin/ifconfig", arguments: ["bridge0"])
             if ifconfig.succeeded,
-               LiveNetworkModeSystemProvider.parseInterfaceIPv4s(ifconfig.standardOutput).contains(profile.localAddress) {
+               LiveNetworkModeSystemProvider.parseInterfaceIPv4s(ifconfig.standardOutput).contains(profile.managementLocalAddress) {
+                let info = runner.run(
+                    executable: "/usr/sbin/networksetup",
+                    arguments: ["-getinfo", serviceName]
+                )
                 let ping = runner.run(
                     executable: "/sbin/ping",
-                    arguments: ["-b", "bridge0", "-S", profile.localAddress, "-c", "1", "-W", "800", profile.gatewayAddress]
+                    arguments: [
+                        "-b", "bridge0", "-S", profile.managementLocalAddress,
+                        "-c", "1", "-W", "800", profile.managementMiniAddress
+                    ]
                 )
-                if ping.succeeded { return true }
+                if info.standardOutput.contains("DHCP Configuration") && ping.succeeded { return true }
             }
             if attempt < verificationAttempts - 1 {
                 sleeper(verificationInterval)

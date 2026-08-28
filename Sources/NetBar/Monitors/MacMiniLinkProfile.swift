@@ -1,9 +1,10 @@
 import Foundation
 
 struct MacMiniLinkProfile: Codable, Equatable {
-    let localAddress: String
-    let gatewayAddress: String
-    let subnetMask: String
+    let managementLocalAddress: String
+    let managementMiniAddress: String
+    let managementSubnetMask: String
+    let sshHostKeyAlias: String
     let miniUpstreamDevice: String
     let miniUpstreamAddress: String
     let miniUpstreamSubnetMask: String
@@ -14,9 +15,10 @@ struct MacMiniLinkProfile: Codable, Equatable {
     let httpsProbeTargets: [String]
 
     static let defaults = MacMiniLinkProfile(
-        localAddress: "192.168.2.2",
-        gatewayAddress: "192.168.2.1",
-        subnetMask: "255.255.255.0",
+        managementLocalAddress: "10.254.254.2",
+        managementMiniAddress: "10.254.254.1",
+        managementSubnetMask: "255.255.255.252",
+        sshHostKeyAlias: "192.168.2.1",
         miniUpstreamDevice: "en0",
         miniUpstreamAddress: "10.32.143.206",
         miniUpstreamSubnetMask: "255.255.255.0",
@@ -43,7 +45,7 @@ struct MacMiniLinkProfile: Codable, Equatable {
         return profile
     }()
 
-    var fixedHostKeyAlias: String { gatewayAddress }
+    var fixedHostKeyAlias: String { sshHostKeyAlias }
 
     static func isLinkLocalIPv4(_ address: String?) -> Bool {
         address?.hasPrefix("169.254.") == true
@@ -63,6 +65,10 @@ enum MacMiniGatewayState: String, Codable, Equatable {
     case remoteStatusUnavailable
     case remoteEvidenceConflict
     case sharingForwardingUnavailable
+    case sharingManualPending
+    case managementLinkRecovering
+    case dhcpLeaseRecovering
+    case hotspotClientUnverified
     case unknown
 
     var displayName: String {
@@ -91,6 +97,14 @@ enum MacMiniGatewayState: String, Codable, Equatable {
             return "Mac mini 共享状态证据冲突"
         case .sharingForwardingUnavailable:
             return "Mac mini 共享转发未就绪"
+        case .sharingManualPending:
+            return "请在 Mac mini 系统设置中开启互联网共享"
+        case .managementLinkRecovering:
+            return "Mac mini 管理链路正在恢复"
+        case .dhcpLeaseRecovering:
+            return "雷雳共享地址正在获取"
+        case .hotspotClientUnverified:
+            return "热点已配置，客户端出口未验证"
         case .unknown:
             return "Mac mini 上游待检测"
         }
@@ -115,13 +129,26 @@ struct MacMiniGuardianStatus: Codable, Equatable {
     let sharingConfigured: Bool
     let upstreamReachable: Bool
     let nextRetryAt: String?
+    let managementAddressReady: Bool?
+    let bridgeUsesDHCP: Bool?
+    let sharingIntentEnabled: Bool?
+    let hotspotAPConfigured: Bool?
+    var hotspotAPActive: Bool? = nil
+    var hotspotClientObserved: Bool? = nil
 }
 
 struct MacMiniHelperStatus: Codable, Equatable {
     let protocolVersion: Int
     let configured: Bool
     let serviceIPv4: String?
-    let gatewayIPv4: String
+    let gatewayIPv4: String?
+    let managementIPv4: String?
+    let managementPeerIPv4: String?
+    let bridgeUsesDHCP: Bool
+    let sharingIntentEnabled: Bool
+    let hotspotAPConfigured: Bool
+    var hotspotAPActive: Bool? = nil
+    var hotspotClientObserved: Bool? = nil
     let upstreamDevice: String
     let upstreamActive: Bool
     let sharingConfigured: Bool
@@ -143,10 +170,13 @@ struct MacMiniHelperStatus: Codable, Equatable {
 
     var gatewayState: MacMiniGatewayState {
         if !upstreamActive { return .carrierDown }
+        if !configured { return .managementLinkRecovering }
         if !sharingConfigured { return .configurationDrift }
+        if !sharingIntentEnabled { return .sharingManualPending }
         if evidenceConflict { return .remoteEvidenceConflict }
         if !sharingProcessRunning { return .sharingRecovering }
         if !forwardingEnabled { return .sharingForwardingUnavailable }
+        if !bridgeUsesDHCP || serviceIPv4 == nil || gatewayIPv4 == nil { return .dhcpLeaseRecovering }
         if let guardian,
            guardian.sharingRunning != sharingProcessRunning ||
            guardian.forwardingEnabled != forwardingEnabled {

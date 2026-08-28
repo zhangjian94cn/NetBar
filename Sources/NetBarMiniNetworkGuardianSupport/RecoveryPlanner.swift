@@ -43,6 +43,11 @@ public struct MiniGuardianRecoveryInput: Equatable {
     public let carrierActive: Bool
     public let preferencesMatch: Bool
     public let sharingConfigured: Bool
+    public let sharingIntentEnabled: Bool
+    public let managementAddressReady: Bool
+    public let bridgeUsesDHCP: Bool
+    public let sharedAddressReady: Bool
+    public let hotspotAPActive: Bool
     public let addressReady: Bool
     public let routeReady: Bool
     public let sharingRunning: Bool
@@ -59,6 +64,11 @@ public struct MiniGuardianRecoveryInput: Equatable {
         carrierActive: Bool,
         preferencesMatch: Bool,
         sharingConfigured: Bool,
+        sharingIntentEnabled: Bool,
+        managementAddressReady: Bool,
+        bridgeUsesDHCP: Bool,
+        sharedAddressReady: Bool,
+        hotspotAPActive: Bool,
         addressReady: Bool,
         routeReady: Bool,
         sharingRunning: Bool,
@@ -74,6 +84,11 @@ public struct MiniGuardianRecoveryInput: Equatable {
         self.carrierActive = carrierActive
         self.preferencesMatch = preferencesMatch
         self.sharingConfigured = sharingConfigured
+        self.sharingIntentEnabled = sharingIntentEnabled
+        self.managementAddressReady = managementAddressReady
+        self.bridgeUsesDHCP = bridgeUsesDHCP
+        self.sharedAddressReady = sharedAddressReady
+        self.hotspotAPActive = hotspotAPActive
         self.addressReady = addressReady
         self.routeReady = routeReady
         self.sharingRunning = sharingRunning
@@ -91,8 +106,9 @@ public struct MiniGuardianRecoveryInput: Equatable {
 public enum MiniGuardianRecoveryDecision: Equatable {
     case carrierDown
     case configurationDrift(String)
+    case sharingManualPending
+    case reapplyManagementAlias
     case addressRecovering(TimeInterval)
-    case reapplyAddress
     case sharingRecovering(TimeInterval)
     case restartSharing
     case readyStabilizing(TimeInterval)
@@ -108,7 +124,14 @@ public enum MiniGuardianRecoveryPlanner {
             return .configurationDrift("en0 manual configuration differs from NetBar profile")
         }
         guard input.sharingConfigured else {
-            return .configurationDrift("Internet Sharing must use en0 and include bridge0")
+            return .configurationDrift("Internet Sharing must use en0 and include Wi-Fi plus bridge0")
+        }
+        guard input.sharingIntentEnabled else { return .sharingManualPending }
+        guard input.bridgeUsesDHCP else {
+            return .configurationDrift("Thunderbolt Bridge must use DHCP; fixed IPv4 conflicts with Internet Sharing")
+        }
+        guard input.managementAddressReady else {
+            return input.pendingRepairVerification ? .repairFailed : .reapplyManagementAlias
         }
 
         if input.downstreamEgressFailureReported {
@@ -118,7 +141,7 @@ public enum MiniGuardianRecoveryPlanner {
             return .restartSharing
         }
 
-        let healthy = input.addressReady && input.routeReady &&
+        let healthy = input.addressReady && input.routeReady && input.sharedAddressReady && input.hotspotAPActive &&
             input.sharingRunning && input.forwardingEnabled && input.upstreamReachable
         if healthy {
             let elapsed = input.healthyElapsed ?? 0
@@ -134,9 +157,10 @@ public enum MiniGuardianRecoveryPlanner {
         }
         if !input.addressReady || !input.routeReady {
             let elapsed = input.addressWaitElapsed ?? 0
-            return elapsed < 15 ? .addressRecovering(15 - elapsed) : .reapplyAddress
+            return elapsed < 15 ? .addressRecovering(15 - elapsed) : .repairFailed
         }
-        if !input.sharingRunning || !input.forwardingEnabled || !input.upstreamReachable {
+        if !input.sharedAddressReady || !input.hotspotAPActive || !input.sharingRunning ||
+            !input.forwardingEnabled || !input.upstreamReachable {
             let elapsed = input.sharingWaitElapsed ?? 0
             return elapsed < 15 ? .sharingRecovering(15 - elapsed) : .restartSharing
         }

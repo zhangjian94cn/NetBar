@@ -168,7 +168,9 @@ final class NetworkModeControllerTests: XCTestCase {
     func testLinkLocalAndUnexpectedAddressesAreNotProvisioned() {
         XCTAssertTrue(MacMiniLinkProfile.isLinkLocalIPv4("169.254.12.34"))
         XCTAssertFalse(MacMiniLinkProfile.isLinkLocalIPv4("192.168.2.2"))
-        XCTAssertNotEqual("192.168.3.2", MacMiniLinkProfile.defaults.localAddress)
+        XCTAssertEqual("10.254.254.2", MacMiniLinkProfile.defaults.managementLocalAddress)
+        XCTAssertEqual("10.254.254.1", MacMiniLinkProfile.defaults.managementMiniAddress)
+        XCTAssertEqual("192.168.2.1", MacMiniLinkProfile.defaults.sshHostKeyAlias)
     }
 
     func testMissingRequiredServiceFailsClosed() {

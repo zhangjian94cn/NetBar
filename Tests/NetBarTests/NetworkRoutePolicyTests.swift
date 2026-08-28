@@ -766,13 +766,20 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(controller.stabilizationRemaining, 30)
     }
 
-    func testHelperV4DecodesRawFactsAndClassifiesSpecificFailure() throws {
+    func testHelperV5DecodesRawFactsAndClassifiesSpecificFailure() throws {
         let json = """
         {
-          "protocolVersion": 4,
+          "protocolVersion": 5,
           "configured": true,
-          "serviceIPv4": "192.168.2.1",
-          "gatewayIPv4": "192.168.2.1",
+          "serviceIPv4": "192.168.3.1",
+          "gatewayIPv4": "192.168.3.1",
+          "managementIPv4": "10.254.254.1",
+          "managementPeerIPv4": "10.254.254.2",
+          "bridgeUsesDHCP": true,
+          "sharingIntentEnabled": true,
+          "hotspotAPConfigured": true,
+          "hotspotAPActive": true,
+          "hotspotClientObserved": false,
           "upstreamDevice": "en0",
           "upstreamActive": false,
           "sharingConfigured": true,
@@ -796,15 +803,21 @@ final class NetworkRoutePolicyTests: XCTestCase {
             "forwardingEnabled": false,
             "sharingConfigured": true,
             "upstreamReachable": false,
-            "nextRetryAt": null
+            "nextRetryAt": null,
+            "managementAddressReady": true,
+            "bridgeUsesDHCP": true,
+            "sharingIntentEnabled": true,
+            "hotspotAPConfigured": true
           }
         }
         """
 
         let status = try JSONDecoder().decode(MacMiniHelperStatus.self, from: Data(json.utf8))
 
-        XCTAssertEqual(status.protocolVersion, 4)
+        XCTAssertEqual(status.protocolVersion, 5)
         XCTAssertEqual(status.gatewayState, .carrierDown)
+        XCTAssertEqual(status.hotspotAPActive, true)
+        XCTAssertEqual(status.hotspotClientObserved, false)
         XCTAssertEqual(status.guardian?.lastCarrierChange, "2026-08-25T17:47:11Z")
         XCTAssertEqual(status.guardian?.lastAction, "carrier inactive")
     }
@@ -816,6 +829,11 @@ final class NetworkRoutePolicyTests: XCTestCase {
             configured: status.configured,
             serviceIPv4: status.serviceIPv4,
             gatewayIPv4: status.gatewayIPv4,
+            managementIPv4: status.managementIPv4,
+            managementPeerIPv4: status.managementPeerIPv4,
+            bridgeUsesDHCP: status.bridgeUsesDHCP,
+            sharingIntentEnabled: status.sharingIntentEnabled,
+            hotspotAPConfigured: status.hotspotAPConfigured,
             upstreamDevice: status.upstreamDevice,
             upstreamActive: status.upstreamActive,
             sharingConfigured: status.sharingConfigured,
@@ -859,7 +877,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let controllerSource = try String(contentsOf: repo.appendingPathComponent("Sources/NetBar/Monitors/NetworkModeController.swift"))
-        for command in ["status", "prefer-wifi", "prefer-mini", "repair-wifi-dns", "commit", "rollback"] {
+        for command in ["status", "prefer-wifi", "prefer-mini", "ensure-management-alias", "repair-wifi-dns", "commit", "rollback"] {
             XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarRouteSafetyHelper \(command)"))
         }
         XCTAssertFalse(sudoersSource.contains("com.zjah.NetBarRouteSafetyHelper *"))
@@ -874,7 +892,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(helperSource.contains("mode_from_order"))
         XCTAssertTrue(helperSource.contains("(( mini_index > wifi_index ))"))
         XCTAssertTrue(helperSource.contains("(( wifi_index > mini_index ))"))
-        XCTAssertTrue(helperSource.contains("\\\"protocolVersion\\\":3"))
+        XCTAssertTrue(helperSource.contains("\\\"protocolVersion\\\":4"))
         XCTAssertTrue(helperSource.contains("pendingTransaction"))
         XCTAssertEqual(run("/bin/zsh", ["-n", helper.path]).exitCode, 0)
         XCTAssertEqual(
@@ -1019,10 +1037,15 @@ final class NetworkRoutePolicyTests: XCTestCase {
     private func readyHelperStatus(observedAt: Date = Date()) -> MacMiniHelperStatus {
         let timestamp = ISO8601DateFormatter().string(from: observedAt)
         return MacMiniHelperStatus(
-            protocolVersion: 4,
+            protocolVersion: 5,
             configured: true,
-            serviceIPv4: "192.168.2.1",
-            gatewayIPv4: "192.168.2.1",
+            serviceIPv4: "192.168.3.1",
+            gatewayIPv4: "192.168.3.1",
+            managementIPv4: "10.254.254.1",
+            managementPeerIPv4: "10.254.254.2",
+            bridgeUsesDHCP: true,
+            sharingIntentEnabled: true,
+            hotspotAPConfigured: true,
             upstreamDevice: "en0",
             upstreamActive: true,
             sharingConfigured: true,
@@ -1046,7 +1069,11 @@ final class NetworkRoutePolicyTests: XCTestCase {
                 forwardingEnabled: true,
                 sharingConfigured: true,
                 upstreamReachable: true,
-                nextRetryAt: nil
+                nextRetryAt: nil,
+                managementAddressReady: true,
+                bridgeUsesDHCP: true,
+                sharingIntentEnabled: true,
+                hotspotAPConfigured: true
             )
         )
     }
@@ -1328,7 +1355,7 @@ private final class RecordingRouteSafetyController: RouteSafetyControlling {
 
     func status() -> RouteSafetyHelperStatus? {
         .init(
-            protocolVersion: 3,
+            protocolVersion: 4,
             mode: "wifi",
             wifiService: "Wi-Fi",
             wifiDevice: "en0",
@@ -1337,7 +1364,9 @@ private final class RecordingRouteSafetyController: RouteSafetyControlling {
             pendingKind: pendingTarget == nil ? nil : "route",
             pendingTarget: pendingTarget ?? "",
             wifiDNSMode: "automatic",
-            wifiDNSMiniDependent: false
+            wifiDNSMiniDependent: false,
+            managementAddressReady: true,
+            bridgeUsesDHCP: true
         )
     }
 
@@ -1382,7 +1411,7 @@ private final class DNSRouteSafetyController: RouteSafetyControlling {
 
     func status() -> RouteSafetyHelperStatus? {
         .init(
-            protocolVersion: 3,
+            protocolVersion: 4,
             mode: "wifi",
             wifiService: "Wi-Fi",
             wifiDevice: "en0",
@@ -1391,7 +1420,9 @@ private final class DNSRouteSafetyController: RouteSafetyControlling {
             pendingKind: nil,
             pendingTarget: "",
             wifiDNSMode: "manual",
-            wifiDNSMiniDependent: true
+            wifiDNSMiniDependent: true,
+            managementAddressReady: true,
+            bridgeUsesDHCP: true
         )
     }
 

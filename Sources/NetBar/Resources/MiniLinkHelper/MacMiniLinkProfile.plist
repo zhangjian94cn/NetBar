@@ -2,12 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>localAddress</key>
-    <string>192.168.2.2</string>
-    <key>gatewayAddress</key>
+    <key>managementLocalAddress</key>
+    <string>10.254.254.2</string>
+    <key>managementMiniAddress</key>
+    <string>10.254.254.1</string>
+    <key>managementSubnetMask</key>
+    <string>255.255.255.252</string>
+    <key>sshHostKeyAlias</key>
     <string>192.168.2.1</string>
-    <key>subnetMask</key>
-    <string>255.255.255.0</string>
 	<key>miniUpstreamDevice</key>
 	<string>en0</string>
 	<key>miniUpstreamAddress</key>

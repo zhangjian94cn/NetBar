@@ -176,6 +176,14 @@ protocol NetworkModeCommandRunning {
         serviceName: String,
         configuration: NetworkServiceConfiguration
     ) -> NetworkModeCommandResult
+    func runPrivilegedEnsureManagementAlias(address: String, subnetMask: String) -> NetworkModeCommandResult
+    func runPrivilegedManagementMigration(
+        serviceName: String,
+        address: String,
+        subnetMask: String,
+        dnsServers: [String]
+    ) -> NetworkModeCommandResult
+    func runPrivilegedRemoveManagementAlias(address: String) -> NetworkModeCommandResult
 }
 
 extension NetworkModeCommandRunning {
@@ -188,6 +196,23 @@ extension NetworkModeCommandRunning {
             standardOutput: "",
             standardError: "当前命令运行器不支持管理员网络配置"
         )
+    }
+
+    func runPrivilegedEnsureManagementAlias(address: String, subnetMask: String) -> NetworkModeCommandResult {
+        .init(exitCode: -1, standardOutput: "", standardError: "当前命令运行器不支持管理别名配置")
+    }
+
+    func runPrivilegedManagementMigration(
+        serviceName: String,
+        address: String,
+        subnetMask: String,
+        dnsServers: [String]
+    ) -> NetworkModeCommandResult {
+        .init(exitCode: -1, standardOutput: "", standardError: "当前命令运行器不支持地址面迁移")
+    }
+
+    func runPrivilegedRemoveManagementAlias(address: String) -> NetworkModeCommandResult {
+        .init(exitCode: -1, standardOutput: "", standardError: "当前命令运行器不支持移除管理别名")
     }
 }
 
@@ -276,6 +301,54 @@ final class DefaultNetworkModeCommandRunner: NetworkModeCommandRunning {
         ] + configuration.dnsServers
         return run(executable: "/usr/bin/osascript", arguments: ["-e", script] + arguments)
     }
+
+    func runPrivilegedEnsureManagementAlias(address: String, subnetMask: String) -> NetworkModeCommandResult {
+        let script = """
+        on run argv
+            set commandText to "/sbin/ifconfig bridge0 alias " & quoted form of (item 1 of argv) & " netmask " & quoted form of (item 2 of argv)
+            do shell script commandText with administrator privileges
+        end run
+        """
+        return run(executable: "/usr/bin/osascript", arguments: ["-e", script, address, subnetMask])
+    }
+
+    func runPrivilegedManagementMigration(
+        serviceName: String,
+        address: String,
+        subnetMask: String,
+        dnsServers: [String]
+    ) -> NetworkModeCommandResult {
+        let script = """
+        on run argv
+            set serviceName to item 1 of argv
+            set managementAddress to item 2 of argv
+            set managementMask to item 3 of argv
+            set dnsCount to (item 4 of argv) as integer
+            do shell script "/usr/sbin/networksetup -setdhcp " & quoted form of serviceName with administrator privileges
+            do shell script "/sbin/ifconfig bridge0 alias " & quoted form of managementAddress & " netmask " & quoted form of managementMask with administrator privileges
+            set dnsCommand to "/usr/sbin/networksetup -setdnsservers " & quoted form of serviceName
+            if dnsCount is 0 then
+                set dnsCommand to dnsCommand & " Empty"
+            else
+                repeat with indexValue from 1 to dnsCount
+                    set dnsCommand to dnsCommand & " " & quoted form of (item (4 + indexValue) of argv)
+                end repeat
+            end if
+            do shell script dnsCommand with administrator privileges
+        end run
+        """
+        let arguments = [serviceName, address, subnetMask, String(dnsServers.count)] + dnsServers
+        return run(executable: "/usr/bin/osascript", arguments: ["-e", script] + arguments)
+    }
+
+    func runPrivilegedRemoveManagementAlias(address: String) -> NetworkModeCommandResult {
+        let script = """
+        on run argv
+            do shell script "/sbin/ifconfig bridge0 -alias " & quoted form of (item 1 of argv) with administrator privileges
+        end run
+        """
+        return run(executable: "/usr/bin/osascript", arguments: ["-e", script, address])
+    }
 }
 
 final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
@@ -313,12 +386,10 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
         )
         let bridgeActive = bridgeResult.succeeded && Self.parseInterfaceActive(bridgeResult.standardOutput)
         let bridgeAddresses = bridgeResult.succeeded ? Self.parseInterfaceIPv4s(bridgeResult.standardOutput) : []
-        let bridgeIPv4 = bridgeAddresses.contains(profile.localAddress)
-            ? profile.localAddress
-            : bridgeAddresses.first
+        var bridgeIPv4: String?
 
         var gateway: String?
-        var bridgeConfigurationIsManual = false
+        var bridgeConfigurationUsesDHCP = false
         if let thunderboltService {
             let infoResult = commandRunner.run(
                 executable: "/usr/sbin/networksetup",
@@ -326,7 +397,19 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             )
             if infoResult.succeeded {
                 gateway = Self.parseNetworkInfoValue("Router", from: infoResult.standardOutput)
-                bridgeConfigurationIsManual = infoResult.standardOutput.contains("Manual Configuration")
+                bridgeConfigurationUsesDHCP = infoResult.standardOutput.contains("DHCP Configuration")
+                let leasedAddress = Self.parseNetworkInfoValue("IP address", from: infoResult.standardOutput)
+                if let leasedAddress,
+                   leasedAddress != profile.managementLocalAddress,
+                   !MacMiniLinkProfile.isLinkLocalIPv4(leasedAddress),
+                   bridgeAddresses.contains(leasedAddress) {
+                    bridgeIPv4 = leasedAddress
+                }
+            }
+        }
+        if bridgeIPv4 == nil {
+            bridgeIPv4 = bridgeAddresses.first {
+                $0 != profile.managementLocalAddress && !MacMiniLinkProfile.isLinkLocalIPv4($0)
             }
         }
 
@@ -352,15 +435,14 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
 
         let miniReachable: Bool
         if bridgeActive,
-           bridgeConfigurationIsManual,
-           bridgeAddresses.contains(profile.localAddress),
-           gateway == profile.gatewayAddress {
+           bridgeConfigurationUsesDHCP,
+           bridgeAddresses.contains(profile.managementLocalAddress) {
             let pingResult = commandRunner.run(
                 executable: "/sbin/ping",
                 arguments: [
                     "-b", thunderboltService?.device ?? "bridge0",
-                    "-S", profile.localAddress,
-                    "-c", "1", "-W", "500", profile.gatewayAddress
+                    "-S", profile.managementLocalAddress,
+                    "-c", "1", "-W", "500", profile.managementMiniAddress
                 ]
             )
             miniReachable = pingResult.succeeded
@@ -373,9 +455,8 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             linkState = .unavailable
         } else if !bridgeActive {
             linkState = .disconnected
-        } else if !bridgeConfigurationIsManual ||
-                    !bridgeAddresses.contains(profile.localAddress) ||
-                    gateway != profile.gatewayAddress {
+        } else if !bridgeConfigurationUsesDHCP ||
+                    !bridgeAddresses.contains(profile.managementLocalAddress) {
             linkState = .addressNotProvisioned
         } else if !miniReachable {
             linkState = .miniUnreachable
@@ -386,6 +467,8 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
         let gatewayState: MacMiniGatewayState
         if linkState != .connected {
             gatewayState = .unknown
+        } else if bridgeIPv4 == nil || gateway == nil || gateway == "none" || gateway == "0.0.0.0" {
+            gatewayState = .dhcpLeaseRecovering
         } else {
             let hasBoundEgress = profile.httpsProbeTargets.contains { target in
                 commandRunner.run(
@@ -421,7 +504,7 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             thunderboltServiceName: thunderboltService?.name,
             thunderboltDevice: thunderboltService?.device,
             bridgeIPv4: bridgeIPv4,
-            miniGateway: profile.gatewayAddress,
+            miniGateway: gateway,
             physicalDefaultInterface: physicalDefaultInterface,
             linkState: linkState,
             gatewayState: gatewayState
@@ -447,7 +530,7 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             executable: "/usr/bin/ssh",
             arguments: NetworkLinkProvisioner.sshArguments(
                 profile: profile,
-                host: profile.gatewayAddress,
+                host: profile.managementMiniAddress,
                 remoteArguments: [
                     "/usr/bin/sudo", "-n",
                     NetworkLinkProvisioner.miniHelperPath,
@@ -473,7 +556,7 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             executable: "/usr/bin/ssh",
             arguments: NetworkLinkProvisioner.sshArguments(
                 profile: profile,
-                host: profile.gatewayAddress,
+                host: profile.managementMiniAddress,
                 remoteArguments: [
                     "/usr/bin/sudo", "-n",
                     NetworkLinkProvisioner.miniHelperPath,
@@ -750,6 +833,7 @@ final class NetworkModeController: ObservableObject {
     }
 
     @Published private(set) var snapshot: NetworkModeSnapshot?
+    @Published private(set) var miniHelperStatus: MacMiniHelperStatus?
     @Published private(set) var isSwitching = false
     @Published private(set) var isProvisioning = false
     @Published private(set) var isRepairingDNS = false
@@ -870,6 +954,7 @@ final class NetworkModeController: ObservableObject {
     func startPolicyMonitoring() {
         guard DistributionFlavor.current.supportsNetworkModeSwitch else { return }
         automationHelperAvailable = routeSafetyController.status() != nil
+        _ = routeSafetyController.ensureManagementAlias()
         reconcilePendingRouteTransaction()
         refresh()
         refreshWiFiCandidates()
@@ -885,6 +970,7 @@ final class NetworkModeController: ObservableObject {
                 guard let self else { return }
                 if event == .physicalLink {
                     Log.network.info("收到物理链路变化事件，立即重新评估出口")
+                    self.workQueue.async { _ = self.routeSafetyController.ensureManagementAlias() }
                 }
                 let reaction = event.reaction(
                     preference: self.routePreference,
@@ -972,11 +1058,14 @@ final class NetworkModeController: ObservableObject {
         guard !isSwitching, !isProvisioning else { return }
         workQueue.async { [weak self] in
             guard let self else { return }
-            let result = Result { try self.provider.readSnapshot() }
+            let result = Result {
+                (try self.provider.readSnapshot(), self.provider.readMacMiniHelperStatus())
+            }
             DispatchQueue.main.async {
                 switch result {
-                case .success(let snapshot):
+                case .success(let (snapshot, helperStatus)):
                     self.snapshot = snapshot
+                    self.miniHelperStatus = helperStatus
                     if !self.requiresManualRecovery {
                         self.errorMessage = nil
                     }
@@ -1003,7 +1092,7 @@ final class NetworkModeController: ObservableObject {
         workQueue.async { [weak self] in
             guard let self else { return }
             let status = self.routeSafetyController.status()
-            guard status?.protocolVersion == 3 else {
+            guard status?.protocolVersion == 4 else {
                 DispatchQueue.main.async {
                     self.isRepairingDNS = false
                     self.errorMessage = "请先安装或更新自动切换组件"
@@ -1430,7 +1519,8 @@ final class NetworkModeController: ObservableObject {
         }
         switch current.gatewayState {
         case .carrierDown, .addressRecovering, .sharingRecovering, .sharingForwardingUnavailable,
-             .configurationDrift, .recoveryBackoff:
+             .configurationDrift, .recoveryBackoff, .sharingManualPending,
+             .managementLinkRecovering, .dhcpLeaseRecovering, .hotspotClientUnverified:
             definitiveFailure = true
         default:
             break

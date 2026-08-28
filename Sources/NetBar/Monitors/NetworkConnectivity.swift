@@ -432,7 +432,7 @@ final class LiveConnectivityProber: ConnectivityProbing {
         "https://www.apple.com/library/test/success.html",
         "https://cp.cloudflare.com/generate_204"
     ]
-    private let miniGateway = "192.168.2.1"
+    private let legacyMiniDNSAddress = "192.168.2.1"
 
     init(
         runner: NetworkModeCommandRunning = DefaultNetworkModeCommandRunner(),
@@ -537,7 +537,7 @@ final class LiveConnectivityProber: ConnectivityProbing {
             source = .unknown
         }
         let dependency: DNSResolverDependency
-        if interfaceName != "bridge0", resolvers.contains(miniGateway) {
+        if interfaceName != "bridge0", resolvers.contains(legacyMiniDNSAddress) {
             dependency = .miniDependent
         } else if source == .loopback {
             dependency = resolutionReady ? .overlayOnly : .unreachable

@@ -23,15 +23,24 @@ struct RouteSafetyHelperStatus: Codable, Equatable {
     let pendingTarget: String
     let wifiDNSMode: String?
     let wifiDNSMiniDependent: Bool?
+    let managementAddressReady: Bool?
+    let bridgeUsesDHCP: Bool?
 }
 
 protocol RouteSafetyControlling {
     func status() -> RouteSafetyHelperStatus?
     func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult
     func repairWiFiDNS() -> NetworkModeCommandResult
+    func ensureManagementAlias() -> NetworkModeCommandResult
     func commit() -> NetworkModeCommandResult
     func rollback() -> NetworkModeCommandResult
     func openInstaller() -> NetworkModeCommandResult
+}
+
+extension RouteSafetyControlling {
+    func ensureManagementAlias() -> NetworkModeCommandResult {
+        .init(exitCode: 1, standardOutput: "", standardError: "管理别名 Helper 不可用")
+    }
 }
 
 #if APP_STORE
@@ -42,6 +51,9 @@ final class LiveRouteSafetyController: RouteSafetyControlling {
     }
     func repairWiFiDNS() -> NetworkModeCommandResult {
         .init(exitCode: 1, standardOutput: "", standardError: "App Store Lite 不支持 DNS 修复")
+    }
+    func ensureManagementAlias() -> NetworkModeCommandResult {
+        .init(exitCode: 1, standardOutput: "", standardError: "App Store Lite 不支持管理别名恢复")
     }
     func commit() -> NetworkModeCommandResult {
         .init(exitCode: 1, standardOutput: "", standardError: "App Store Lite 不支持自动路由")
@@ -72,7 +84,7 @@ final class LiveRouteSafetyController: RouteSafetyControlling {
         guard result.succeeded,
               let data = result.standardOutput.data(using: .utf8),
               let status = try? JSONDecoder().decode(RouteSafetyHelperStatus.self, from: data),
-              status.protocolVersion == 3 else {
+              status.protocolVersion == 4 else {
             return nil
         }
         return status
@@ -83,6 +95,8 @@ final class LiveRouteSafetyController: RouteSafetyControlling {
     }
 
     func repairWiFiDNS() -> NetworkModeCommandResult { runHelper("repair-wifi-dns") }
+
+    func ensureManagementAlias() -> NetworkModeCommandResult { runHelper("ensure-management-alias") }
 
     func commit() -> NetworkModeCommandResult { runHelper("commit") }
 

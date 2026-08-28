@@ -122,25 +122,25 @@ Direct Full 版本把网络控制拆成两个 Tab。顶部总览固定显示在�
 - **Mac mini 优先**：Mini 健康时使用 Mini；雷雳断开、固定地址丢失或 Peer 不可达时立即回退到已验证 Wi-Fi，不离线等待。绑定 `bridge0` 的出口连续稳定 30 秒且 Mini Guardian 报告正常后自动切回。
 - **Wi-Fi 优先**：持久把 Wi-Fi 排在雷雳网桥之前；雷雳仍可访问 Mac mini，但 NetBar 不主动切回 Mini。
 - **Wi-Fi 候选**：只自动尝试“附近可见、macOS 已保存、用户手动置顶”三者的交集；当前健康候选会保留，不为了排名主动换网。NetBar 不读取钥匙串或 Wi-Fi 密码。
-- **初始化/修复链路**：把 Mac mini 固定为 `192.168.2.1/24`、本机固定为 `192.168.2.2/24`。两端 `bridge0` 包含全部雷雳口，因此换到任意 Thunderbolt/USB4 口后不再依赖 DHCP。
+- **初始化/修复链路**：在 Mac mini 与本机的 `bridge0` 上分别保留 `10.254.254.1/30`、`10.254.254.2/30` 管理别名；雷雳网络服务本身使用 DHCP，数据地址、网关、DNS proxy 与 NAT 由 Apple Internet Sharing 动态管理。
 
 第一次展开候选池时，macOS 可能询问定位权限，这是 CoreWLAN 扫描附近 SSID 所需。拒绝后 NetBar 不会盲连其他不可见 SSID；若 macOS 连当前 SSID 名称也隐藏，但 `en0` 已经关联并取得 IPv4，候选池会显示“当前已连接 Wi-Fi”，并可直接用于保网。该匿名候选不执行 SSID 关联，也不写入持久白名单。需要密码、网页登录或管理员关联的网络只显示原因并跳过，后台不会弹授权框。
 
 回退后的前 5 分钟是 Mini 积极恢复窗口：Wi-Fi 已经保网，同时每 10 秒检查 Mini。满 5 分钟仍不可用会进入稳定 Wi-Fi 降级，Mini 检查降为每 60 秒一次；这 5 分钟不是断网等待时间。10 分钟内重复自动切回再失败会熔断 10 分钟，避免两个出口反复抖动。
 
-首次初始化需要在 Mac mini 终端和本机各完成一次管理员授权。Mini Helper v4 仅允许 `status`、`apply`、`rollback`、`report-egress-failure` 四个固定无参数命令；最后一个命令只写入带时间戳的下游失败标记，由 Guardian 独立决定是否恢复。本机 Route Safety Helper v3 仅允许 `status`、`prefer-wifi`、`prefer-mini`、`repair-wifi-dns`、`commit`、`rollback`，并把每次服务顺序或 DNS 修复写入 root-only 事务，最终必须收敛到提交、恢复或明确手动恢复。NetBar 不接收或保存管理员密码。SSH 连接严格复用 `192.168.2.1` 已登记的主机密钥，不自动接受未知或变化的密钥。
+首次初始化需要在 Mac mini 终端和本机各完成一次管理员授权。Mini Helper v5 仅允许 `status`、`prepare`、`migrate`、`rollback`、`finalize-rollback`、`report-egress-failure` 六个固定无参数命令；迁移先建立并验证管理地址 SSH，再切换 DHCP，回滚先恢复并验证旧链路，最后移除管理别名。本机 Route Safety Helper v4 仅允许固定无参数命令，并持续补回管理别名。NetBar 不接收或保存管理员密码。SSH 连接目标改为 `10.254.254.1` 后仍严格复用 `192.168.2.1` 的 `HostKeyAlias`，不自动接受未知或变化的密钥。
 
-Mac mini 的上游固定为内置以太网 `en0`。`en0` 断开时，雷雳本地链路和 `192.168.2.1` 访问仍保持可用，MacBook 自动回退 Wi-Fi。Mini Guardian 不会重置无载波的网口；载波恢复后先等待 macOS 自行收敛，必要时只重新应用既定 Manual IPv4 和重拉 `com.apple.NetworkSharing`。它不调用 `-setdnsservers`，因此用户为公司网络配置的 DNS 保持不变。NetBar 不自动改用 Mini 的 USB 网卡或 Wi-Fi，原生 Internet Sharing 继续唯一管理 NAT/DHCP。
+Mac mini 的唯一上游是内置以太网 `en0`。`en0` 或 Internet Sharing 断开时，`10.254.254.1/.2` 管理链路仍用于 SSH、VNC、健康检查和恢复，MacBook 自动回退 Wi-Fi。Mini Guardian 不重写 `en0`、公司 DNS、NAT 或 DHCP；它只维护管理别名、观察 Apple 数据面，并在共享意图仍开启时受限重启原生服务。共享总开关关闭时状态为 `manual_pending`，必须在“系统设置 → 通用 → 共享 → 互联网共享”中人工开启。
 
 Guardian 的 `ready` 现在必须同时满足 `en0` 载波、预期地址与路由、共享拓扑、Network Sharing 进程、`net.inet.ip.forwarding=1` 和 Mini 自身上游探测。Helper 与 Guardian 对同一事实不一致时显示“共享状态证据冲突”；进程 running 但 forwarding=0 时显示“Mac mini 上游正常 · 共享转发未就绪”，期间保持 Wi-Fi。较新的 macOS/SIP 不允许对该关键系统服务执行 `launchctl kickstart -k`，因此 Guardian 会严格验证 `/usr/libexec/InternetSharing` 的进程身份，终止旧实例并等待其完全退出，再使用不带 `-k` 的启动请求让 launchd 重建原生服务；它不直接强写 forwarding。若公司 VPN 随即再次关闭 forwarding，Guardian 进入退避并继续保持 Wi-Fi，不与 VPN 循环争夺。`forwarding=1` 只是必要条件，绿色仍要求 MacBook 下游和切换后系统/Clash 数据面共同验证。
 
 恢复退避只限制下一次写操作，Guardian 在 60 秒、5 分钟或 15 分钟退避期间仍每 15 秒刷新进程、forwarding、载波、地址和路由事实。这样公司 VPN 退出或系统自行恢复时可以及时重新进入 30 秒稳定验证，而不会等到写操作退避结束；重复失败原因在只读采样中保持，不被空状态覆盖。
 
-状态语义：红色表示雷雳本地链路不可用；黄色表示 Mini 无载波、地址/共享恢复中、证据冲突、内核转发未就绪、配置漂移、退避、出口抖动或 Clash/TUN 未收敛；绿色只表示固定链路、Mini Guardian 与绑定物理出口均已验证。明确链路故障立即回退；只有公网 HTTPS 不确定故障才需要三轮失败。Apple 与 Cloudflare 目标中至少一个返回预期状态即可通过，避免单目标被公司网络屏蔽导致误判。降级计时从首次确认 Mini 故障开始，即使 Wi-Fi 候选暂时不可用也会在 5 分钟后进入慢速探测；同一候选失败在网络事件或退避到期前不会重复执行和刷日志。
+状态分别展示固定管理链路、雷雳共享出口、热点 AP 与客户端证据。绿色出口要求管理 Peer、Apple DHCP 地址/动态网关、实际物理默认路由和绑定 `bridge0` 的 HTTPS 连续稳定 30 秒；旧租约、进程 running 或 `forwarding=1` 都不能单独判定就绪。未观测到真实热点客户端时只显示“热点已配置，客户端出口未验证”。
 
 Wi-Fi 先验证载波、IPv4 和网关；能绑定实际 Wi-Fi 设备直连 HTTPS 时采用 make-before-break。部分公司网络会阻断绕过代理的 HTTPS，因此公网 ICMP 和单次直连失败都不是 readiness 的决定性证据。Mini 切换前组合固定 Peer、Guardian、forwarding 与绑定 `bridge0` 的 TCP/TLS 事实，切换后再以实际物理路由、系统 HTTPS 和 Clash HTTPS 确认可用。每当实际物理出口在 `bridge0` 与 Wi-Fi 之间变化，NetBar 都会通过 Mihomo Unix Socket 调用一次 `DELETE /connections`，关闭旧 underlay 上的运行中连接，再等待并验证新连接；同一出口的重复检查不会重复清理。网络出口状态机不退出、重启、重载 Clash，也不会开关 TUN。
 
-DNS 是端到端互联网证明的一部分，但不是固定雷雳链路的成立条件。若雷雳断开而 Wi-Fi 的手动 DNS 仍包含 `192.168.2.1`，NetBar 会先把物理出口保留在 Wi-Fi，并显示“受限在线 · DNS 仍依赖 Mac mini”；它不会回滚到断开的 Mini，也不会在插拔时静默改写 DNS。用户可点击一次“恢复 Wi-Fi 自动 DNS”，Helper v3 会备份原值、设置自动 DNS、等待 scoped resolver 和数据面收敛，成功提交，失败完整回滚。`114.114.114.114`、公司 DNS及其他手动 DNS只诊断，不自动修改。
+DNS 是端到端互联网证明的一部分，但不是固定雷雳管理链路的成立条件。若雷雳断开而 Wi-Fi 的手动 DNS 仍包含旧 Mini 地址 `192.168.2.1`，NetBar 会先把物理出口保留在 Wi-Fi，并显示“受限在线 · DNS 仍依赖 Mac mini”；它不会回滚到断开的 Mini，也不会在插拔时静默改写 DNS。用户可点击一次“恢复 Wi-Fi 自动 DNS”，Route Safety Helper v4 会备份原值、设置自动 DNS、等待 scoped resolver 和数据面收敛，成功提交，失败完整回滚。`114.114.114.114`、公司 DNS及其他手动 DNS只诊断，不自动修改。
 
 “应用诊断”分别显示系统 HTTPS、显式 Clash、代理不感知/TUN 和 ZCode 后台链路。ZCode 请求不包含 token、Cookie 或账号信息，匿名响应 2xx–4xx 即表示传输可达；ZCode 服务本身的故障不会触发 Mac mini/Wi-Fi 切换。
 

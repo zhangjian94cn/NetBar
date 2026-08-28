@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="${0:A:h}"
 HELPER_SOURCE="$SCRIPT_DIR/netbar-route-safety-helper"
 SUDOERS_SOURCE="$SCRIPT_DIR/com.zjah.NetBarRouteSafetyHelper.sudoers"
+PROFILE_SOURCE="$SCRIPT_DIR/../MiniLinkHelper/MacMiniLinkProfile.plist"
 HELPER_TARGET=/Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper
 SUDOERS_TARGET=/etc/sudoers.d/netbar-route-safety-helper
 TRANSACTION_DIR=/Library/Application\ Support/NetBar/RouteSafety
@@ -20,7 +21,7 @@ trap cleanup EXIT
     print -u2 -- "无法验证本地控制台用户"
     exit 1
 }
-[[ -f "$HELPER_SOURCE" && -f "$SUDOERS_SOURCE" ]] || {
+[[ -f "$HELPER_SOURCE" && -f "$SUDOERS_SOURCE" && -f "$PROFILE_SOURCE" ]] || {
     print -u2 -- "安装文件不完整"
     exit 1
 }
@@ -29,7 +30,9 @@ trap cleanup EXIT
 echo "NetBar 需要一次管理员授权，以安装只管理 Wi-Fi/雷雳优先级和 Mini 依赖 Wi-Fi DNS 的受限 Helper。"
 /usr/bin/sudo /usr/sbin/visudo -cf "$SUDOERS_TEMP"
 /usr/bin/sudo /bin/mkdir -p /Library/PrivilegedHelperTools
+/usr/bin/sudo /bin/mkdir -p "/Library/Application Support/NetBar"
 /usr/bin/sudo /usr/bin/install -o root -g wheel -m 0755 "$HELPER_SOURCE" "$HELPER_TARGET"
+/usr/bin/sudo /usr/bin/install -o root -g wheel -m 0644 "$PROFILE_SOURCE" "/Library/Application Support/NetBar/MacMiniLinkProfile.plist"
 /usr/bin/sudo /usr/bin/install -o root -g wheel -m 0440 "$SUDOERS_TEMP" "$SUDOERS_TARGET"
 /usr/bin/sudo /usr/sbin/visudo -cf "$SUDOERS_TARGET"
 if /usr/bin/sudo /bin/test -f "$LEGACY_BACKUP" &&
