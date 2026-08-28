@@ -278,6 +278,61 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { routeSafety.appliedModes == [.localWiFi] })
     }
 
+    func testActiveMiniEndToEndProofOverridesBlockedDirectBypass() {
+        let observedAt = Date()
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable)
+        ])
+        let routeSafety = RecordingRouteSafetyController()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber { interface in
+                ConnectivityProbeResult(
+                    interfaceName: interface,
+                    carrierActive: true,
+                    ipv4Address: "192.168.2.2",
+                    gateway: "192.168.2.1",
+                    directHTTPSReachable: false,
+                    clashControllerReachable: true,
+                    clashHTTPSReachable: true,
+                    systemHTTPSReachable: true,
+                    physicalDefaultInterface: "bridge0",
+                    dnsPath: DNSPathFacts(
+                        serviceName: "Thunderbolt Bridge",
+                        interfaceName: "bridge0",
+                        configurationSource: .manual,
+                        dependency: .overlayOnly,
+                        resolverCount: 1,
+                        systemResolutionReady: true,
+                        generation: 1,
+                        observedAt: observedAt
+                    ),
+                    applicationPath: ApplicationPathFacts(
+                        systemProxyAwareHTTPSReady: true,
+                        explicitClashHTTPSReady: true,
+                        proxyUnawareHTTPSReady: true,
+                        zcodeDiagnosticReady: true,
+                        zcodeHTTPStatus: 404,
+                        generation: 1,
+                        observedAt: observedAt
+                    )
+                )
+            },
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { controller.policyMessage == "Mac mini 优先 · 当前出口正常" })
+        XCTAssertTrue(routeSafety.appliedModes.isEmpty)
+        XCTAssertEqual(controller.connectivityProofLevel, .activeVerified)
+    }
+
     func testDownstreamFailureStartsEpisodeAndReportsGuardianOnlyOnceWhenWiFiFallbackFails() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable)

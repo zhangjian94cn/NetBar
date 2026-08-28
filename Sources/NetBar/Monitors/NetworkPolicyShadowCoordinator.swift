@@ -85,11 +85,24 @@ struct NetworkPolicyShadowObservation: Equatable {
                  .recoveryBackoff:
                 miniProof = .unavailable(.sharingUnavailable)
             case .boundEgressUnavailable:
-                miniProof = .unavailable(.downstreamEgressUnavailable)
+                // Interface-bound direct HTTPS can be blocked by the managed
+                // network.  If Mini is already the physical underlay and the
+                // fresh DNS + overlay data plane is fully verified, that active
+                // proof is stronger than the legacy direct-bypass result.
+                miniProof = underlay == .mini && observedPathProof == .activeVerified
+                    ? .activeVerified
+                    : .unavailable(.downstreamEgressUnavailable)
             case .remoteEvidenceConflict:
-                miniProof = .unavailable(.evidenceConflict)
+                // A remote conflict prevents a future automatic return, but it
+                // must not tear down an already working, independently verified
+                // active path.
+                miniProof = underlay == .mini && observedPathProof == .activeVerified
+                    ? .activeVerified
+                    : .unavailable(.evidenceConflict)
             case .readyStabilizing, .routeFlapping, .remoteStatusUnavailable, .unknown:
-                miniProof = .unknown
+                miniProof = underlay == .mini && observedPathProof == .activeVerified
+                    ? .activeVerified
+                    : .unknown
             }
         }
 
