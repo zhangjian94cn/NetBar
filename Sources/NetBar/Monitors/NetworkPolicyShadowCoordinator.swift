@@ -261,6 +261,7 @@ private extension NetworkChangeEvent {
         case .physicalLink: return "physicalLink"
         case .addressing: return "addressing"
         case .routing: return "routing"
+        case .dns: return "dns"
         case .other: return "other"
         }
     }

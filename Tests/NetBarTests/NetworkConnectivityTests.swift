@@ -177,6 +177,64 @@ final class NetworkConnectivityTests: XCTestCase {
         XCTAssertTrue(result.routedInternetReady)
     }
 
+    func testDNSParsersKeepOnlyInterfaceScopedResolvers() {
+        let output = """
+        DNS configuration (for scoped queries)
+
+        resolver #1
+          nameserver[0] : 192.168.2.1
+          if_index : 20 (bridge0)
+
+        resolver #2
+          nameserver[0] : 114.114.114.114
+          nameserver[1] : 8.8.8.8
+          if_index : 6 (en0)
+        """
+
+        XCTAssertEqual(LiveConnectivityProber.parseDNSServers("1.1.1.1\n114.114.114.114\n"), ["1.1.1.1", "114.114.114.114"])
+        XCTAssertEqual(LiveConnectivityProber.parseScopedDNSServers(output, interfaceName: "en0"), ["114.114.114.114", "8.8.8.8"])
+        XCTAssertEqual(LiveConnectivityProber.parseScopedDNSServers(output, interfaceName: "bridge0"), ["192.168.2.1"])
+    }
+
+    func testMiniDependentDNSMakesActiveWiFiDegradedInsteadOfOffline() {
+        let result = ConnectivityProbeResult(
+            interfaceName: "en0",
+            carrierActive: true,
+            ipv4Address: "192.168.0.2",
+            gateway: "192.168.0.1",
+            directHTTPSReachable: false,
+            clashControllerReachable: true,
+            clashHTTPSReachable: true,
+            systemHTTPSReachable: true,
+            physicalDefaultInterface: "en0",
+            dnsPath: DNSPathFacts(
+                serviceName: "Wi-Fi",
+                interfaceName: "en0",
+                configurationSource: .manual,
+                dependency: .miniDependent,
+                resolverCount: 1,
+                systemResolutionReady: false,
+                generation: 7,
+                observedAt: Date()
+            ),
+            applicationPath: ApplicationPathFacts(
+                systemProxyAwareHTTPSReady: true,
+                explicitClashHTTPSReady: true,
+                proxyUnawareHTTPSReady: false,
+                zcodeDiagnosticReady: false,
+                zcodeHTTPStatus: nil
+            )
+        )
+
+        XCTAssertEqual(result.proofLevel, .degradedActive)
+        XCTAssertTrue(result.hasLocalNetwork)
+    }
+
+    func testZCodeAnonymousFourHundredSeriesIsTransportSuccess() {
+        XCTAssertTrue(LiveConnectivityProber.isAcceptableAnonymousApplicationStatus(404))
+        XCTAssertFalse(LiveConnectivityProber.isAcceptableAnonymousApplicationStatus(503))
+    }
+
     func testEventLogHashesCandidateAndDropsEntriesOlderThanSevenDays() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("netbar-log-tests-\(UUID().uuidString)")

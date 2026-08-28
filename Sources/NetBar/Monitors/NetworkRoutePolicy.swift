@@ -19,12 +19,16 @@ struct RouteSafetyHelperStatus: Codable, Equatable {
     let wifiDevice: String
     let miniService: String
     let pendingTransaction: Bool
+    let pendingKind: String?
     let pendingTarget: String
+    let wifiDNSMode: String?
+    let wifiDNSMiniDependent: Bool?
 }
 
 protocol RouteSafetyControlling {
     func status() -> RouteSafetyHelperStatus?
     func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult
+    func repairWiFiDNS() -> NetworkModeCommandResult
     func commit() -> NetworkModeCommandResult
     func rollback() -> NetworkModeCommandResult
     func openInstaller() -> NetworkModeCommandResult
@@ -35,6 +39,9 @@ final class LiveRouteSafetyController: RouteSafetyControlling {
     func status() -> RouteSafetyHelperStatus? { nil }
     func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult {
         .init(exitCode: 1, standardOutput: "", standardError: "App Store Lite 不支持自动路由")
+    }
+    func repairWiFiDNS() -> NetworkModeCommandResult {
+        .init(exitCode: 1, standardOutput: "", standardError: "App Store Lite 不支持 DNS 修复")
     }
     func commit() -> NetworkModeCommandResult {
         .init(exitCode: 1, standardOutput: "", standardError: "App Store Lite 不支持自动路由")
@@ -65,7 +72,7 @@ final class LiveRouteSafetyController: RouteSafetyControlling {
         guard result.succeeded,
               let data = result.standardOutput.data(using: .utf8),
               let status = try? JSONDecoder().decode(RouteSafetyHelperStatus.self, from: data),
-              status.protocolVersion == 2 else {
+              status.protocolVersion == 3 else {
             return nil
         }
         return status
@@ -74,6 +81,8 @@ final class LiveRouteSafetyController: RouteSafetyControlling {
     func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult {
         runHelper(mode == .macMiniGateway ? "prefer-mini" : "prefer-wifi")
     }
+
+    func repairWiFiDNS() -> NetworkModeCommandResult { runHelper("repair-wifi-dns") }
 
     func commit() -> NetworkModeCommandResult { runHelper("commit") }
 

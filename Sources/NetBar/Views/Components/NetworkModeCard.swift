@@ -4,6 +4,7 @@ import SwiftUI
 struct NetworkModeCard: View {
     @ObservedObject var controller: NetworkModeController
     @State private var showsWiFiCandidates = false
+    @State private var showsApplicationDiagnostics = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -63,6 +64,36 @@ struct NetworkModeCard: View {
                     .lineLimit(2)
             }
 
+            HStack(spacing: 10) {
+                evidenceItem(
+                    title: "DNS 独立性",
+                    value: controller.dnsPathFacts?.dependency.displayName ?? "待检测",
+                    healthy: dnsHealthy
+                )
+                evidenceItem(
+                    title: "代理不感知路径",
+                    value: proxyUnawareText,
+                    healthy: controller.applicationPathFacts?.proxyUnawareHTTPSReady == true
+                )
+            }
+
+            if controller.dnsPathFacts?.dependency == .miniDependent {
+                Button {
+                    controller.repairWiFiDNS()
+                } label: {
+                    HStack(spacing: 6) {
+                        if controller.isRepairingDNS { ProgressView().controlSize(.small) }
+                        Label("恢复 Wi-Fi 自动 DNS", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 22)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(controller.isRepairingDNS || controller.snapshot?.effectiveMode != .localWiFi)
+                .help("仅在 Wi-Fi 手动 DNS 依赖失联的 192.168.2.1 时可用；失败会恢复原 DNS。")
+            }
+
             Button {
                 showsWiFiCandidates.toggle()
                 if showsWiFiCandidates { controller.refreshWiFiCandidates() }
@@ -85,6 +116,26 @@ struct NetworkModeCard: View {
 
             if showsWiFiCandidates {
                 wifiCandidateList
+            }
+
+            Button {
+                showsApplicationDiagnostics.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "stethoscope")
+                    Text("应用诊断")
+                        .fontWeight(.medium)
+                    Spacer()
+                    Image(systemName: showsApplicationDiagnostics ? "chevron.up" : "chevron.down")
+                        .foregroundColor(.secondary)
+                }
+                .font(.system(size: 9))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if showsApplicationDiagnostics {
+                applicationDiagnostics
             }
 
             if let action = controller.lastClashAction {
@@ -262,6 +313,58 @@ struct NetworkModeCard: View {
     private var candidateCountText: String {
         let count = controller.wifiCandidates.count
         return count == 0 ? "未发现" : "\(count) 个"
+    }
+
+    private var dnsHealthy: Bool {
+        guard let facts = controller.dnsPathFacts else { return false }
+        return facts.systemResolutionReady && facts.dependency != .miniDependent && facts.dependency != .unreachable
+    }
+
+    private var proxyUnawareText: String {
+        controller.applicationPathFacts?.proxyUnawareHTTPSReady == true ? "可用" : "不可用"
+    }
+
+    private func evidenceItem(title: String, value: String, healthy: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 8))
+                .foregroundColor(.secondary)
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(healthy ? Color.green : Color.orange)
+                    .frame(width: 5, height: 5)
+                Text(value)
+                    .font(.system(size: 9, weight: .medium))
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var applicationDiagnostics: some View {
+        let facts = controller.applicationPathFacts
+        return VStack(alignment: .leading, spacing: 4) {
+            diagnosticRow("系统 HTTPS", ready: facts?.systemProxyAwareHTTPSReady)
+            diagnosticRow("显式 Clash HTTPS", ready: facts?.explicitClashHTTPSReady)
+            diagnosticRow("ZCode 后台链路", ready: facts?.zcodeDiagnosticReady)
+            if let code = facts?.zcodeHTTPStatus {
+                Text("ZCode 匿名 HTTP 状态：\(code)（2xx–4xx 表示链路可达）")
+                    .font(.system(size: 8))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(8)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func diagnosticRow(_ title: String, ready: Bool?) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(ready == true ? "可达" : (ready == false ? "不可达" : "待检测"))
+                .foregroundColor(ready == true ? .green : .orange)
+        }
+        .font(.system(size: 9))
     }
 
     private var shouldOfferProvisioning: Bool {

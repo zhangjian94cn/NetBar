@@ -5,6 +5,7 @@ NETWORKSETUP=/usr/sbin/networksetup
 ROUTE=/sbin/route
 AWK=/usr/bin/awk
 GREP=/usr/bin/grep
+SHASUM=/usr/bin/shasum
 MKDIR=/bin/mkdir
 CHMOD=/bin/chmod
 SLEEP=/bin/sleep
@@ -12,6 +13,9 @@ RM=/bin/rm
 
 STATE_DIR=/Library/Application\ Support/NetBar/RouteSafety
 BACKUP_ORDER="$STATE_DIR/service-order-backup.txt"
+BACKUP_DNS="$STATE_DIR/wifi-dns-backup.txt"
+BACKUP_DNS_SHA="$STATE_DIR/wifi-dns-backup.sha256"
+PENDING_KIND="$STATE_DIR/pending-kind.txt"
 PENDING_TARGET="$STATE_DIR/pending-target.txt"
 
 fail() {
@@ -19,9 +23,9 @@ fail() {
     exit 1
 }
 
-[[ "$#" -eq 1 ]] || fail "usage: netbar-route-safety-helper status|prefer-wifi|prefer-mini|commit|rollback"
+[[ "$#" -eq 1 ]] || fail "usage: netbar-route-safety-helper status|prefer-wifi|prefer-mini|repair-wifi-dns|commit|rollback"
 case "$1" in
-    status|prefer-wifi|prefer-mini|commit|rollback) ACTION="$1" ;;
+    status|prefer-wifi|prefer-mini|repair-wifi-dns|commit|rollback) ACTION="$1" ;;
     *) fail "unsupported command" ;;
 esac
 
@@ -45,11 +49,11 @@ service_rows() {
 }
 
 service_for_device() {
-    service_rows | "$AWK" -F '\t' -v wanted="$1" '$3 == wanted { print $1; exit }'
+    service_rows | "$AWK" -F '\t' -v wanted="$1" '$3 == wanted && !found { print $1; found=1 }'
 }
 
 wifi_row() {
-    service_rows | "$AWK" -F '\t' 'tolower($2) == "wi-fi" || tolower($2) == "wifi" || $2 == "无线局域网" { print; exit }'
+    service_rows | "$AWK" -F '\t' '(tolower($2) == "wi-fi" || tolower($2) == "wifi" || $2 == "无线局域网") && !found { print; found=1 }'
 }
 
 all_services() {
@@ -89,29 +93,94 @@ mode_from_order() {
 }
 
 emit_status() {
-    local mode pending=false pending_target=''
+    local mode pending=false pending_target='' pending_kind='' dns_mode dns_mini_dependent=false dns_output
     mode="$(mode_from_order)"
-    if [[ -r "$BACKUP_ORDER" && -r "$PENDING_TARGET" ]]; then
+    if [[ -r "$PENDING_KIND" ]]; then
         pending=true
-        pending_target="$(<"$PENDING_TARGET")"
+        pending_kind="$(<"$PENDING_KIND")"
+        [[ -r "$PENDING_TARGET" ]] && pending_target="$(<"$PENDING_TARGET")"
     fi
-    print -r -- "{\"protocolVersion\":2,\"mode\":\"$mode\",\"wifiService\":\"$(json_escape "$WIFI_SERVICE")\",\"wifiDevice\":\"$(json_escape "$WIFI_DEVICE")\",\"miniService\":\"$(json_escape "$MINI_SERVICE")\",\"pendingTransaction\":$pending,\"pendingTarget\":\"$(json_escape "$pending_target")\"}"
+    dns_output="$(wifi_dns_output)"
+    dns_mode=manual
+    "$GREP" -q "There aren't any DNS Servers" <<< "$dns_output" && dns_mode=automatic
+    "$GREP" -qx '192.168.2.1' <<< "$dns_output" && dns_mini_dependent=true
+    print -r -- "{\"protocolVersion\":3,\"mode\":\"$mode\",\"wifiService\":\"$(json_escape "$WIFI_SERVICE")\",\"wifiDevice\":\"$(json_escape "$WIFI_DEVICE")\",\"miniService\":\"$(json_escape "$MINI_SERVICE")\",\"pendingTransaction\":$pending,\"pendingKind\":\"$(json_escape "$pending_kind")\",\"pendingTarget\":\"$(json_escape "$pending_target")\",\"wifiDNSMode\":\"$dns_mode\",\"wifiDNSMiniDependent\":$dns_mini_dependent}"
 }
 
-save_backup() {
-    [[ ! -e "$BACKUP_ORDER" && ! -e "$PENDING_TARGET" ]] || fail "pending transaction requires commit or rollback"
+ensure_no_pending_transaction() {
+    [[ ! -e "$PENDING_KIND" && ! -e "$BACKUP_ORDER" && ! -e "$BACKUP_DNS" && ! -e "$BACKUP_DNS_SHA" && ! -e "$PENDING_TARGET" ]] || fail "pending transaction requires commit or rollback"
+}
+
+save_route_backup() {
+    ensure_no_pending_transaction
     "$MKDIR" -p "$STATE_DIR"
     "$CHMOD" 700 "$STATE_DIR"
     current_order > "$BACKUP_ORDER"
+    print -r -- route > "$PENDING_KIND"
     "$CHMOD" 600 "$BACKUP_ORDER"
+    "$CHMOD" 600 "$PENDING_KIND"
 }
 
 clear_transaction() {
-    "$RM" -f "$BACKUP_ORDER" "$PENDING_TARGET"
+    "$RM" -f "$BACKUP_ORDER" "$BACKUP_DNS" "$BACKUP_DNS_SHA" "$PENDING_KIND" "$PENDING_TARGET"
+}
+
+wifi_dns_output() {
+    "$NETWORKSETUP" -getdnsservers "$WIFI_SERVICE"
+}
+
+wifi_dns_is_automatic() {
+    local output
+    output="$(wifi_dns_output)"
+    "$GREP" -q "There aren't any DNS Servers" <<< "$output"
+}
+
+wifi_dns_depends_on_mini() {
+    local output
+    output="$(wifi_dns_output)"
+    "$GREP" -qx '192.168.2.1' <<< "$output"
+}
+
+save_dns_backup() {
+    ensure_no_pending_transaction
+    "$MKDIR" -p "$STATE_DIR"
+    "$CHMOD" 700 "$STATE_DIR"
+    wifi_dns_output > "$BACKUP_DNS"
+    "$SHASUM" -a 256 "$BACKUP_DNS" | "$AWK" '{ print $1 }' > "$BACKUP_DNS_SHA"
+    print -r -- dns > "$PENDING_KIND"
+    print -r -- automatic > "$PENDING_TARGET"
+    "$CHMOD" 600 "$BACKUP_DNS" "$BACKUP_DNS_SHA" "$PENDING_KIND" "$PENDING_TARGET"
+}
+
+restore_dns() {
+    [[ -r "$BACKUP_DNS" && -r "$BACKUP_DNS_SHA" ]] || fail "DNS backup missing"
+    local expected actual
+    expected="$(<"$BACKUP_DNS_SHA")"
+    actual="$($SHASUM -a 256 "$BACKUP_DNS" | "$AWK" '{ print $1 }')"
+    [[ "$actual" == "$expected" ]] || fail "DNS backup checksum mismatch"
+    if "$GREP" -q "There aren't any DNS Servers" "$BACKUP_DNS"; then
+        "$NETWORKSETUP" -setdnsservers "$WIFI_SERVICE" Empty
+        wifi_dns_is_automatic || fail "DNS rollback verification failed"
+    else
+        local -a values restored
+        values=("${(@f)$(<"$BACKUP_DNS")}")
+        (( ${#values[@]} > 0 )) || fail "DNS backup empty"
+        "$NETWORKSETUP" -setdnsservers "$WIFI_SERVICE" "${values[@]}"
+        restored=("${(@f)$(wifi_dns_output)}")
+        [[ "${(j:\n:)restored}" == "${(j:\n:)values}" ]] || fail "DNS rollback verification failed"
+    fi
 }
 
 rollback_pending() {
-    [[ -r "$BACKUP_ORDER" ]] || fail "backup missing"
+    [[ -r "$PENDING_KIND" ]] || fail "pending transaction missing"
+    local kind
+    kind="$(<"$PENDING_KIND")"
+    if [[ "$kind" == dns ]]; then
+        restore_dns
+        clear_transaction
+        return 0
+    fi
+    [[ "$kind" == route && -r "$BACKUP_ORDER" ]] || fail "route backup missing"
     local -a original
     local expected wifi_index=0 mini_index=0 index=0 name
     original=("${(@f)$(<"$BACKUP_ORDER")}")
@@ -182,7 +251,7 @@ case "$ACTION" in
     prefer-wifi|prefer-mini)
         target=wifi
         [[ "$ACTION" == "prefer-mini" ]] && target=mini
-        save_backup
+        save_route_backup
         print -r -- "$target" > "$PENDING_TARGET"
         "$CHMOD" 600 "$PENDING_TARGET"
         if ! apply_mode "$target" || ! verify_route "$target"; then
@@ -191,12 +260,29 @@ case "$ACTION" in
         fi
         emit_status
         ;;
+    repair-wifi-dns)
+        [[ "$(mode_from_order)" == wifi ]] || fail "Wi-Fi must be the preferred physical service before DNS repair"
+        wifi_dns_depends_on_mini || fail "Wi-Fi DNS does not depend on the fixed Mac mini address"
+        save_dns_backup
+        if ! "$NETWORKSETUP" -setdnsservers "$WIFI_SERVICE" Empty || ! wifi_dns_is_automatic; then
+            restore_dns
+            clear_transaction
+            fail "DNS repair failed; original DNS restored"
+        fi
+        emit_status
+        ;;
     commit)
-        [[ -r "$PENDING_TARGET" && -r "$BACKUP_ORDER" ]] || fail "pending transaction missing"
+        [[ -r "$PENDING_KIND" && -r "$PENDING_TARGET" ]] || fail "pending transaction missing"
+        kind="$(<"$PENDING_KIND")"
         target="$(<"$PENDING_TARGET")"
-        [[ "$target" == "wifi" || "$target" == "mini" ]] || fail "invalid pending target"
-        [[ "$(mode_from_order)" == "$target" ]] || fail "pending target no longer matches service order"
-        verify_route "$target" || fail "pending target route verification failed"
+        if [[ "$kind" == dns ]]; then
+            [[ "$target" == automatic ]] || fail "invalid pending DNS target"
+            wifi_dns_is_automatic || fail "pending DNS target no longer matches configuration"
+        else
+            [[ "$kind" == route && ( "$target" == "wifi" || "$target" == "mini" ) ]] || fail "invalid pending route target"
+            [[ "$(mode_from_order)" == "$target" ]] || fail "pending target no longer matches service order"
+            verify_route "$target" || fail "pending target route verification failed"
+        fi
         clear_transaction
         emit_status
         ;;

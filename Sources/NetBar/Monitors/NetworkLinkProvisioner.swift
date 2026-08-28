@@ -114,7 +114,7 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
             ipAddress: profile.localAddress,
             subnetMask: profile.subnetMask,
             router: profile.gatewayAddress,
-            dnsServers: [profile.gatewayAddress]
+            dnsServers: originalConfiguration.dnsServers
         )
         let localApply = runner.runPrivilegedNetworkConfiguration(
             serviceName: service.name,
@@ -386,17 +386,8 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
     private func verifyFixedLink(serviceName: String) -> Bool {
         for attempt in 0..<verificationAttempts {
             let ifconfig = runner.run(executable: "/sbin/ifconfig", arguments: ["bridge0"])
-            let dns = runner.run(
-                executable: "/usr/sbin/networksetup",
-                arguments: ["-getdnsservers", serviceName]
-            )
-            let configuredDNSServers = dns.standardOutput
-                .components(separatedBy: .newlines)
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             if ifconfig.succeeded,
-               LiveNetworkModeSystemProvider.parseInterfaceIPv4s(ifconfig.standardOutput).contains(profile.localAddress),
-               dns.succeeded,
-               configuredDNSServers.contains(profile.gatewayAddress) {
+               LiveNetworkModeSystemProvider.parseInterfaceIPv4s(ifconfig.standardOutput).contains(profile.localAddress) {
                 let ping = runner.run(
                     executable: "/sbin/ping",
                     arguments: ["-b", "bridge0", "-S", profile.localAddress, "-c", "1", "-W", "800", profile.gatewayAddress]

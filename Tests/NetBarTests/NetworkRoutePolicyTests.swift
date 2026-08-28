@@ -109,6 +109,116 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { routeSafety.appliedModes == [.localWiFi] })
     }
 
+    func testDefinitiveMiniFailureCommitsRouteEligibleWiFiEvenWhenDNSOrOverlayIsDegraded() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "en0", gateway: .carrierDown)
+        ])
+        let routeSafety = RecordingRouteSafetyController()
+        let degraded = ConnectivityProbeResult(
+            interfaceName: "en0",
+            carrierActive: true,
+            ipv4Address: "192.168.0.2",
+            gateway: "192.168.0.1",
+            directHTTPSReachable: false,
+            clashControllerReachable: true,
+            clashHTTPSReachable: false,
+            systemHTTPSReachable: false,
+            physicalDefaultInterface: "en0",
+            dnsPath: DNSPathFacts(
+                serviceName: "Wi-Fi",
+                interfaceName: "en0",
+                configurationSource: .manual,
+                dependency: .miniDependent,
+                resolverCount: 1,
+                systemResolutionReady: false,
+                generation: 1,
+                observedAt: Date()
+            )
+        )
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber { _ in degraded },
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
+        XCTAssertEqual(routeSafety.appliedModes, [.localWiFi])
+        XCTAssertEqual(routeSafety.rollbackCount, 0, "不得回滚到已经确认失效的 Mini 路径")
+        XCTAssertTrue(waitUntil { controller.connectivityProofLevel == .degradedActive })
+    }
+
+    func testWiFiMiniDependentDNSRepairCommitsOnlyAfterAutomaticDNSAndDataPlaneVerify() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .carrierDown, intendedMode: .localWiFi)
+        ])
+        let routeSafety = DNSRouteSafetyController()
+        let lock = NSLock()
+        var calls = 0
+        let prober = PolicyConnectivityProber { _ in
+            lock.lock()
+            calls += 1
+            let currentCall = calls
+            lock.unlock()
+            let repaired = currentCall >= 4
+            return ConnectivityProbeResult(
+                interfaceName: "en0",
+                carrierActive: true,
+                ipv4Address: "192.168.0.2",
+                gateway: "192.168.0.1",
+                directHTTPSReachable: repaired,
+                clashControllerReachable: true,
+                clashHTTPSReachable: repaired,
+                systemHTTPSReachable: repaired,
+                physicalDefaultInterface: "en0",
+                dnsPath: DNSPathFacts(
+                    serviceName: "Wi-Fi",
+                    interfaceName: "en0",
+                    configurationSource: repaired ? .automatic : .manual,
+                    dependency: repaired ? .independent : .miniDependent,
+                    resolverCount: 1,
+                    systemResolutionReady: repaired,
+                    generation: UInt64(currentCall),
+                    observedAt: Date()
+                ),
+                applicationPath: ApplicationPathFacts(
+                    systemProxyAwareHTTPSReady: repaired,
+                    explicitClashHTTPSReady: repaired,
+                    proxyUnawareHTTPSReady: repaired,
+                    zcodeDiagnosticReady: repaired,
+                    zcodeHTTPStatus: repaired ? 404 : nil
+                )
+            )
+        }
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: prober,
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { controller.dnsPathFacts?.dependency == .miniDependent })
+        controller.repairWiFiDNS()
+
+        XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
+        XCTAssertEqual(routeSafety.repairCount, 1)
+        XCTAssertEqual(routeSafety.rollbackCount, 0)
+        XCTAssertTrue(waitUntil { controller.connectivityProofLevel == .activeVerified })
+    }
+
     func testCarrierLossRepairsWiFiServiceOrderAfterMacOSAlreadyChangedDefaultRoute() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(
@@ -668,20 +778,22 @@ final class NetworkRoutePolicyTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let controllerSource = try String(contentsOf: repo.appendingPathComponent("Sources/NetBar/Monitors/NetworkModeController.swift"))
-        for command in ["status", "prefer-wifi", "prefer-mini", "commit", "rollback"] {
+        for command in ["status", "prefer-wifi", "prefer-mini", "repair-wifi-dns", "commit", "rollback"] {
             XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarRouteSafetyHelper \(command)"))
         }
         XCTAssertFalse(sudoersSource.contains("com.zjah.NetBarRouteSafetyHelper *"))
         XCTAssertTrue(installerSource.contains("visudo -cf"))
         XCTAssertTrue(installerSource.contains("LEGACY_BACKUP"))
         XCTAssertTrue(installerSource.contains("PENDING_TARGET"))
-        XCTAssertFalse(helperSource.contains("setdnsservers"))
+        XCTAssertTrue(helperSource.contains("-setdnsservers \"$WIFI_SERVICE\" Empty"))
+        XCTAssertFalse(helperSource.contains("-setdnsservers \"$MINI_SERVICE\""))
+        XCTAssertTrue(helperSource.contains("wifi-dns-backup.sha256"))
         XCTAssertFalse(helperSource.contains("ifconfig utun"))
         XCTAssertTrue(helperSource.contains("for attempt in {1..12}"))
         XCTAssertTrue(helperSource.contains("mode_from_order"))
         XCTAssertTrue(helperSource.contains("(( mini_index > wifi_index ))"))
         XCTAssertTrue(helperSource.contains("(( wifi_index > mini_index ))"))
-        XCTAssertTrue(helperSource.contains("\\\"protocolVersion\\\":2"))
+        XCTAssertTrue(helperSource.contains("\\\"protocolVersion\\\":3"))
         XCTAssertTrue(helperSource.contains("pendingTransaction"))
         XCTAssertEqual(run("/bin/zsh", ["-n", helper.path]).exitCode, 0)
         XCTAssertEqual(
@@ -1057,6 +1169,9 @@ private final class PolicyRouteSafetyController: RouteSafetyControlling {
     func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult {
         .init(exitCode: 0, standardOutput: "", standardError: "")
     }
+    func repairWiFiDNS() -> NetworkModeCommandResult {
+        .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
     func commit() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
     func rollback() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
     func openInstaller() -> NetworkModeCommandResult {
@@ -1132,13 +1247,16 @@ private final class RecordingRouteSafetyController: RouteSafetyControlling {
 
     func status() -> RouteSafetyHelperStatus? {
         .init(
-            protocolVersion: 2,
+            protocolVersion: 3,
             mode: "wifi",
             wifiService: "Wi-Fi",
             wifiDevice: "en0",
             miniService: "Thunderbolt Bridge",
             pendingTransaction: pendingTarget != nil,
-            pendingTarget: pendingTarget ?? ""
+            pendingKind: pendingTarget == nil ? nil : "route",
+            pendingTarget: pendingTarget ?? "",
+            wifiDNSMode: "automatic",
+            wifiDNSMiniDependent: false
         )
     }
 
@@ -1147,6 +1265,10 @@ private final class RecordingRouteSafetyController: RouteSafetyControlling {
         modes.append(mode)
         lock.unlock()
         return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+
+    func repairWiFiDNS() -> NetworkModeCommandResult {
+        .init(exitCode: 0, standardOutput: "", standardError: "")
     }
 
     func commit() -> NetworkModeCommandResult {
@@ -1164,5 +1286,52 @@ private final class RecordingRouteSafetyController: RouteSafetyControlling {
 
     func openInstaller() -> NetworkModeCommandResult {
         .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+}
+
+private final class DNSRouteSafetyController: RouteSafetyControlling {
+    private let lock = NSLock()
+    private var repairs = 0
+    private var commits = 0
+    private var rollbacks = 0
+
+    var repairCount: Int { locked { repairs } }
+    var commitCount: Int { locked { commits } }
+    var rollbackCount: Int { locked { rollbacks } }
+
+    func status() -> RouteSafetyHelperStatus? {
+        .init(
+            protocolVersion: 3,
+            mode: "wifi",
+            wifiService: "Wi-Fi",
+            wifiDevice: "en0",
+            miniService: "Thunderbolt Bridge",
+            pendingTransaction: false,
+            pendingKind: nil,
+            pendingTarget: "",
+            wifiDNSMode: "manual",
+            wifiDNSMiniDependent: true
+        )
+    }
+
+    func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
+    func repairWiFiDNS() -> NetworkModeCommandResult {
+        lock.lock(); repairs += 1; lock.unlock()
+        return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func commit() -> NetworkModeCommandResult {
+        lock.lock(); commits += 1; lock.unlock()
+        return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func rollback() -> NetworkModeCommandResult {
+        lock.lock(); rollbacks += 1; lock.unlock()
+        return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func openInstaller() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
+
+    private func locked<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
     }
 }
