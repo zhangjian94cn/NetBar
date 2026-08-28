@@ -7,12 +7,12 @@ private enum TrafficTableLayout {
     static let rowHorizontalPadding: CGFloat = 4
     static let rowVerticalPadding: CGFloat = 2
     static let visibleRowCount = 5
-    static let rowHeight: CGFloat = 22
-    static let iconSize: CGFloat = 16
+    static let rowHeight: CGFloat = 30
+    static let iconSize: CGFloat = 20
     static let iconTextGap: CGFloat = 6
     static let routeWidth: CGFloat = 42
     static let trafficWidth: CGFloat = 76
-    static let rowCornerRadius: CGFloat = 4
+    static let rowCornerRadius: CGFloat = 6
 
     static var bodyHeight: CGFloat {
         rowHeight * CGFloat(visibleRowCount) + rowSpacing * CGFloat(visibleRowCount - 1)
@@ -36,8 +36,8 @@ struct TrafficTableHeader: View {
             Text(L10n.Table.uploadHeader)
                 .frame(width: TrafficTableLayout.trafficWidth, alignment: .trailing)
         }
-        .font(.system(size: 9, weight: .medium))
-        .foregroundColor(.secondary)
+        .font(PopoverVisualStyle.Typography.captionStrong)
+        .foregroundColor(PopoverVisualStyle.secondaryText)
         .padding(.horizontal, TrafficTableLayout.rowHorizontalPadding)
     }
 }
@@ -46,17 +46,20 @@ struct TrafficTableHeader: View {
 struct TrafficTable<Rows: View>: View {
     let isEmpty: Bool
     let emptyText: String
+    let emptyDetail: String?
     let bodyHeight: CGFloat
     private let rows: Rows
 
     init(
         isEmpty: Bool,
         emptyText: String,
+        emptyDetail: String? = nil,
         bodyHeight: CGFloat = TrafficTableLayout.bodyHeight,
         @ViewBuilder rows: () -> Rows
     ) {
         self.isEmpty = isEmpty
         self.emptyText = emptyText
+        self.emptyDetail = emptyDetail
         self.bodyHeight = bodyHeight
         self.rows = rows()
     }
@@ -67,10 +70,23 @@ struct TrafficTable<Rows: View>: View {
 
             ZStack {
                 if isEmpty {
-                    Text(emptyText)
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(spacing: 7) {
+                        Image(systemName: "app.dashed")
+                            .font(.system(size: 20, weight: .medium))
+                            .foregroundColor(.secondary)
+                        Text(emptyText)
+                            .font(PopoverVisualStyle.Typography.bodyStrong)
+                            .foregroundColor(PopoverVisualStyle.primaryText)
+                        if let emptyDetail {
+                            Text(emptyDetail)
+                                .font(PopoverVisualStyle.Typography.caption)
+                                .foregroundColor(PopoverVisualStyle.secondaryText)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 220)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .popoverGroup()
                 } else {
                     ScrollView(.vertical, showsIndicators: true) {
                         LazyVStack(spacing: TrafficTableLayout.rowSpacing) {
@@ -99,7 +115,8 @@ struct TrafficTableRow: View {
                     .frame(width: TrafficTableLayout.iconSize, height: TrafficTableLayout.iconSize)
 
                 Text(app.name)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(PopoverVisualStyle.Typography.bodyStrong)
+                    .foregroundColor(PopoverVisualStyle.primaryText)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -109,13 +126,13 @@ struct TrafficTableRow: View {
                 .frame(width: TrafficTableLayout.routeWidth)
 
             Text(downloadText)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.secondary)
+                .font(PopoverVisualStyle.Typography.data)
+                .foregroundColor(PopoverVisualStyle.secondaryText)
                 .frame(width: TrafficTableLayout.trafficWidth, alignment: .trailing)
 
             Text(uploadText)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.secondary)
+                .font(PopoverVisualStyle.Typography.data)
+                .foregroundColor(PopoverVisualStyle.secondaryText)
                 .frame(width: TrafficTableLayout.trafficWidth, alignment: .trailing)
         }
         .padding(.horizontal, TrafficTableLayout.rowHorizontalPadding)

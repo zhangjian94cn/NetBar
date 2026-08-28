@@ -4,17 +4,13 @@ struct EgressIPCard: View {
     @ObservedObject var monitor: EgressIPMonitor
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
-                Image(systemName: "globe")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.indigo)
+                Image(systemName: "globe.asia.australia.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(PopoverVisualStyle.ipAccent)
                 Text("公网出口 IP")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 3).fill(Color.indigo.opacity(0.1)))
+                    .font(PopoverVisualStyle.Typography.section)
 
                 Spacer()
 
@@ -24,24 +20,25 @@ struct EgressIPCard: View {
                         .frame(width: 14, height: 14)
                 } else if let info = monitor.info {
                     Text("⟳ \(info.lastUpdatedText)")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary.opacity(0.6))
+                        .font(PopoverVisualStyle.Typography.caption)
+                        .foregroundColor(.secondary)
                 }
             }
 
             if let info = monitor.info {
                 HStack(spacing: 8) {
                     Text(info.ip)
-                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                        .font(.system(size: 20, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.primary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
 
                     Text(info.ipVersion.displayName)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.08)))
+                        .font(PopoverVisualStyle.Typography.captionStrong)
+                        .foregroundColor(PopoverVisualStyle.secondaryText)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.06)))
 
                     Spacer()
 
@@ -57,10 +54,10 @@ struct EgressIPCard: View {
                 if info.ipRisk != nil || info.isIDC != nil || info.isNative != nil {
                     HStack(spacing: 6) {
                         if let isIDC = info.isIDC {
-                            propertyBadge(isIDC ? "IDC" : "非 IDC", color: isIDC ? .orange : .green)
+                            propertyBadge(isIDC ? "IDC" : "非 IDC", color: isIDC ? PopoverVisualStyle.warning : PopoverVisualStyle.healthy)
                         }
                         if let isNative = info.isNative {
-                            propertyBadge(isNative ? "原生" : "非原生", color: isNative ? .green : .orange)
+                            propertyBadge(isNative ? "原生" : "非原生", color: isNative ? PopoverVisualStyle.healthy : PopoverVisualStyle.warning)
                         }
                         if let orgType = info.orgType, !orgType.isEmpty {
                             propertyBadge(orgType.uppercased(), color: .secondary)
@@ -69,41 +66,40 @@ struct EgressIPCard: View {
                 }
 
                 Text("地理位置来自 IP 数据库，可能与真实物理位置不一致。")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary.opacity(0.75))
+                    .font(PopoverVisualStyle.Typography.caption)
+                    .foregroundColor(PopoverVisualStyle.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Text("来源: \(info.source)")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary.opacity(0.65))
+                    .font(PopoverVisualStyle.Typography.caption)
+                    .foregroundColor(PopoverVisualStyle.tertiaryText)
             } else if let error = monitor.errorMessage {
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 9))
-                        .foregroundColor(.yellow)
-                    Text(error)
                         .font(.system(size: 10))
-                        .foregroundColor(.yellow)
+                        .foregroundColor(PopoverVisualStyle.warning)
+                    Text(error)
+                        .font(PopoverVisualStyle.Typography.caption)
+                        .foregroundColor(PopoverVisualStyle.warning)
                         .lineLimit(2)
                 }
             } else {
                 Text("正在检测当前公网出口...")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
+                    .font(PopoverVisualStyle.Typography.body)
+                    .foregroundColor(PopoverVisualStyle.secondaryText)
             }
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.indigo.opacity(0.04)))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.indigo.opacity(0.1), lineWidth: 0.5))
+        .padding(12)
+        .popoverGroup(tint: PopoverVisualStyle.ipAccent)
     }
 
     private func riskBadge(_ info: EgressIPInfo) -> some View {
         Text(info.riskLabel)
-            .font(.system(size: 9, weight: .semibold))
+            .font(PopoverVisualStyle.Typography.captionStrong)
             .foregroundColor(riskColor(info))
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
-            .background(RoundedRectangle(cornerRadius: 4).fill(riskColor(info).opacity(0.12)))
+            .background(RoundedRectangle(cornerRadius: 6).fill(riskColor(info).opacity(0.10)))
     }
 
     @ViewBuilder
@@ -111,11 +107,11 @@ struct EgressIPCard: View {
         if let value, !value.isEmpty {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text("\(label):")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.secondary)
+                    .font(PopoverVisualStyle.Typography.captionStrong)
+                    .foregroundColor(PopoverVisualStyle.secondaryText)
                 Text(value)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
+                    .font(PopoverVisualStyle.Typography.caption)
+                    .foregroundColor(PopoverVisualStyle.primaryText)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -124,19 +120,19 @@ struct EgressIPCard: View {
 
     private func propertyBadge(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.system(size: 9, weight: .medium))
+            .font(PopoverVisualStyle.Typography.captionStrong)
             .foregroundColor(color)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
-            .background(RoundedRectangle(cornerRadius: 3).fill(color.opacity(0.10)))
+            .background(RoundedRectangle(cornerRadius: 5).fill(color.opacity(0.10)))
     }
 
     private func riskColor(_ info: EgressIPInfo) -> Color {
         guard let risk = info.ipRisk else {
-            return .secondary
+            return PopoverVisualStyle.secondaryText
         }
-        if risk <= 25 { return .green }
-        if risk <= 50 { return .orange }
-        return .red
+        if risk <= 25 { return PopoverVisualStyle.healthy }
+        if risk <= 50 { return PopoverVisualStyle.warning }
+        return PopoverVisualStyle.fault
     }
 }

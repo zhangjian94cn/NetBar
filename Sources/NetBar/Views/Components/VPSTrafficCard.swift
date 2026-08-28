@@ -5,105 +5,100 @@ struct VPSTrafficCard: View {
     let vps: VPSTrafficMonitor.VPSTraffic
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // 标题行
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Image(systemName: "cloud.fill")
-                    .font(.system(size: 11))
-                    .foregroundColor(.cyan)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(PopoverVisualStyle.vpsAccent)
                 Text(vps.name)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 3).fill(Color.cyan.opacity(0.1)))
+                    .font(PopoverVisualStyle.Typography.section)
                 
                 Spacer()
                 
                 Text("⟳ \(vps.lastUpdatedText)")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary.opacity(0.6))
+                    .font(PopoverVisualStyle.Typography.caption)
+                    .foregroundColor(PopoverVisualStyle.tertiaryText)
             }
 
-            // 流量统计
             HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 3) {
                         Image(systemName: "arrow.up")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.green)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(PopoverVisualStyle.secondaryText)
                         Text("上传")
-                            .font(.system(size: 9))
-                            .foregroundColor(.secondary)
+                            .font(PopoverVisualStyle.Typography.caption)
+                            .foregroundColor(PopoverVisualStyle.secondaryText)
                     }
                     Text(vps.formattedUpload)
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .foregroundColor(PopoverVisualStyle.primaryText)
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 3) {
                         Image(systemName: "arrow.down")
-                            .font(.system(size: 8, weight: .bold))
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(.blue)
                         Text("下载")
-                            .font(.system(size: 9))
-                            .foregroundColor(.secondary)
+                            .font(PopoverVisualStyle.Typography.caption)
+                            .foregroundColor(PopoverVisualStyle.secondaryText)
                     }
                     Text(vps.formattedDownload)
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .foregroundColor(PopoverVisualStyle.primaryText)
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("总计")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
+                        .font(PopoverVisualStyle.Typography.caption)
+                        .foregroundColor(PopoverVisualStyle.secondaryText)
                     HStack(spacing: 3) {
                         Text(vps.formattedTotal)
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            .foregroundColor(PopoverVisualStyle.primaryText)
                         Text("/ \(vps.formattedLimit)")
-                            .font(.system(size: 9))
-                            .foregroundColor(.secondary)
+                            .font(PopoverVisualStyle.Typography.caption)
+                            .foregroundColor(PopoverVisualStyle.secondaryText)
                     }
                 }
 
                 Spacer()
             }
 
-            // 错误提示
             if let error = vps.error {
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 9))
-                        .foregroundColor(.yellow)
+                        .font(.system(size: 10))
+                        .foregroundColor(PopoverVisualStyle.warning)
                     Text(error)
-                        .font(.system(size: 9))
-                        .foregroundColor(.yellow)
+                        .font(PopoverVisualStyle.Typography.caption)
+                        .foregroundColor(PopoverVisualStyle.warning)
                 }
             }
 
-            // 客户端
             if !vps.clients.isEmpty {
                 Divider()
                 ForEach(vps.clients) { client in
                     HStack(spacing: 6) {
                         Circle()
-                            .fill(client.isOnline ? Color.green : Color.gray)
+                            .fill(client.isOnline ? PopoverVisualStyle.healthy : PopoverVisualStyle.tertiaryText)
                             .frame(width: 6, height: 6)
                         Text(client.email)
-                            .font(.system(size: 10, weight: .medium))
+                            .font(PopoverVisualStyle.Typography.captionStrong)
+                            .foregroundColor(PopoverVisualStyle.primaryText)
                         Spacer()
                         Text("\(Formatters.formatBytes(client.upload)) ↑")
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundColor(.secondary)
+                            .font(PopoverVisualStyle.Typography.data)
+                            .foregroundColor(PopoverVisualStyle.secondaryText)
                         Text("\(Formatters.formatBytes(client.download)) ↓")
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundColor(.secondary)
+                            .font(PopoverVisualStyle.Typography.data)
+                            .foregroundColor(PopoverVisualStyle.secondaryText)
                     }
                 }
             }
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.cyan.opacity(0.04)))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.cyan.opacity(0.1), lineWidth: 0.5))
+        .padding(12)
+        .popoverGroup(tint: PopoverVisualStyle.vpsAccent)
     }
 }
