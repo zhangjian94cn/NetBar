@@ -41,3 +41,7 @@
 6. Route Safety Helper 已是协议 v2，且所有现场事务都能落到 commit、rollback 或明确 manual recovery。
 
 本文件的存在不代表门禁已经通过。通过后必须追加观察起止时间、覆盖事件、日志摘要、安装二进制 SHA-256 和审阅结论；在此之前 PR 4 保持 `manual_pending`。
+
+## 现场校正：链路证明不包含 DNS 值
+
+首次影子部署发现 `bridge0` 载波、固定地址、Peer 和绑定 TLS 全部正常，但 MacBook 雷雳服务使用外部 DNS 时，旧快照仍因“DNS 不包含 `192.168.2.1`”误报未初始化。DNS 选择不证明雷雳载波、静态地址或 Peer，也可能是公司环境的受保护配置。因此 [LiveNetworkModeSystemProvider](../Sources/NetBar/Monitors/NetworkModeController.swift) 不再读取 DNS 来决定 `ThunderboltLinkState`；DNS 是否真正可用由激活后的系统/Clash HTTPS 数据面验证。此修复只解除错误判据，不写入或替换任何 DNS。
