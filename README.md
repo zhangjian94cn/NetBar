@@ -19,7 +19,7 @@
 | 📅 多时间维度 | 1分钟 / 5分钟 / 1小时 / 今天 / 7天 / 30天 / 本月 |
 | 🌐 网络信息 | Wi-Fi 名称 + 本机 IP 地址 |
 | ⚡ Mac mini 链路 | 固定双端 IP、Wi-Fi 候选保网、Mini 上游自愈、故障自动回退及稳定 30 秒后自动切回（Direct Full） |
-| 🧭 双控制 Tab | `网络出口` 管物理路径，`Clash 模式` 由用户手动选择系统代理或 TUN 全局（Direct Full） |
+| 🧭 四个顶层 Tab | 固定高度弹窗将 `出口 / Clash / 应用 / 监控` 分开，顶部持续显示端到端状态（Direct Full） |
 | 🖼 应用图标 | 自动识别进程对应的 macOS 应用图标 |
 | 🚀 开机自启 | 支持 Launch Agent 自动启动 |
 
@@ -28,6 +28,10 @@
 ### 菜单栏
 
 ![菜单栏效果](screenshots/menubar.png)
+
+### 固定高度四 Tab 弹窗
+
+![出口、Clash、应用与监控四个顶层 Tab](screenshots/popover-tabs.png)
 
 ## 🔧 安装
 
@@ -117,7 +121,16 @@ NetBar/
 
 ## ⚡ Mac mini 雷雳链路
 
-Direct Full 版本把网络控制拆成两个 Tab。顶部总览固定显示在线状态、已验证物理出口、当前 Clash 模式和主要故障层；`网络出口` Tab 提供：
+Direct Full 使用固定高度菜单弹窗。顶部状态条持续显示在线状态、已验证物理出口、当前 Clash 模式和 DNS；底部四个顶层 Tab 不再嵌套：
+
+- **出口**：Mac mini/Wi-Fi 偏好、雷雳链路、Apple 共享出口、端到端验证、候选和高级诊断。
+- **Clash**：用户手动选择系统代理或 TUN 全局，并查看持久配置、Runtime 和应用兼容性诊断。
+- **应用**：总上下行速度、实时活跃应用和累计流量排行。
+- **监控**：公网出口 IP、Wi-Fi/局域网/DNS 事实及 VPS 流量。
+
+面板宽度保持 380pt，Direct Full 高度固定为 540pt；页面内容在自己的视口内滚动，切换 Tab 不会改变弹窗位置或高度。顶部刷新按钮刷新当前页面及全局状态所需的基础事实。App Store Lite 只展示监控页并隐藏单项 Tab Bar。
+
+`出口` Tab 提供：
 
 - **Mac mini 优先**：Mini 健康时使用 Mini；雷雳断开、固定地址丢失或 Peer 不可达时立即回退到已验证 Wi-Fi，不离线等待。绑定 `bridge0` 的出口连续稳定 30 秒且 Mini Guardian 报告正常后自动切回。
 - **Wi-Fi 优先**：持久把 Wi-Fi 排在雷雳网桥之前；雷雳仍可访问 Mac mini，但 NetBar 不主动切回 Mini。

@@ -46,11 +46,18 @@ struct TrafficTableHeader: View {
 struct TrafficTable<Rows: View>: View {
     let isEmpty: Bool
     let emptyText: String
+    let bodyHeight: CGFloat
     private let rows: Rows
 
-    init(isEmpty: Bool, emptyText: String, @ViewBuilder rows: () -> Rows) {
+    init(
+        isEmpty: Bool,
+        emptyText: String,
+        bodyHeight: CGFloat = TrafficTableLayout.bodyHeight,
+        @ViewBuilder rows: () -> Rows
+    ) {
         self.isEmpty = isEmpty
         self.emptyText = emptyText
+        self.bodyHeight = bodyHeight
         self.rows = rows()
     }
 
@@ -72,7 +79,7 @@ struct TrafficTable<Rows: View>: View {
                     }
                 }
             }
-            .frame(height: TrafficTableLayout.bodyHeight)
+            .frame(height: bodyHeight)
         }
     }
 }

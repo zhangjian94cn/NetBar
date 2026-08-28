@@ -98,6 +98,16 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(configStore.ping0APIKey, "")
     }
 
+    func testPopoverSelectionPersistsWithinCurrentDistributionFlavor() {
+        let defaults = makeDefaults()
+        let configStore = AppConfig(defaults: defaults)
+        let expected: PopoverSection = DistributionFlavor.current == .directFull ? .applications : .monitoring
+
+        configStore.selectedPopoverSection = expected
+
+        XCTAssertEqual(AppConfig(defaults: defaults).selectedPopoverSection, expected)
+    }
+
     private func makeDefaults() -> UserDefaults {
         let suiteName = "NetBarTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

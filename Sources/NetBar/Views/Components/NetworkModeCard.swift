@@ -4,237 +4,286 @@ import SwiftUI
 struct NetworkModeCard: View {
     @ObservedObject var controller: NetworkModeController
     @State private var showsWiFiCandidates = false
-    @State private var showsApplicationDiagnostics = false
+    @State private var showsAdvancedDiagnostics = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 7) {
-                Image(systemName: "bolt.horizontal.circle.fill")
-                    .foregroundColor(statusColor)
-                Text("Mac mini 链路")
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-                if controller.isSwitching || controller.isProvisioning {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(controller.isProvisioning ? "正在初始化" : "正在切换")
-                        .font(.system(size: 10, weight: .medium))
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 11) {
+                hero
+
+                HStack(spacing: 0) {
+                    modeButton(.macMiniGateway, icon: "desktopcomputer")
+                    modeButton(.localWiFi, icon: "wifi")
+                }
+                .padding(2)
+                .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+                if let policyMessage = controller.policyMessage, !policyMessage.isEmpty {
+                    Text(policyMessage)
+                        .font(.system(size: 9))
                         .foregroundColor(.secondary)
-                } else {
-                    Text(modeText)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(statusColor)
+                        .lineLimit(2)
+                }
+
+                criticalActions
+                healthSteps
+                disclosureRows
+
+                if let action = controller.lastClashAction {
+                    HStack(spacing: 6) {
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                        Text(action)
+                            .lineLimit(1)
+                        Spacer()
+                        Button("查看日志") { openNetworkLog() }
+                            .buttonStyle(.link)
+                    }
+                    .font(.system(size: 9))
+                    .foregroundColor(.orange)
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .help("切换的是 Wi-Fi 与雷雳网桥的物理出口优先级，不会关闭 Clash、aTrust、Tailscale 或其他 VPN。")
+    }
 
-            HStack(spacing: 6) {
+    private var hero: some View {
+        HStack(alignment: .center, spacing: 10) {
+            ZStack {
                 Circle()
-                    .fill(statusColor)
-                    .frame(width: 6, height: 6)
-                Text(linkText)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                Spacer()
-                Text(addressText)
-                    .font(.system(size: 9, design: .monospaced))
+                    .fill(statusColor.opacity(0.14))
+                    .frame(width: 34, height: 34)
+                Image(systemName: "bolt.horizontal.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(statusColor)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(heroTitle)
+                    .font(.system(size: 15, weight: .bold))
+                    .lineLimit(1)
+                Text(heroSubtitle)
+                    .font(.system(size: 9))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
             }
-
-            VStack(spacing: 5) {
-                HStack(spacing: 10) {
-                    evidenceItem(
-                        title: "固定管理链路",
-                        value: managementEvidenceText,
-                        healthy: managementEvidenceReady
-                    )
-                    evidenceItem(
-                        title: "雷雳共享出口",
-                        value: sharingOutletEvidenceText,
-                        healthy: controller.snapshot?.gatewayState == .ready
-                    )
-                }
-                HStack(spacing: 10) {
-                    evidenceItem(
-                        title: "热点 AP",
-                        value: hotspotAPEvidenceText,
-                        healthy: controller.miniHelperStatus?.hotspotAPActive == true
-                    )
-                    evidenceItem(
-                        title: "客户端证据",
-                        value: hotspotClientEvidenceText,
-                        healthy: controller.miniHelperStatus?.hotspotClientObserved == true
-                    )
-                }
+            Spacer()
+            if controller.isSwitching || controller.isProvisioning {
+                ProgressView().controlSize(.small)
+            } else {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 7, height: 7)
             }
+        }
+    }
 
-            HStack(spacing: 5) {
-                Text("当前出口")
+    private var heroTitle: String {
+        switch controller.snapshot?.effectiveMode {
+        case .macMiniGateway: return "当前经 Mac mini 联网"
+        case .localWiFi: return "当前经 Wi-Fi 联网"
+        case nil: return "正在确认网络出口"
+        }
+    }
+
+    private var heroSubtitle: String {
+        let dns = controller.dnsPathFacts?.dependency.displayName ?? "DNS 待检测"
+        return "\(linkText) · \(dns)"
+    }
+
+    private var healthSteps: some View {
+        VStack(spacing: 0) {
+            healthStep(
+                title: "雷雳链路\(controller.snapshot?.linkState == .connected ? "正常" : "待恢复")",
+                detail: addressText,
+                healthy: controller.snapshot?.linkState == .connected,
+                icon: "bolt.horizontal.fill"
+            )
+            Divider().padding(.leading, 34)
+            healthStep(
+                title: "Apple 共享出口\(controller.snapshot?.gatewayState == .ready ? "正常" : "待恢复")",
+                detail: sharingOutletEvidenceText,
+                healthy: controller.snapshot?.gatewayState == .ready,
+                icon: "arrow.triangle.branch"
+            )
+            Divider().padding(.leading, 34)
+            healthStep(
+                title: controller.connectivityProofLevel == .activeVerified ? "端到端验证通过" : "端到端验证待完成",
+                detail: controller.connectivityProofLevel == .activeVerified ? "系统与代理数据面均已验证" : controller.failoverPhase.displayName,
+                healthy: controller.connectivityProofLevel == .activeVerified,
+                icon: "checkmark.shield.fill"
+            )
+        }
+    }
+
+    private func healthStep(title: String, detail: String, healthy: Bool, icon: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            ZStack {
+                Circle()
+                    .fill((healthy ? Color.green : Color.orange).opacity(0.14))
+                    .frame(width: 25, height: 25)
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(healthy ? .green : .orange)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 10, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 9, design: .monospaced))
                     .foregroundColor(.secondary)
-                Text(currentOutletText)
-                    .fontWeight(.semibold)
-                Spacer()
-                Text(controller.failoverPhase.displayName)
-                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 7)
+    }
+
+    @ViewBuilder
+    private var criticalActions: some View {
+        if controller.dnsPathFacts?.dependency == .miniDependent {
+            actionButton(
+                title: "恢复 Wi-Fi 自动 DNS",
+                icon: "arrow.triangle.2.circlepath",
+                disabled: controller.isRepairingDNS || controller.snapshot?.effectiveMode != .localWiFi
+            ) {
+                controller.repairWiFiDNS()
+            }
+        }
+
+        if shouldOfferProvisioning {
+            actionButton(
+                title: "初始化/修复链路",
+                icon: "wrench.and.screwdriver",
+                disabled: controller.isSwitching || controller.isProvisioning
+            ) {
+                controller.initializeFixedLink()
+            }
+        } else if !controller.miniGuardianAvailable {
+            actionButton(
+                title: "安装/更新 Mini 自愈组件",
+                icon: "arrow.triangle.2.circlepath",
+                disabled: controller.isSwitching || controller.isProvisioning
+            ) {
+                controller.initializeFixedLink()
+            }
+        }
+
+        if !controller.automationHelperAvailable {
+            actionButton(title: "安装自动切换组件", icon: "lock.shield", disabled: false) {
+                controller.installAutomationHelper()
+            }
+        }
+
+        if let message = controller.errorMessage, !message.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: controller.requiresManualRecovery ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
+                Text(message).lineLimit(3)
+                Spacer(minLength: 4)
+                if controller.requiresManualRecovery {
+                    Button("打开网络设置") { openNetworkSettings() }
+                        .buttonStyle(.link)
+                }
             }
             .font(.system(size: 9))
+            .foregroundColor(controller.requiresManualRecovery ? .red : .orange)
+        }
+    }
 
-            HStack(spacing: 8) {
-                modeButton(.macMiniGateway, icon: "desktopcomputer")
-                modeButton(.localWiFi, icon: "wifi")
-            }
+    private func actionButton(
+        title: String,
+        icon: String,
+        disabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 9, weight: .semibold))
+                .frame(maxWidth: .infinity, minHeight: 24)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(disabled)
+    }
 
-            if let policyMessage = controller.policyMessage, !policyMessage.isEmpty {
-                Text(policyMessage)
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
-            }
-
-            HStack(spacing: 10) {
-                evidenceItem(
-                    title: "DNS 独立性",
-                    value: controller.dnsPathFacts?.dependency.displayName ?? "待检测",
-                    healthy: dnsHealthy
-                )
-                evidenceItem(
-                    title: "代理不感知路径",
-                    value: proxyUnawareText,
-                    healthy: controller.applicationPathFacts?.proxyUnawareHTTPSReady == true
-                )
-            }
-
-            if controller.dnsPathFacts?.dependency == .miniDependent {
-                Button {
-                    controller.repairWiFiDNS()
-                } label: {
-                    HStack(spacing: 6) {
-                        if controller.isRepairingDNS { ProgressView().controlSize(.small) }
-                        Label("恢复 Wi-Fi 自动 DNS", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.system(size: 9, weight: .semibold))
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 22)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(controller.isRepairingDNS || controller.snapshot?.effectiveMode != .localWiFi)
-                .help("仅在 Wi-Fi 手动 DNS 依赖失联的 192.168.2.1 时可用；失败会恢复原 DNS。")
-            }
-
+    private var disclosureRows: some View {
+        VStack(spacing: 0) {
             Button {
                 showsWiFiCandidates.toggle()
                 if showsWiFiCandidates { controller.refreshWiFiCandidates() }
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "wifi")
-                    Text("Wi-Fi 候选")
-                        .fontWeight(.medium)
-                    Text(candidateCountText)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Image(systemName: showsWiFiCandidates ? "chevron.up" : "chevron.down")
-                        .foregroundColor(.secondary)
-                }
-                .font(.system(size: 9))
-                .contentShape(Rectangle())
+                disclosureLabel(
+                    icon: "wifi",
+                    title: "Wi-Fi 候选",
+                    value: candidateCountText,
+                    expanded: showsWiFiCandidates
+                )
             }
             .buttonStyle(.plain)
-            .padding(.top, 1)
 
             if showsWiFiCandidates {
-                wifiCandidateList
+                Divider().padding(.leading, 24)
+                wifiCandidateList.padding(.vertical, 6)
             }
 
+            Divider().padding(.leading, 24)
+
             Button {
-                showsApplicationDiagnostics.toggle()
+                showsAdvancedDiagnostics.toggle()
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "stethoscope")
-                    Text("应用诊断")
-                        .fontWeight(.medium)
-                    Spacer()
-                    Image(systemName: showsApplicationDiagnostics ? "chevron.up" : "chevron.down")
-                        .foregroundColor(.secondary)
-                }
-                .font(.system(size: 9))
-                .contentShape(Rectangle())
+                disclosureLabel(
+                    icon: "stethoscope",
+                    title: "高级诊断",
+                    value: nil,
+                    expanded: showsAdvancedDiagnostics
+                )
             }
             .buttonStyle(.plain)
 
-            if showsApplicationDiagnostics {
-                applicationDiagnostics
-            }
-
-            if let action = controller.lastClashAction {
-                HStack(spacing: 5) {
-                    Image(systemName: "point.3.connected.trianglepath.dotted")
-                    Text(action)
-                    Spacer()
-                    Button("打开 Clash") { openClash() }
-                        .buttonStyle(.link)
-                }
-                .font(.system(size: 9))
-                .foregroundColor(.orange)
-            }
-
-            if shouldOfferProvisioning {
-                Button {
-                    controller.initializeFixedLink()
-                } label: {
-                    Label("初始化/修复链路", systemImage: "wrench.and.screwdriver")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(maxWidth: .infinity, minHeight: 23)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(controller.isSwitching || controller.isProvisioning)
-            }
-
-            if !controller.miniGuardianAvailable && !shouldOfferProvisioning {
-                Button {
-                    controller.initializeFixedLink()
-                } label: {
-                    Label("安装/更新 Mini 自愈组件", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(maxWidth: .infinity, minHeight: 23)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(controller.isSwitching || controller.isProvisioning)
-            }
-
-            if !controller.automationHelperAvailable {
-                Button {
-                    controller.installAutomationHelper()
-                } label: {
-                    Label("安装自动切换组件", systemImage: "lock.shield")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(maxWidth: .infinity, minHeight: 23)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
-            if let message = controller.errorMessage, !message.isEmpty {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Image(systemName: controller.requiresManualRecovery ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
-                    Text(message)
-                        .lineLimit(3)
-                    Spacer(minLength: 4)
-                    if controller.requiresManualRecovery {
-                        Button("打开网络设置") {
-                            openNetworkSettings()
-                        }
-                        .buttonStyle(.link)
-                    }
-                }
-                .font(.system(size: 9))
-                .foregroundColor(controller.requiresManualRecovery ? .red : .orange)
+            if showsAdvancedDiagnostics {
+                Divider().padding(.leading, 24)
+                advancedDiagnostics.padding(.vertical, 8)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .help("切换的是 Wi-Fi 与雷雳网桥的物理出口优先级，不会关闭 Clash、aTrust、Tailscale 或其他 VPN。")
+        .padding(.horizontal, 10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private func disclosureLabel(icon: String, title: String, value: String?, expanded: Bool) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon).frame(width: 16)
+            Text(title).fontWeight(.medium)
+            if let value {
+                Text(value).foregroundColor(.secondary)
+            }
+            Spacer()
+            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                .foregroundColor(.secondary)
+        }
+        .font(.system(size: 10))
+        .frame(minHeight: 34)
+        .contentShape(Rectangle())
+    }
+
+    private var advancedDiagnostics: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                evidenceItem(title: "固定管理链路", value: managementEvidenceText, healthy: managementEvidenceReady)
+                evidenceItem(title: "DNS 独立性", value: controller.dnsPathFacts?.dependency.displayName ?? "待检测", healthy: dnsHealthy)
+            }
+            HStack(spacing: 10) {
+                evidenceItem(title: "热点 AP", value: hotspotAPEvidenceText, healthy: controller.miniHelperStatus?.hotspotAPActive == true)
+                evidenceItem(title: "客户端证据", value: hotspotClientEvidenceText, healthy: controller.miniHelperStatus?.hotspotClientObserved == true)
+            }
+            HStack {
+                Text("代理不感知路径").foregroundColor(.secondary)
+                Spacer()
+                Text(proxyUnawareText)
+                    .foregroundColor(controller.applicationPathFacts?.proxyUnawareHTTPSReady == true ? .green : .orange)
+            }
+            .font(.system(size: 9))
+        }
     }
 
     private func modeButton(_ mode: NetworkRouteMode, icon: String) -> some View {
@@ -395,32 +444,6 @@ struct NetworkModeCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var applicationDiagnostics: some View {
-        let facts = controller.applicationPathFacts
-        return VStack(alignment: .leading, spacing: 4) {
-            diagnosticRow("系统 HTTPS", ready: facts?.systemProxyAwareHTTPSReady)
-            diagnosticRow("显式 Clash HTTPS", ready: facts?.explicitClashHTTPSReady)
-            diagnosticRow("ZCode 后台链路", ready: facts?.zcodeDiagnosticReady)
-            if let code = facts?.zcodeHTTPStatus {
-                Text("ZCode 匿名 HTTP 状态：\(code)（2xx–4xx 表示链路可达）")
-                    .font(.system(size: 8))
-                    .foregroundColor(.secondary)
-            }
-        }
-        .padding(8)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func diagnosticRow(_ title: String, ready: Bool?) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(ready == true ? "可达" : (ready == false ? "不可达" : "待检测"))
-                .foregroundColor(ready == true ? .green : .orange)
-        }
-        .font(.system(size: 9))
-    }
-
     private var shouldOfferProvisioning: Bool {
         guard let snapshot = controller.snapshot else { return false }
         switch snapshot.linkState {
@@ -436,6 +459,17 @@ struct NetworkModeCard: View {
             NSWorkspace.shared.open(url)
         } else {
             NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+        }
+    }
+
+    private func openNetworkLog() {
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/NetBar", isDirectory: true)
+        let log = directory.appendingPathComponent("network-events.jsonl")
+        if FileManager.default.fileExists(atPath: log.path) {
+            NSWorkspace.shared.open(log)
+        } else {
+            NSWorkspace.shared.open(directory)
         }
     }
 
@@ -522,16 +556,4 @@ struct NetworkModeCard: View {
         return controller.wifiLocationAccess.displayName
     }
 
-    private func openClash() {
-        let applications = [
-            "/Applications/Clash Verge.app",
-            "/Applications/Clash Verge Rev.app"
-        ]
-        if let path = applications.first(where: { FileManager.default.fileExists(atPath: $0) }) {
-            NSWorkspace.shared.openApplication(
-                at: URL(fileURLWithPath: path),
-                configuration: NSWorkspace.OpenConfiguration()
-            )
-        }
-    }
 }

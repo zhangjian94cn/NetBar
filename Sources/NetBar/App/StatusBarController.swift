@@ -6,8 +6,9 @@ import SwiftUI
 /// 菜单栏控制器 — 管理 NSStatusItem 和原生风格浮层面板
 class StatusBarController: NSObject, NSWindowDelegate {
     private let panelWidth: CGFloat = 380
-    private let panelFallbackHeight: CGFloat = 420
-    private let panelMinHeight: CGFloat = 280
+    private let directFullPanelHeight: CGFloat = 540
+    private let appStoreLitePanelHeight: CGFloat = 460
+    private let panelMinHeight: CGFloat = 420
     private let screenEdgeMargin: CGFloat = 8
     private let panelMenuBarGap: CGFloat = 0
 
@@ -26,6 +27,13 @@ class StatusBarController: NSObject, NSWindowDelegate {
         setupStatusItem()
         startUpdatingTitle()
         setupEventMonitors()
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["NETBAR_CAPTURE_POPOVER_PATH"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.showPanel()
+            }
+        }
+        #endif
     }
 
     private func setupStatusItem() {
@@ -47,6 +55,12 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
 
     private func makePopoverContentViewController() -> NSViewController {
+        #if DEBUG
+        if let rawSection = ProcessInfo.processInfo.environment["NETBAR_CAPTURE_POPOVER_SECTION"],
+           let section = PopoverSection(rawValue: rawSection) {
+            AppConfig.shared.selectedPopoverSection = section
+        }
+        #endif
         let contentView = MenuPopoverView(
             networkMonitor: coordinator.networkMonitor,
             proxyDetector: coordinator.proxyDetector,
@@ -63,33 +77,27 @@ class StatusBarController: NSObject, NSWindowDelegate {
         return controller
     }
 
-    /// 根据状态栏按钮所在屏幕和 SwiftUI 内容尺寸计算面板高度。
+    /// 使用稳定的产品框架高度，避免 Tab 内容变化导致面板尺寸跳动。
     private func panelSize(for controller: NSViewController, relativeTo button: NSStatusBarButton) -> NSSize {
-        let fittingHeight = fittingContentHeight(for: controller)
         let availableHeight = availablePanelHeight(below: button)
-        let height = min(max(fittingHeight, panelMinHeight), availableHeight)
-        return NSSize(width: panelWidth, height: height)
-    }
-
-    private func fittingContentHeight(for controller: NSViewController) -> CGFloat {
-        controller.view.frame = NSRect(x: 0, y: 0, width: panelWidth, height: panelFallbackHeight)
+        let preferredHeight = DistributionFlavor.current == .directFull
+            ? directFullPanelHeight
+            : appStoreLitePanelHeight
+        let minimumHeightThatFits = min(panelMinHeight, availableHeight)
+        let height = max(minimumHeightThatFits, min(preferredHeight, availableHeight))
+        controller.view.frame = NSRect(x: 0, y: 0, width: panelWidth, height: height)
         controller.view.layoutSubtreeIfNeeded()
-
-        let fittingHeight = controller.view.fittingSize.height
-        guard fittingHeight.isFinite, fittingHeight > 0 else {
-            return panelFallbackHeight
-        }
-        return fittingHeight
+        return NSSize(width: panelWidth, height: height)
     }
 
     private func availablePanelHeight(below button: NSStatusBarButton) -> CGFloat {
         guard let window = button.window,
               let screen = window.screen else {
-            return panelFallbackHeight
+            return directFullPanelHeight
         }
 
         let availableBelowMenuBar = screen.visibleFrame.height - screenEdgeMargin
-        return max(panelMinHeight, availableBelowMenuBar)
+        return max(1, availableBelowMenuBar)
     }
 
     private func panelFrame(for size: NSSize, relativeTo button: NSStatusBarButton) -> NSRect {
@@ -168,8 +176,30 @@ class StatusBarController: NSObject, NSWindowDelegate {
             self.panel = panel
             self.setStatusItemHighlighted(true)
             panel.orderFrontRegardless()
+            #if DEBUG
+            self.capturePanelForDesignQAIfRequested(panel)
+            #endif
         }
     }
+
+    #if DEBUG
+    /// Test-only visual QA hook. It never ships in Release or App Store builds.
+    private func capturePanelForDesignQAIfRequested(_ panel: NSPanel) {
+        guard let path = ProcessInfo.processInfo.environment["NETBAR_CAPTURE_POPOVER_PATH"],
+              !path.isEmpty else { return }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak panel] in
+            guard let view = panel?.contentView else { return }
+            view.layoutSubtreeIfNeeded()
+            let bounds = view.bounds
+            guard let bitmap = view.bitmapImageRepForCachingDisplay(in: bounds) else { return }
+            bitmap.size = bounds.size
+            view.cacheDisplay(in: bounds, to: bitmap)
+            guard let data = bitmap.representation(using: .png, properties: [:]) else { return }
+            try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
+    }
+    #endif
 
     private func closePanel() {
         panel?.close()
