@@ -56,6 +56,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
             vpsTrafficMonitor: coordinator.vpsTrafficMonitor,
             appIconResolver: coordinator.appIconResolver,
             networkModeController: coordinator.networkModeController,
+            clashOverlayModeController: coordinator.clashOverlayModeController,
             coordinator: coordinator
         )
         let controller = NSHostingController(rootView: contentView)

@@ -6,6 +6,9 @@ HELPER_SOURCE="$SCRIPT_DIR/netbar-route-safety-helper"
 SUDOERS_SOURCE="$SCRIPT_DIR/com.zjah.NetBarRouteSafetyHelper.sudoers"
 HELPER_TARGET=/Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper
 SUDOERS_TARGET=/etc/sudoers.d/netbar-route-safety-helper
+TRANSACTION_DIR=/Library/Application\ Support/NetBar/RouteSafety
+LEGACY_BACKUP="$TRANSACTION_DIR/service-order-backup.txt"
+PENDING_TARGET="$TRANSACTION_DIR/pending-target.txt"
 INSTALL_USER="$(/usr/bin/stat -f %Su /dev/console)"
 SUDOERS_TEMP="$(/usr/bin/mktemp /tmp/netbar-route-helper-sudoers.XXXXXX)"
 
@@ -28,5 +31,10 @@ echo "NetBar 需要一次管理员授权，以安装只能切换 Wi-Fi/雷雳优
 /usr/bin/sudo /usr/bin/install -o root -g wheel -m 0755 "$HELPER_SOURCE" "$HELPER_TARGET"
 /usr/bin/sudo /usr/bin/install -o root -g wheel -m 0440 "$SUDOERS_TEMP" "$SUDOERS_TARGET"
 /usr/bin/sudo /usr/sbin/visudo -cf "$SUDOERS_TARGET"
+if /usr/bin/sudo /bin/test -f "$LEGACY_BACKUP" &&
+   ! /usr/bin/sudo /bin/test -f "$PENDING_TARGET"; then
+    echo "正在迁移 Route Safety Helper v1 的已提交备份..."
+    /usr/bin/sudo /bin/rm -f "$LEGACY_BACKUP"
+fi
 /usr/bin/sudo -n "$HELPER_TARGET" status
 echo "NetBar Route Safety Helper 安装完成，可以关闭此窗口。"

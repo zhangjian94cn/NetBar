@@ -14,6 +14,7 @@ struct MenuPopoverView: View {
     @ObservedObject var vpsTrafficMonitor: VPSTrafficMonitor
     @ObservedObject var appIconResolver: AppIconResolver
     @ObservedObject var networkModeController: NetworkModeController
+    @ObservedObject var clashOverlayModeController: ClashOverlayModeController
     @ObservedObject private var appConfig = AppConfig.shared
     let coordinator: MonitorCoordinator
 
@@ -35,7 +36,10 @@ struct MenuPopoverView: View {
 
             if DistributionFlavor.current.supportsNetworkModeSwitch {
                 Divider().padding(.horizontal, 12)
-                NetworkModeCard(controller: networkModeController)
+                NetworkControlTabs(
+                    networkController: networkModeController,
+                    overlayController: clashOverlayModeController
+                )
             }
 
             Divider().padding(.horizontal, 12)
@@ -73,6 +77,7 @@ struct MenuPopoverView: View {
             preloadVisibleIcons()
             if DistributionFlavor.current.supportsNetworkModeSwitch {
                 networkModeController.beginObserving()
+                clashOverlayModeController.refresh()
             }
         }
         .onDisappear {

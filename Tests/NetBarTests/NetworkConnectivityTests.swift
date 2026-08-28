@@ -86,11 +86,27 @@ final class NetworkConnectivityTests: XCTestCase {
     }
 
     func testAssociationArgumentsAreArrayBasedAndNeverContainPassword() {
-        let arguments = LiveWiFiCandidateController.associationArguments(ssid: "Corp WiFi; $(whoami)")
+        let arguments = LiveWiFiCandidateController.associationArguments(
+            ssid: "Corp WiFi; $(whoami)",
+            interfaceName: "en7"
+        )
 
-        XCTAssertEqual(arguments, ["-setairportnetwork", "en0", "Corp WiFi; $(whoami)"])
+        XCTAssertEqual(arguments, ["-setairportnetwork", "en7", "Corp WiFi; $(whoami)"])
         XCTAssertEqual(arguments.count, 3)
         XCTAssertFalse(arguments.contains(where: { $0.lowercased().contains("password") }))
+    }
+
+    func testCandidatePoolCarriesTheDiscoveredWiFiInterface() {
+        let candidates = WiFiCandidateSelector.select(
+            pinnedSSIDs: ["Office"],
+            savedSSIDs: ["Office"],
+            visibleSignals: ["Office": -42],
+            currentSSID: "Office",
+            locationAccess: .allowed,
+            interfaceName: "en7"
+        )
+
+        XCTAssertEqual(candidates.first?.interfaceName, "en7")
     }
 
     func testFiveMinuteFallbackChangesToSixtySecondProbeCadence() {
@@ -106,19 +122,29 @@ final class NetworkConnectivityTests: XCTestCase {
         XCTAssertTrue(state.shouldRunSlowFallbackProbe(at: start.addingTimeInterval(360)))
     }
 
-    func testMihomoWriteSurfaceOnlyClosesConnections() throws {
+    func testUnderlayOnlyClosesConnectionsAndTunWriteStaysInManualOverlayController() throws {
         let repo = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let source = try String(contentsOf: repo.appendingPathComponent("Sources/NetBar/Monitors/MihomoClient.swift"))
+        let underlay = try String(contentsOf: repo.appendingPathComponent("Sources/NetBar/Monitors/NetworkModeController.swift"))
+        let overlay = try String(contentsOf: repo.appendingPathComponent("Sources/NetBar/Monitors/ClashOverlayModeController.swift"))
 
         XCTAssertTrue(source.contains("-X\", \"DELETE"))
         XCTAssertTrue(source.contains("/connections"))
+        XCTAssertTrue(source.contains("-X\", \"PATCH"))
+        XCTAssertTrue(source.contains("/configs"))
         XCTAssertFalse(source.contains("/restart"))
         XCTAssertFalse(source.contains("/upgrade"))
-        XCTAssertFalse(source.contains("PATCH\", \"/configs"))
         XCTAssertFalse(source.contains("PUT\", \"/configs"))
+        XCTAssertFalse(underlay.contains("setTunEnabled"))
+        XCTAssertFalse(underlay.contains("enable_tun_mode"))
+        XCTAssertTrue(overlay.contains("func switchMode(to target: ClashOverlayMode)"))
+        XCTAssertTrue(overlay.contains("preferenceStore.replace"))
+        XCTAssertTrue(overlay.contains("runtime.setTunEnabled"))
+        XCTAssertFalse(overlay.contains("/restart"))
+        XCTAssertFalse(overlay.contains("/upgrade"))
     }
 
     func testConnectivityProbeRejectsCaptiveRedirectAndAcceptsOneExactTarget() {

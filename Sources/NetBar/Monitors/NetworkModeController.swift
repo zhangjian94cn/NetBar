@@ -770,6 +770,7 @@ final class NetworkModeController: ObservableObject {
     @Published private(set) var failoverPhase: NetworkFailoverPhase
     @Published private(set) var activeCandidateName: String?
     @Published private(set) var lastClashAction: String?
+    @Published private(set) var currentUnderlayVerified = false
 
     private let provider: NetworkModeSystemProviding
     private let switchEngine: NetworkModeSwitchEngine
@@ -867,6 +868,7 @@ final class NetworkModeController: ObservableObject {
     func startPolicyMonitoring() {
         guard DistributionFlavor.current.supportsNetworkModeSwitch else { return }
         automationHelperAvailable = routeSafetyController.status() != nil
+        reconcilePendingRouteTransaction()
         refresh()
         refreshWiFiCandidates()
         wifiCandidateController.startMonitoring { [weak self] in
@@ -1000,11 +1002,16 @@ final class NetworkModeController: ObservableObject {
             }
 
             let previousMode = (try? self.provider.readSnapshot())?.effectiveMode
-            let helperResult = self.routeSafetyController.status() != nil
+            let helperAvailable = self.routeSafetyController.status() != nil
+            let helperResult = helperAvailable
                 ? self.routeSafetyController.apply(.macMiniGateway)
-                : nil
+                : NetworkModeCommandResult(
+                    exitCode: 1,
+                    standardOutput: "",
+                    standardError: "请先安装或更新自动切换组件；完成一次管理员授权后，普通切换不再请求密码"
+                )
             var outcome: NetworkModeSwitchOutcome
-            if let helperResult {
+            if helperAvailable {
                 let refreshed = try? self.provider.readSnapshot()
                 let rebindResult = refreshed.map {
                     self.rebindMihomoUnderlayIfNeeded(
@@ -1013,36 +1020,26 @@ final class NetworkModeController: ObservableObject {
                         at: self.now()
                     )
                 }
-                let verified = helperResult.succeeded && refreshed?.verifies(.macMiniGateway) == true &&
+                let dataPlaneVerified = helperResult.succeeded && refreshed?.verifies(.macMiniGateway) == true &&
                     self.verifyDataPlane(
                         interfaceName: refreshed?.thunderboltDevice ?? "bridge0",
                         afterRebind: rebindResult == .succeeded
                     ).routedInternetReady
+                let verified = dataPlaneVerified && self.routeSafetyController.commit().succeeded
+                if helperResult.succeeded && !verified {
+                    _ = self.routeSafetyController.rollback()
+                }
                 outcome = NetworkModeSwitchOutcome(
                     kind: verified ? .success : .failed,
                     snapshot: refreshed,
                     message: verified ? nil : (helperResult.combinedMessage.isEmpty ? "Mac mini 数据面验证失败" : helperResult.combinedMessage)
                 )
             } else {
-                outcome = self.switchEngine.switchMode(to: target)
-                if outcome.succeeded, let refreshed = outcome.snapshot {
-                    let rebindResult = self.rebindMihomoUnderlayIfNeeded(
-                        snapshot: refreshed,
-                        previousHint: previousMode,
-                        at: self.now()
-                    )
-                    let verified = self.verifyDataPlane(
-                        interfaceName: refreshed.thunderboltDevice ?? "bridge0",
-                        afterRebind: rebindResult == .succeeded
-                    ).routedInternetReady
-                    if !verified {
-                        outcome = NetworkModeSwitchOutcome(
-                            kind: .failed,
-                            snapshot: refreshed,
-                            message: "Mac mini 物理出口已切换，但 Clash/TUN 数据面未收敛"
-                        )
-                    }
-                }
+                outcome = NetworkModeSwitchOutcome(
+                    kind: .failed,
+                    snapshot: try? self.provider.readSnapshot(),
+                    message: helperResult.combinedMessage
+                )
             }
             if !outcome.succeeded {
                 _ = self.fallbackToVerifiedWiFi(
@@ -1055,6 +1052,7 @@ final class NetworkModeController: ObservableObject {
                 self.snapshot = outcome.snapshot ?? self.snapshot
                 self.errorMessage = outcome.message
                 self.requiresManualRecovery = outcome.kind == .recoveryRequired
+                self.currentUnderlayVerified = outcome.succeeded
                 self.isSwitching = false
 
                 if outcome.succeeded {
@@ -1177,7 +1175,9 @@ final class NetworkModeController: ObservableObject {
                 let orderResult = routeSafetyController.apply(.macMiniGateway)
                 guard orderResult.succeeded,
                       let reconciled = try? provider.readSnapshot(),
-                      reconciled.verifies(.macMiniGateway) else {
+                      reconciled.verifies(.macMiniGateway),
+                      routeSafetyController.commit().succeeded else {
+                    if orderResult.succeeded { _ = routeSafetyController.rollback() }
                     eventLogger.record(event: "mini_service_order_reconcile", detail: "failed", candidateSSID: nil)
                     publishPolicy(
                         snapshot: current,
@@ -1247,7 +1247,10 @@ final class NetworkModeController: ObservableObject {
                 afterRebind: rebindResult == .succeeded
             )
         }
-        if let verified, verified.verifies(.macMiniGateway), finalMiniProbe?.routedInternetReady == true {
+        if let verified,
+           verified.verifies(.macMiniGateway),
+           finalMiniProbe?.routedInternetReady == true,
+           routeSafetyController.commit().succeeded {
             policyState.markMiniActive()
             policyState.recordAutomaticReturn(at: checkDate)
             persistPolicyState()
@@ -1256,6 +1259,7 @@ final class NetworkModeController: ObservableObject {
             eventLogger.record(event: "automatic_return_to_mini", detail: "30-second stability and full data plane verified", candidateSSID: nil)
             DispatchQueue.main.async { [weak self] in self?.onNetworkChanged() }
         } else {
+            if result.succeeded { _ = routeSafetyController.rollback() }
             let restored = fallbackToVerifiedWiFi(at: checkDate, reason: "自动切回验证失败", automatic: true)
             if !restored {
                 let refreshed = (try? provider.readSnapshot()) ?? current
@@ -1393,10 +1397,10 @@ final class NetworkModeController: ObservableObject {
         var candidates = wifi.candidates.filter { $0.isPinned && $0.state != .unavailable }
         if candidates.isEmpty,
            wifi.currentSSID == nil,
-           connectivityProber.probe(interfaceName: "en0").hasLocalNetwork {
+           connectivityProber.probe(interfaceName: wifi.interfaceName).hasLocalNetwork {
             // Location access can redact the current SSID. Reusing the already-associated
             // interface does not expand the whitelist or attempt any unknown network.
-            candidates = [WiFiCandidateSelector.anonymousCurrentCandidate()]
+            candidates = [WiFiCandidateSelector.anonymousCurrentCandidate(interfaceName: wifi.interfaceName)]
         }
         candidates.sort { lhs, rhs in
             if lhs.isCurrent != rhs.isCurrent { return lhs.isCurrent }
@@ -1408,6 +1412,7 @@ final class NetworkModeController: ObservableObject {
         }
 
         for candidate in candidates {
+            let wifiInterface = candidate.interfaceName.isEmpty ? "en0" : candidate.interfaceName
             updateCandidateState(ssid: candidate.displayName, state: .connecting, current: candidate.isCurrent)
             if !candidate.isCurrent {
                 switch wifiCandidateController.associate(ssid: candidate.displayName) {
@@ -1429,11 +1434,11 @@ final class NetworkModeController: ObservableObject {
                 }
             }
 
-            var directProbe = connectivityProber.probe(interfaceName: "en0")
+            var directProbe = connectivityProber.probe(interfaceName: wifiInterface)
             if !directProbe.hasLocalNetwork {
                 for _ in 0..<2 {
                     sleeper(1)
-                    directProbe = connectivityProber.probe(interfaceName: "en0")
+                    directProbe = connectivityProber.probe(interfaceName: wifiInterface)
                     if directProbe.hasLocalNetwork { break }
                 }
             }
@@ -1446,20 +1451,15 @@ final class NetworkModeController: ObservableObject {
             }
 
             let current = try? provider.readSnapshot()
+            var routeTransactionStarted = false
             if current?.effectiveMode != .localWiFi || current?.intendedMode != .localWiFi {
                 let helperAvailable = routeSafetyController.status() != nil
                 let routeResult: NetworkModeCommandResult
                 if helperAvailable {
                     routeResult = routeSafetyController.apply(.localWiFi)
-                } else if automatic {
-                    routeResult = .init(exitCode: 1, standardOutput: "", standardError: "自动切换组件未安装")
+                    routeTransactionStarted = routeResult.succeeded
                 } else {
-                    let outcome = switchEngine.switchMode(to: .localWiFi)
-                    routeResult = .init(
-                        exitCode: outcome.succeeded ? 0 : 1,
-                        standardOutput: "",
-                        standardError: outcome.message ?? "Wi-Fi 路由切换失败"
-                    )
+                    routeResult = .init(exitCode: 1, standardOutput: "", standardError: "自动切换组件未安装")
                 }
                 guard routeResult.succeeded else {
                     fallbackFailureMessage = routeResult.combinedMessage.isEmpty ? "Wi-Fi 路由切换失败" : routeResult.combinedMessage
@@ -1471,6 +1471,7 @@ final class NetworkModeController: ObservableObject {
             guard let refreshed = (try? provider.readSnapshot()) ?? current,
                   refreshed.effectiveMode == .localWiFi,
                   refreshed.intendedMode == .localWiFi else {
+                if routeTransactionStarted { _ = routeSafetyController.rollback() }
                 fallbackFailureMessage = "Wi-Fi 服务顺序已修改，但默认物理出口验证失败"
                 eventLogger.record(event: "wifi_route_verification_failed", detail: reason, candidateSSID: candidate.displayName)
                 continue
@@ -1497,10 +1498,25 @@ final class NetworkModeController: ObservableObject {
             persistPolicyState()
             let convergence = convergeClashAfterWiFiSwitch(
                 ssid: candidate.displayName,
+                interfaceName: wifiInterface,
                 initialProbe: directProbe,
                 underlayRebound: rebindResult == .succeeded,
                 at: checkDate
             )
+            if routeTransactionStarted {
+                let physicalPathVerified = directProbe.directInternetReady || convergence
+                if physicalPathVerified {
+                    guard routeSafetyController.commit().succeeded else {
+                        _ = routeSafetyController.rollback()
+                        fallbackFailureMessage = "Wi-Fi 路由事务提交失败"
+                        continue
+                    }
+                } else {
+                    _ = routeSafetyController.rollback()
+                    fallbackFailureMessage = "Wi-Fi 数据面验证失败，已恢复原服务顺序"
+                    continue
+                }
+            }
             let message: String
             if convergence, directProbe.directInternetReady {
                 message = "已使用 Wi-Fi 保网 · \(reason)"
@@ -1531,11 +1547,12 @@ final class NetworkModeController: ObservableObject {
 
     private func convergeClashAfterWiFiSwitch(
         ssid: String,
+        interfaceName: String,
         initialProbe: ConnectivityProbeResult,
         underlayRebound: Bool,
         at checkDate: Date
     ) -> Bool {
-        var probe = connectivityProber.probe(interfaceName: "en0")
+        var probe = connectivityProber.probe(interfaceName: interfaceName)
         if probe.completeInternetReady || probe.routedInternetReady {
             updateCandidateState(ssid: ssid, state: .internetReady, current: true)
             return true
@@ -1543,7 +1560,7 @@ final class NetworkModeController: ObservableObject {
         if underlayRebound {
             for _ in 0..<3 {
                 sleeper(2)
-                probe = connectivityProber.probe(interfaceName: "en0")
+                probe = connectivityProber.probe(interfaceName: interfaceName)
                 if probe.completeInternetReady || probe.routedInternetReady {
                     updateCandidateState(ssid: ssid, state: .internetReady, current: true)
                     return true
@@ -1572,7 +1589,7 @@ final class NetworkModeController: ObservableObject {
         }
         for _ in 0..<3 {
             sleeper(2)
-            probe = connectivityProber.probe(interfaceName: "en0")
+            probe = connectivityProber.probe(interfaceName: interfaceName)
             if probe.completeInternetReady {
                 updateCandidateState(ssid: ssid, state: .internetReady, current: true)
                 return true
@@ -1664,9 +1681,57 @@ final class NetworkModeController: ObservableObject {
             if let activeCandidate { self.activeCandidateName = activeCandidate }
             if let helperAvailable { self.automationHelperAvailable = helperAvailable }
             if isError {
+                self.currentUnderlayVerified = false
                 self.errorMessage = message
             } else if !self.requiresManualRecovery {
+                self.currentUnderlayVerified = snapshot.effectiveMode != nil
                 self.errorMessage = nil
+            }
+        }
+    }
+
+    private func reconcilePendingRouteTransaction() {
+        guard let status = routeSafetyController.status(), status.pendingTransaction else { return }
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            let target: NetworkRouteMode
+            switch status.pendingTarget {
+            case "mini": target = .macMiniGateway
+            case "wifi": target = .localWiFi
+            default:
+                let rollback = self.routeSafetyController.rollback()
+                self.eventLogger.record(
+                    event: "route_transaction_recovered",
+                    detail: "invalid target rollback: \(rollback.succeeded ? "success" : "failed")",
+                    candidateSSID: nil
+                )
+                if !rollback.succeeded {
+                    DispatchQueue.main.async {
+                        self.requiresManualRecovery = true
+                        self.errorMessage = "路由事务目标损坏，且无法自动恢复"
+                    }
+                }
+                return
+            }
+            let snapshot = try? self.provider.readSnapshot()
+            let interface = target == .macMiniGateway
+                ? (snapshot?.thunderboltDevice ?? "bridge0")
+                : (snapshot?.wifiDevice ?? "en0")
+            let verified = snapshot?.verifies(target) == true &&
+                self.connectivityProber.probe(interfaceName: interface).routedInternetReady
+            let result = verified
+                ? self.routeSafetyController.commit()
+                : self.routeSafetyController.rollback()
+            self.eventLogger.record(
+                event: "route_transaction_recovered",
+                detail: "\(verified ? "commit" : "rollback"): \(result.succeeded ? "success" : "failed")",
+                candidateSSID: nil
+            )
+            if !result.succeeded {
+                DispatchQueue.main.async {
+                    self.requiresManualRecovery = true
+                    self.errorMessage = "未完成的路由事务无法自动恢复"
+                }
             }
         }
     }

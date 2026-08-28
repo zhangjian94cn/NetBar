@@ -1,4 +1,5 @@
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper status
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper prefer-wifi
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper prefer-mini
+__USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper commit
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper rollback

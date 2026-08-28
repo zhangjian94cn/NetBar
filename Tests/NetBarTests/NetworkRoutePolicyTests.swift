@@ -253,6 +253,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { controller.snapshot?.isConsistent == true })
         XCTAssertEqual(controller.snapshot?.effectiveMode, .macMiniGateway)
         XCTAssertEqual(controller.policyMessage, "Mac mini 优先 · 当前出口正常")
+        XCTAssertEqual(routeSafety.commitCount, 1)
     }
 
     func testWiFiFallbackSkipsFailedCandidateAndUsesNextPinnedNetwork() {
@@ -282,6 +283,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { controller.activeCandidateName == "Backup" })
         XCTAssertEqual(wifi.associationAttempts, ["Primary", "Backup"])
         XCTAssertEqual(routeSafety.appliedModes, [.localWiFi])
+        XCTAssertEqual(routeSafety.commitCount, 1)
     }
 
     func testWiFiFallbackClosesMihomoConnectionsOnceThenRevalidates() {
@@ -466,6 +468,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
         )
         XCTAssertTrue(waitUntil { mihomo.closeCount == 1 })
         XCTAssertEqual(controller.lastClashAction, "物理出口已变化，Mihomo 连接已自动刷新")
+        XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
     }
 
     func testManagedNetworkSwitchesToMiniUsingGuardianAndRoutedDataPlane() {
@@ -540,6 +543,8 @@ final class NetworkRoutePolicyTests: XCTestCase {
             waitUntil { routeSafety.appliedModes == [.macMiniGateway, .localWiFi] },
             "modes=\(routeSafety.appliedModes) reads=\(provider.readCount) message=\(controller.policyMessage ?? "nil")"
         )
+        XCTAssertTrue(waitUntil { routeSafety.rollbackCount == 1 })
+        XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
     }
 
     func testHelperV4DecodesRawFactsAndClassifiesSpecificFailure() throws {
@@ -630,17 +635,101 @@ final class NetworkRoutePolicyTests: XCTestCase {
         let helperSource = try String(contentsOf: helper)
         let installerSource = try String(contentsOf: installer)
         let sudoersSource = try String(contentsOf: sudoers)
-        for command in ["status", "prefer-wifi", "prefer-mini", "rollback"] {
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let controllerSource = try String(contentsOf: repo.appendingPathComponent("Sources/NetBar/Monitors/NetworkModeController.swift"))
+        for command in ["status", "prefer-wifi", "prefer-mini", "commit", "rollback"] {
             XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarRouteSafetyHelper \(command)"))
         }
         XCTAssertFalse(sudoersSource.contains("com.zjah.NetBarRouteSafetyHelper *"))
         XCTAssertTrue(installerSource.contains("visudo -cf"))
+        XCTAssertTrue(installerSource.contains("LEGACY_BACKUP"))
+        XCTAssertTrue(installerSource.contains("PENDING_TARGET"))
         XCTAssertFalse(helperSource.contains("setdnsservers"))
         XCTAssertFalse(helperSource.contains("ifconfig utun"))
         XCTAssertTrue(helperSource.contains("for attempt in {1..12}"))
         XCTAssertTrue(helperSource.contains("mode_from_order"))
         XCTAssertTrue(helperSource.contains("(( mini_index > wifi_index ))"))
         XCTAssertTrue(helperSource.contains("(( wifi_index > mini_index ))"))
+        XCTAssertTrue(helperSource.contains("\\\"protocolVersion\\\":2"))
+        XCTAssertTrue(helperSource.contains("pendingTransaction"))
+        XCTAssertEqual(run("/bin/zsh", ["-n", helper.path]).exitCode, 0)
+        XCTAssertEqual(
+            controllerSource.components(separatedBy: "switchEngine.switchMode").count - 1,
+            1,
+            "普通出口切换必须使用免密受限 Helper；AppleScript 授权回退只保留给一次性固定链路初始化"
+        )
+    }
+
+    func testStartupCommitsPendingRouteTransactionOnlyAfterDataPlaneVerification() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .ready)
+        ])
+        let routeSafety = RecordingRouteSafetyController(pendingTarget: "wifi")
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.startPolicyMonitoring()
+        defer { controller.stopPolicyMonitoring() }
+
+        XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
+        XCTAssertEqual(routeSafety.rollbackCount, 0)
+    }
+
+    func testStartupRollsBackPendingRouteTransactionWhenTargetIsNotVerified() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .ready)
+        ])
+        let routeSafety = RecordingRouteSafetyController(pendingTarget: "wifi")
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.startPolicyMonitoring()
+        defer { controller.stopPolicyMonitoring() }
+
+        XCTAssertTrue(waitUntil { routeSafety.rollbackCount == 1 })
+        XCTAssertEqual(routeSafety.commitCount, 0)
+    }
+
+    func testStartupRollsBackCorruptedPendingRouteTargetWithoutGuessing() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .ready)
+        ])
+        let routeSafety = RecordingRouteSafetyController(pendingTarget: "corrupted")
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.startPolicyMonitoring()
+        defer { controller.stopPolicyMonitoring() }
+
+        XCTAssertTrue(waitUntil { routeSafety.rollbackCount == 1 })
+        XCTAssertEqual(routeSafety.commitCount, 0)
     }
 
     private func run(_ executable: String, _ arguments: [String]) -> NetworkModeCommandResult {
@@ -940,6 +1029,8 @@ private final class PolicyRouteSafetyController: RouteSafetyControlling {
     func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult {
         .init(exitCode: 0, standardOutput: "", standardError: "")
     }
+    func commit() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
+    func rollback() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
     func openInstaller() -> NetworkModeCommandResult {
         .init(exitCode: 0, standardOutput: "", standardError: "")
     }
@@ -993,21 +1084,52 @@ private final class RecordingRouteSafetyController: RouteSafetyControlling {
         defer { lock.unlock() }
         return modes
     }
+    private var commits = 0
+    private var rollbacks = 0
+    private let pendingTarget: String?
+
+    init(pendingTarget: String? = nil) {
+        self.pendingTarget = pendingTarget
+    }
+    var commitCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return commits
+    }
+    var rollbackCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return rollbacks
+    }
 
     func status() -> RouteSafetyHelperStatus? {
         .init(
-            protocolVersion: 1,
+            protocolVersion: 2,
             mode: "wifi",
             wifiService: "Wi-Fi",
             wifiDevice: "en0",
             miniService: "Thunderbolt Bridge",
-            backupAvailable: true
+            pendingTransaction: pendingTarget != nil,
+            pendingTarget: pendingTarget ?? ""
         )
     }
 
     func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult {
         lock.lock()
         modes.append(mode)
+        lock.unlock()
+        return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+
+    func commit() -> NetworkModeCommandResult {
+        lock.lock()
+        commits += 1
+        lock.unlock()
+        return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func rollback() -> NetworkModeCommandResult {
+        lock.lock()
+        rollbacks += 1
         lock.unlock()
         return .init(exitCode: 0, standardOutput: "", standardError: "")
     }
