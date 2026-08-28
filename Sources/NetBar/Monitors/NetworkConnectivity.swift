@@ -576,6 +576,8 @@ final class NetworkEventLogger: NetworkEventLogging {
     private let queue = DispatchQueue(label: "com.zjah.NetBar.network-event-log")
     private let fileURL: URL
     private let maxBytes: UInt64 = 2 * 1024 * 1024
+    private let duplicateSuppressionWindow: TimeInterval = 300
+    private var lastRecordedByFingerprint: [String: Date] = [:]
 
     init(fileURL: URL? = nil) {
         self.fileURL = fileURL ?? FileManager.default.homeDirectoryForCurrentUser
@@ -583,14 +585,25 @@ final class NetworkEventLogger: NetworkEventLogging {
     }
 
     func record(event: String, detail: String, candidateSSID: String? = nil) {
-        queue.async { [fileURL, maxBytes] in
+        queue.async { [weak self, fileURL, maxBytes] in
+            guard let self else { return }
             let fm = FileManager.default
             let directory = fileURL.deletingLastPathComponent()
             try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
             let candidateID = candidateSSID.map(WiFiCandidateSelector.candidateID(for:))
             let safeDetail = candidateSSID.map { detail.replacingOccurrences(of: $0, with: "<candidate>") } ?? detail
+            let now = Date()
+            let fingerprint = [event, safeDetail, candidateID ?? "-"].joined(separator: "\u{1f}")
+            if let last = self.lastRecordedByFingerprint[fingerprint],
+               now.timeIntervalSince(last) < self.duplicateSuppressionWindow {
+                return
+            }
+            self.lastRecordedByFingerprint[fingerprint] = now
+            self.lastRecordedByFingerprint = self.lastRecordedByFingerprint.filter {
+                now.timeIntervalSince($0.value) < self.duplicateSuppressionWindow
+            }
             let payload: [String: String] = [
-                "timestamp": ISO8601DateFormatter().string(from: Date()),
+                "timestamp": ISO8601DateFormatter().string(from: now),
                 "event": event,
                 "detail": safeDetail,
                 "candidate": candidateID ?? "-"

@@ -48,8 +48,10 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertEqual(snapshot.gatewayState, .ready)
         XCTAssertEqual(snapshot.bridgeIPv4, "192.168.2.2")
         XCTAssertTrue(runner.invocations.contains { invocation in
-            invocation.executable == "/sbin/ping" &&
-                invocation.arguments.prefix(4) == ["-b", "bridge0", "-S", "192.168.2.2"]
+            invocation.executable == "/usr/bin/curl" &&
+                invocation.arguments.contains("--interface") &&
+                invocation.arguments.contains("bridge0") &&
+                invocation.arguments.contains("--noproxy")
         })
     }
 
@@ -127,16 +129,19 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertEqual(snapshot.gatewayState, .remoteStatusUnavailable)
     }
 
-    func testLiveSnapshotAcceptsOneReachableBoundProbeTarget() throws {
+    func testLiveSnapshotAcceptsOneReachableBoundHTTPSProbeTargetAndIgnoresICMP() throws {
         let runner = SnapshotCommandRunner(
             bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
             router: "192.168.2.1",
-            reachableProbeTargets: ["1.1.1.1"]
+            reachableProbeTargets: ["https://www.apple.com/library/test/success.html"]
         )
 
         let snapshot = try LiveNetworkModeSystemProvider(commandRunner: runner).readSnapshot()
 
         XCTAssertEqual(snapshot.gatewayState, .ready)
+        XCTAssertFalse(runner.invocations.contains { invocation in
+            invocation.executable == "/sbin/ping" && invocation.arguments.last != "192.168.2.1"
+        })
     }
 
     func testRemoteReadyCannotOverrideFailedMacBookBoundEgress() throws {
@@ -485,10 +490,15 @@ private final class SnapshotCommandRunner: NetworkModeCommandRunning {
         }
         if executable == "/sbin/ping" {
             if arguments.last == "192.168.2.1" { return peerReachable ? .success() : .failure("timeout") }
+            return .failure("public ICMP must not be used as readiness evidence")
+        }
+        if executable == "/usr/bin/curl" {
             if let reachableProbeTargets, let target = arguments.last {
-                return reachableProbeTargets.contains(target) ? .success() : .failure("timeout")
+                guard reachableProbeTargets.contains(target) else { return .failure("timeout") }
+                return .success(target.contains("generate_204") ? "204" : "200")
             }
-            return boundEgressReachable ? .success() : .failure("timeout")
+            guard boundEgressReachable, let target = arguments.last else { return .failure("timeout") }
+            return .success(target.contains("generate_204") ? "204" : "200")
         }
         if executable == "/usr/bin/ssh", let remoteHelperJSON {
             return .success(remoteHelperJSON)

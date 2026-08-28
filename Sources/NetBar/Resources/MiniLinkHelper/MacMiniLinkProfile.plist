@@ -25,5 +25,10 @@
         <string>1.1.1.1</string>
         <string>114.114.114.114</string>
     </array>
+    <key>httpsProbeTargets</key>
+    <array>
+        <string>https://www.apple.com/library/test/success.html</string>
+        <string>https://cp.cloudflare.com/generate_204</string>
+    </array>
 </dict>
 </plist>
