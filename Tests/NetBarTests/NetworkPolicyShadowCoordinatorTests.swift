@@ -88,6 +88,153 @@ final class NetworkPolicyShadowCoordinatorTests: XCTestCase {
         XCTAssertEqual(logger.events(named: "network_policy_shadow_generation").count, 1)
     }
 
+    func testMiniDependentDNSMapsActiveWiFiToDegradedProof() {
+        let dns = DNSPathFacts(
+            serviceName: "Wi-Fi",
+            interfaceName: "en0",
+            configurationSource: .manual,
+            dependency: .miniDependent,
+            resolverCount: 1,
+            systemResolutionReady: false,
+            generation: 9,
+            observedAt: observedAt
+        )
+        let app = ApplicationPathFacts(
+            systemProxyAwareHTTPSReady: true,
+            explicitClashHTTPSReady: true,
+            proxyUnawareHTTPSReady: false,
+            zcodeDiagnosticReady: false,
+            zcodeHTTPStatus: nil,
+            generation: 9,
+            observedAt: observedAt
+        )
+
+        let observation = NetworkPolicyShadowObservation.make(
+            snapshot: makeSnapshot(gateway: .carrierDown),
+            preference: .miniPreferred,
+            currentUnderlayVerified: false,
+            wifiCandidates: [],
+            connectivityProofLevel: .degradedActive,
+            dnsPath: dns,
+            applicationPath: app,
+            observedAt: observedAt
+        )
+
+        XCTAssertEqual(observation.wifiProof, .degradedActive(.wifiDNSDependsOnMini))
+        XCTAssertEqual(observation.activePathEvidence.dnsDependency, .miniDependent)
+    }
+
+    func testStaleEndToEndFactsCannotClaimActiveWiFiProof() {
+        let staleAt = observedAt.addingTimeInterval(-31)
+        let observation = NetworkPolicyShadowObservation.make(
+            snapshot: makeSnapshot(gateway: .carrierDown),
+            preference: .miniPreferred,
+            currentUnderlayVerified: false,
+            wifiCandidates: [],
+            connectivityProofLevel: .activeVerified,
+            dnsPath: DNSPathFacts(
+                serviceName: "Wi-Fi",
+                interfaceName: "en0",
+                configurationSource: .automatic,
+                dependency: .independent,
+                resolverCount: 1,
+                systemResolutionReady: true,
+                generation: 1,
+                observedAt: staleAt
+            ),
+            applicationPath: ApplicationPathFacts(
+                systemProxyAwareHTTPSReady: true,
+                explicitClashHTTPSReady: true,
+                proxyUnawareHTTPSReady: true,
+                zcodeDiagnosticReady: true,
+                zcodeHTTPStatus: 404,
+                generation: 1,
+                observedAt: staleAt
+            ),
+            observedAt: observedAt
+        )
+
+        XCTAssertEqual(observation.wifiProof, .unknown)
+    }
+
+    func testFactsFromPreviousPhysicalInterfaceCannotVerifyCurrentUnderlay() {
+        let observation = NetworkPolicyShadowObservation.make(
+            snapshot: makeSnapshot(gateway: .carrierDown),
+            preference: .miniPreferred,
+            currentUnderlayVerified: false,
+            wifiCandidates: [],
+            connectivityProofLevel: .activeVerified,
+            dnsPath: DNSPathFacts(
+                serviceName: "Thunderbolt Bridge",
+                interfaceName: "bridge0",
+                configurationSource: .automatic,
+                dependency: .independent,
+                resolverCount: 1,
+                systemResolutionReady: true,
+                generation: 1,
+                observedAt: observedAt
+            ),
+            applicationPath: ApplicationPathFacts(
+                systemProxyAwareHTTPSReady: true,
+                explicitClashHTTPSReady: true,
+                proxyUnawareHTTPSReady: true,
+                zcodeDiagnosticReady: true,
+                zcodeHTTPStatus: 404,
+                generation: 1,
+                observedAt: observedAt
+            ),
+            observedAt: observedAt
+        )
+
+        XCTAssertEqual(observation.wifiProof, .unknown)
+    }
+
+    func testZCodeDiagnosticChangeDoesNotCreateRouteGenerationOrProposal() async {
+        let logger = ShadowRecordingLogger()
+        let coordinator = NetworkPolicyShadowCoordinator(eventLogger: logger)
+        let base = NetworkPolicyPathEvidence(
+            proofLevel: .activeVerified,
+            dnsDependency: .independent,
+            systemResolutionReady: true,
+            systemProxyHTTPSReady: true,
+            explicitClashHTTPSReady: true,
+            proxyUnawareHTTPSReady: true,
+            zcodeDiagnosticReady: false,
+            observedAt: observedAt
+        )
+        await coordinator.observe(NetworkPolicyShadowObservation(
+            intent: .miniPreferred,
+            observedUnderlay: .mini,
+            miniProof: .activeVerified,
+            wifiProof: .preflightEligible,
+            activePathEvidence: base,
+            observedAt: observedAt
+        ))
+        let zcodeRecovered = NetworkPolicyPathEvidence(
+            proofLevel: base.proofLevel,
+            dnsDependency: base.dnsDependency,
+            systemResolutionReady: base.systemResolutionReady,
+            systemProxyHTTPSReady: base.systemProxyHTTPSReady,
+            explicitClashHTTPSReady: base.explicitClashHTTPSReady,
+            proxyUnawareHTTPSReady: base.proxyUnawareHTTPSReady,
+            zcodeDiagnosticReady: true,
+            observedAt: observedAt.addingTimeInterval(5)
+        )
+        await coordinator.observe(NetworkPolicyShadowObservation(
+            intent: .miniPreferred,
+            observedUnderlay: .mini,
+            miniProof: .activeVerified,
+            wifiProof: .preflightEligible,
+            activePathEvidence: zcodeRecovered,
+            observedAt: observedAt.addingTimeInterval(5)
+        ))
+
+        let diagnostic = await coordinator.diagnosticSnapshot()
+        XCTAssertEqual(diagnostic.generation, 1)
+        XCTAssertTrue(logger.events(named: "network_policy_shadow_generation").isEmpty)
+        XCTAssertTrue(logger.events(named: "network_policy_shadow_proposal").isEmpty)
+    }
+
     private func makeSnapshot(gateway: MacMiniGatewayState) -> NetworkModeSnapshot {
         NetworkModeSnapshot(
             services: [

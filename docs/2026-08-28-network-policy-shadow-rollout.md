@@ -29,6 +29,8 @@
 
 日志不包含 SSID、BSSID、密码、公司 DNS 或代理凭据。观察窗口必须覆盖雷雳拔插、睡眠唤醒、Mini `en0`/Internet Sharing 故障与恢复、Mini 公司 VPN、Wi-Fi 变化，以及“系统代理”和“TUN 全局”两种 overlay。
 
+2026-08-28 起，影子 observation 还包含不落原始 resolver 值的 DNS 依赖分类、系统解析、系统/显式 Clash/代理不感知数据面和 ZCode 匿名传输布尔值。只有前五项参与 route generation；ZCode 只改变诊断 observation，不产生 route proposal。影子 reducer 会验证 `routeEligible → degradedActive` 的安全 Wi-Fi 回退、Mini 30 秒资格、两次失败熔断，以及新 generation 对未完成事务的 rollback 不变量；它仍不持有 Helper 或 Mihomo executor。
+
 ## 接管门禁
 
 接管 PR 只能在以下条件都有可复核证据后开始：

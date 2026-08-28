@@ -41,7 +41,11 @@ MacBook 的降级 episode 从首次确认首选路径故障开始，与 Wi-Fi �
 
 2026-08-28 事故补充：一次自动试切即使未通过最终数据面验证、因而没有形成“成功切回”，也必须视为一次失败的自动返回。首次失败清空既有健康计时，重新取得连续 30 秒完整证明后才允许再试；10 分钟内第二次失败打开 10 分钟熔断。这样避免 Mini 公司 VPN 改变共享转发状态时，控制器沿用旧 `readySince` 连续改写服务顺序。
 
-后续接管使用纯 `NetworkPolicyMachine.reduce(state:event:)` 和单 actor。每个 effect 携带 transaction ID、network generation、幂等键和 deadline。Route Safety Helper v2 把完整服务顺序写入 root-only 事务日志，切换后只能 commit、rollback 或进入 manual recovery。该接管先以只读影子模式运行 24 小时；与旧策略出现不安全分歧时保持旧执行路径并记录证据，不自动写路由。
+后续接管使用纯 `NetworkPolicyMachine.reduce(state:event:)` 和单 actor。每个 effect 携带 transaction ID、network generation、幂等键和 deadline。Route Safety Helper v3 把完整服务顺序或受限 DNS 修复写入 root-only 事务日志，写入后只能 commit、rollback 或进入 manual recovery。该接管先以只读影子模式运行 24 小时；与旧策略出现不安全分歧时保持旧执行路径并记录证据，不自动写路由。
+
+2026-08-28 的 DNS 证据扩展把候选证明细分为 `routeEligible`、`preflightEligible`、`activeVerified` 和带稳定原因码的 `degradedActive`。Mini 已明确失效时，`routeEligible` Wi-Fi 可以成为回退目标；实际切换后若 DNS 或 overlay 仍降级，则允许提交 `degradedActive`，但只能显示受限在线。Mini 自动切回仍只接受完整 `activeVerified`，两次在 10 分钟内验证失败会在回滚后熔断 10 分钟。
+
+新的 generation 若在事务进行中到达，reducer 必须提出该 transaction 的 rollback，不能把 phase 静默重置为 observing。ZCode 匿名诊断存入 `NetworkPolicyPathEvidence` 供 UI 和日志显示，但不进入 route-relevant evidence fingerprint，因此 ZCode 单点恢复或故障不会生成路由 effect。具体 DNS 写入边界见 [2026-08-28 端到端 DNS ADR](2026-08-28-end-to-end-dns-overlay-failover-adr.md)。
 
 2026-08-28 已启用 [只读影子协调器](../Sources/NetBar/Monitors/NetworkPolicyShadowCoordinator.swift)：网络事件先合并 250 ms，每个事件批次只生成一个 generation；远端 Guardian/VPN 等证据在没有本地路由事件时发生实质变化，也会推进 generation。协调器没有 effect executor 依赖，只记录 observation 与 proposal，因此即使 reducer 提议切换、刷新 Mihomo、验证或回滚，也不能产生真实副作用。部署及证据门禁见 [影子运行手册](2026-08-28-network-policy-shadow-rollout.md)。
 
