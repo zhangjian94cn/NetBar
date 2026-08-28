@@ -8,25 +8,26 @@ struct NetworkModeCard: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 11) {
+            VStack(alignment: .leading, spacing: 10) {
                 hero
+
+                evidenceGrid
 
                 HStack(spacing: 0) {
                     modeButton(.macMiniGateway, icon: "desktopcomputer")
                     modeButton(.localWiFi, icon: "wifi")
                 }
-                .padding(2)
-                .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .padding(3)
+                .background(PopoverVisualStyle.controlFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
                 if let policyMessage = controller.policyMessage, !policyMessage.isEmpty {
                     Text(policyMessage)
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
+                        .font(PopoverVisualStyle.Typography.caption)
+                        .foregroundColor(PopoverVisualStyle.secondaryText)
                         .lineLimit(2)
                 }
 
                 criticalActions
-                healthSteps
                 disclosureRows
 
                 if let action = controller.lastClashAction {
@@ -38,106 +39,120 @@ struct NetworkModeCard: View {
                         Button("查看日志") { openNetworkLog() }
                             .buttonStyle(.link)
                     }
-                    .font(.system(size: 9))
-                    .foregroundColor(.orange)
+                    .font(PopoverVisualStyle.Typography.caption)
+                    .foregroundColor(PopoverVisualStyle.warning)
+                    .padding(.horizontal, 10)
+                    .frame(minHeight: 30)
+                    .background(PopoverVisualStyle.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.vertical, 10)
         }
         .help("切换的是 Wi-Fi 与雷雳网桥的物理出口优先级，不会关闭 Clash、aTrust、Tailscale 或其他 VPN。")
     }
 
     private var hero: some View {
-        HStack(alignment: .center, spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(statusColor.opacity(0.14))
-                    .frame(width: 34, height: 34)
-                Image(systemName: "bolt.horizontal.fill")
-                    .font(.system(size: 15, weight: .semibold))
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "bolt.circle.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(statusColor)
+                Text("Mac mini 链路")
+                    .font(PopoverVisualStyle.Typography.section)
+                Spacer()
+                Text(currentOutletText)
+                    .font(PopoverVisualStyle.Typography.bodyStrong)
                     .foregroundColor(statusColor)
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(heroTitle)
-                    .font(.system(size: 15, weight: .bold))
-                    .lineLimit(1)
-                Text(heroSubtitle)
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer()
-            if controller.isSwitching || controller.isProvisioning {
-                ProgressView().controlSize(.small)
-            } else {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 7, height: 7)
-            }
-        }
-    }
 
-    private var heroTitle: String {
-        switch controller.snapshot?.effectiveMode {
-        case .macMiniGateway: return "当前经 Mac mini 联网"
-        case .localWiFi: return "当前经 Wi-Fi 联网"
-        case nil: return "正在确认网络出口"
-        }
-    }
-
-    private var heroSubtitle: String {
-        let dns = controller.dnsPathFacts?.dependency.displayName ?? "DNS 待检测"
-        return "\(linkText) · \(dns)"
-    }
-
-    private var healthSteps: some View {
-        VStack(spacing: 0) {
-            healthStep(
-                title: "雷雳链路\(controller.snapshot?.linkState == .connected ? "正常" : "待恢复")",
-                detail: addressText,
-                healthy: controller.snapshot?.linkState == .connected,
-                icon: "bolt.horizontal.fill"
-            )
-            Divider().padding(.leading, 34)
-            healthStep(
-                title: "Apple 共享出口\(controller.snapshot?.gatewayState == .ready ? "正常" : "待恢复")",
-                detail: sharingOutletEvidenceText,
-                healthy: controller.snapshot?.gatewayState == .ready,
-                icon: "arrow.triangle.branch"
-            )
-            Divider().padding(.leading, 34)
-            healthStep(
-                title: controller.connectivityProofLevel == .activeVerified ? "端到端验证通过" : "端到端验证待完成",
-                detail: controller.connectivityProofLevel == .activeVerified ? "系统与代理数据面均已验证" : controller.failoverPhase.displayName,
-                healthy: controller.connectivityProofLevel == .activeVerified,
-                icon: "checkmark.shield.fill"
-            )
-        }
-    }
-
-    private func healthStep(title: String, detail: String, healthy: Bool, icon: String) -> some View {
-        HStack(alignment: .top, spacing: 9) {
-            ZStack {
-                Circle()
-                    .fill((healthy ? Color.green : Color.orange).opacity(0.14))
-                    .frame(width: 25, height: 25)
-                Image(systemName: icon)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(healthy ? .green : .orange)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 10, weight: .semibold))
-                Text(detail)
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
+            HStack(spacing: 6) {
+                Circle().fill(statusColor).frame(width: 7, height: 7)
+                Text(linkText)
+                Spacer()
+                Text(addressText)
+                    .font(PopoverVisualStyle.Typography.data)
                     .truncationMode(.middle)
             }
-            Spacer()
+            .font(PopoverVisualStyle.Typography.caption)
+            .foregroundColor(.secondary)
         }
-        .padding(.vertical, 7)
+    }
+
+    private var evidenceGrid: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                evidenceTile(
+                    title: "雷雳链路",
+                    value: controller.snapshot?.linkState.displayName ?? "待检测",
+                    detail: controller.snapshot?.bridgeIPv4 ?? "—",
+                    healthy: controller.snapshot?.linkState == .connected
+                )
+                evidenceTile(
+                    title: "Apple 共享出口",
+                    value: controller.snapshot?.gatewayState.displayName ?? "待检测",
+                    detail: controller.snapshot?.miniGateway ?? "—",
+                    healthy: controller.snapshot?.gatewayState == .ready
+                )
+            }
+
+            HStack(spacing: 12) {
+                evidenceTile(
+                    title: "端到端验证",
+                    value: proofText,
+                    detail: controller.failoverPhase.displayName,
+                    healthy: controller.connectivityProofLevel == .activeVerified
+                )
+                evidenceTile(
+                    title: "当前出口",
+                    value: currentOutletText,
+                    detail: controller.routePreference.displayName,
+                    healthy: controller.connectivityProofLevel == .activeVerified
+                )
+            }
+        }
+    }
+
+    private func evidenceTile(title: String, value: String, detail: String, healthy: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(PopoverVisualStyle.Typography.caption)
+                .foregroundColor(.secondary)
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(healthy ? PopoverVisualStyle.healthy : PopoverVisualStyle.warning)
+                    .frame(width: 6, height: 6)
+                Text(value)
+                    .font(PopoverVisualStyle.Typography.bodyStrong)
+                    .lineLimit(1)
+            }
+            Text(detail)
+                .font(PopoverVisualStyle.Typography.data)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var currentOutletText: String {
+        controller.snapshot?.effectiveMode?.displayName ?? "待确认"
+    }
+
+    private var addressText: String {
+        let local = controller.snapshot?.bridgeIPv4 ?? "—"
+        let mini = controller.snapshot?.miniGateway ?? "—"
+        return "本机 \(local) · Mini \(mini)"
+    }
+
+    private var proofText: String {
+        switch controller.connectivityProofLevel {
+        case .activeVerified: return "已验证"
+        case .preflightEligible: return "预检通过"
+        case .routeEligible: return "路由可用"
+        case .degradedActive: return "受限可用"
+        case .unavailable: return "不可用"
+        }
     }
 
     @ViewBuilder
@@ -186,8 +201,13 @@ struct NetworkModeCard: View {
                         .buttonStyle(.link)
                 }
             }
-            .font(.system(size: 9))
-            .foregroundColor(controller.requiresManualRecovery ? .red : .orange)
+            .font(PopoverVisualStyle.Typography.caption)
+            .foregroundColor(controller.requiresManualRecovery ? PopoverVisualStyle.fault : PopoverVisualStyle.warning)
+            .padding(10)
+            .background(
+                (controller.requiresManualRecovery ? PopoverVisualStyle.fault : PopoverVisualStyle.warning).opacity(0.07),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
         }
     }
 
@@ -199,12 +219,15 @@ struct NetworkModeCard: View {
     ) -> some View {
         Button(action: action) {
             Label(title, systemImage: icon)
-                .font(.system(size: 9, weight: .semibold))
-                .frame(maxWidth: .infinity, minHeight: 24)
+                .font(PopoverVisualStyle.Typography.bodyStrong)
+                .foregroundColor(PopoverVisualStyle.healthy)
+                .frame(maxWidth: .infinity, minHeight: 34)
+                .background(PopoverVisualStyle.healthy.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(PopoverVisualStyle.healthy.opacity(0.16), lineWidth: 0.75))
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
+        .buttonStyle(.plain)
         .disabled(disabled)
+        .opacity(disabled ? 0.45 : 1)
     }
 
     private var disclosureRows: some View {
@@ -246,8 +269,8 @@ struct NetworkModeCard: View {
                 advancedDiagnostics.padding(.vertical, 8)
             }
         }
-        .padding(.horizontal, 10)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .padding(.horizontal, 12)
+        .popoverGroup()
     }
 
     private func disclosureLabel(icon: String, title: String, value: String?, expanded: Bool) -> some View {
@@ -261,8 +284,9 @@ struct NetworkModeCard: View {
             Image(systemName: expanded ? "chevron.down" : "chevron.right")
                 .foregroundColor(.secondary)
         }
-        .font(.system(size: 10))
-        .frame(minHeight: 34)
+        .font(PopoverVisualStyle.Typography.body)
+        .foregroundColor(PopoverVisualStyle.primaryText)
+        .frame(minHeight: 38)
         .contentShape(Rectangle())
     }
 
@@ -277,12 +301,12 @@ struct NetworkModeCard: View {
                 evidenceItem(title: "客户端证据", value: hotspotClientEvidenceText, healthy: controller.miniHelperStatus?.hotspotClientObserved == true)
             }
             HStack {
-                Text("代理不感知路径").foregroundColor(.secondary)
+                Text("代理不感知路径").foregroundColor(PopoverVisualStyle.secondaryText)
                 Spacer()
                 Text(proxyUnawareText)
-                    .foregroundColor(controller.applicationPathFacts?.proxyUnawareHTTPSReady == true ? .green : .orange)
+                    .foregroundColor(controller.applicationPathFacts?.proxyUnawareHTTPSReady == true ? PopoverVisualStyle.healthy : PopoverVisualStyle.warning)
             }
-            .font(.system(size: 9))
+            .font(PopoverVisualStyle.Typography.caption)
         }
     }
 
@@ -291,32 +315,16 @@ struct NetworkModeCard: View {
             ? controller.routePreference == .miniPreferred
             : controller.routePreference == .localWiFi
         let isEnabled = canSwitch(to: mode)
-        let selectedColor: Color = mode == .macMiniGateway ? .green : .blue
 
-        return Button {
+        return PopoverSegmentedOption(
+            title: mode == .macMiniGateway ? "Mac mini 优先" : "Wi-Fi 优先",
+            icon: icon,
+            isSelected: isSelected,
+            isEnabled: isEnabled,
+            accent: PopoverVisualStyle.healthy
+        ) {
             controller.switchMode(to: mode)
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.system(size: 10, weight: .semibold))
-                Text(mode == .macMiniGateway ? "Mac mini 优先" : "Wi-Fi 优先")
-                    .font(.system(size: 10, weight: .semibold))
-            }
-            .foregroundColor(isSelected ? .white : .primary)
-            .frame(maxWidth: .infinity, minHeight: 25)
-            .background {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isSelected ? selectedColor.opacity(0.9) : Color.primary.opacity(0.06))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(isSelected ? selectedColor.opacity(0.35) : Color.primary.opacity(0.06), lineWidth: 0.5)
-            }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .disabled(!isEnabled)
-        .opacity(isEnabled ? 1 : 0.45)
     }
 
     private func canSwitch(to mode: NetworkRouteMode) -> Bool {
@@ -331,36 +339,21 @@ struct NetworkModeCard: View {
 
     private var statusColor: Color {
         if controller.requiresManualRecovery {
-            return .red
+            return PopoverVisualStyle.fault
         }
         guard let snapshot = controller.snapshot else {
-            return .secondary
+            return PopoverVisualStyle.secondaryText
         }
         switch snapshot.linkState {
         case .unavailable, .disconnected:
-            return .red
+            return PopoverVisualStyle.fault
         case .connected:
-            return snapshot.gatewayState == .ready && snapshot.isConsistent ? .green : .orange
+            return snapshot.gatewayState == .ready && snapshot.isConsistent
+                ? PopoverVisualStyle.healthy
+                : PopoverVisualStyle.warning
         case .addressNotProvisioned, .miniUnreachable:
-            return .orange
+            return PopoverVisualStyle.warning
         }
-    }
-
-    private var modeText: String {
-        guard let snapshot = controller.snapshot else { return "正在检测" }
-        if controller.requiresManualRecovery {
-            return "需要手动恢复"
-        }
-        if snapshot.linkState == .addressNotProvisioned {
-            return "需要初始化"
-        }
-        if snapshot.gatewayState != .ready, snapshot.gatewayState != .unknown {
-            return snapshot.gatewayState.displayName
-        }
-        if snapshot.isConsistent, let mode = snapshot.effectiveMode {
-            return mode.displayName
-        }
-        return "配置不一致"
     }
 
     private var linkText: String {
@@ -371,21 +364,6 @@ struct NetworkModeCard: View {
         return snapshot.linkState.displayName
     }
 
-    private var currentOutletText: String {
-        if let activeCandidate = controller.activeCandidateName,
-           controller.snapshot?.effectiveMode == .localWiFi {
-            return "Wi-Fi · \(activeCandidate)"
-        }
-        return controller.snapshot?.effectiveMode?.displayName ?? "待检测"
-    }
-
-    private var addressText: String {
-        guard let snapshot = controller.snapshot else { return "—" }
-        let local = snapshot.bridgeIPv4 ?? "—"
-        let mini = snapshot.miniGateway ?? "—"
-        return "本机 \(local) · Mini \(mini)"
-    }
-
     private var managementEvidenceReady: Bool {
         controller.miniHelperStatus?.managementIPv4 == MacMiniLinkProfile.defaults.managementMiniAddress &&
             controller.snapshot?.linkState == .connected
@@ -393,13 +371,6 @@ struct NetworkModeCard: View {
 
     private var managementEvidenceText: String {
         managementEvidenceReady ? "10.254.254.2 → 10.254.254.1" : "待验证"
-    }
-
-    private var sharingOutletEvidenceText: String {
-        guard let snapshot = controller.snapshot,
-              let address = snapshot.bridgeIPv4,
-              let gateway = snapshot.miniGateway else { return "等待 Apple DHCP" }
-        return "\(address) → \(gateway)"
     }
 
     private var hotspotAPEvidenceText: String {
@@ -430,14 +401,15 @@ struct NetworkModeCard: View {
     private func evidenceItem(title: String, value: String, healthy: Bool) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.system(size: 8))
-                .foregroundColor(.secondary)
+                .font(PopoverVisualStyle.Typography.caption)
+                .foregroundColor(PopoverVisualStyle.secondaryText)
             HStack(spacing: 4) {
                 Circle()
-                    .fill(healthy ? Color.green : Color.orange)
-                    .frame(width: 5, height: 5)
+                    .fill(healthy ? PopoverVisualStyle.healthy : PopoverVisualStyle.warning)
+                    .frame(width: 6, height: 6)
                 Text(value)
-                    .font(.system(size: 9, weight: .medium))
+                    .font(PopoverVisualStyle.Typography.captionStrong)
+                    .foregroundColor(PopoverVisualStyle.primaryText)
                     .lineLimit(1)
             }
         }
@@ -478,35 +450,36 @@ struct NetworkModeCard: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(candidateAccessText)
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
+                    .font(PopoverVisualStyle.Typography.caption)
+                    .foregroundColor(PopoverVisualStyle.secondaryText)
                 Spacer()
                 if controller.wifiLocationAccess == .notDetermined {
                     Button("允许扫描") { controller.requestWiFiLocationAccess() }
                         .buttonStyle(.link)
-                        .font(.system(size: 9))
+                        .font(PopoverVisualStyle.Typography.caption)
                 }
                 Button("刷新") { controller.refreshWiFiCandidates() }
                     .buttonStyle(.link)
-                    .font(.system(size: 9))
+                    .font(PopoverVisualStyle.Typography.caption)
             }
 
             if controller.wifiCandidates.isEmpty {
                 Text("当前没有可用连接。允许定位后可发现附近已保存的 Wi-Fi。")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
+                    .font(PopoverVisualStyle.Typography.caption)
+                    .foregroundColor(PopoverVisualStyle.secondaryText)
             } else {
                 ForEach(Array(controller.wifiCandidates.enumerated()), id: \.element.id) { index, candidate in
                     HStack(spacing: 6) {
                         Image(systemName: candidate.isCurrent ? "wifi.circle.fill" : "wifi")
-                            .foregroundColor(candidate.state == .internetReady ? .green : .secondary)
+                            .foregroundColor(candidate.state == .internetReady ? PopoverVisualStyle.healthy : PopoverVisualStyle.secondaryText)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(candidate.displayName)
-                                .font(.system(size: 9, weight: candidate.isCurrent ? .semibold : .regular))
+                                .font(.system(size: 10, weight: candidate.isCurrent ? .semibold : .regular))
+                                .foregroundColor(PopoverVisualStyle.primaryText)
                                 .lineLimit(1)
                             Text(candidateDetail(candidate))
-                                .font(.system(size: 8))
-                                .foregroundColor(.secondary)
+                                .font(PopoverVisualStyle.Typography.caption)
+                                .foregroundColor(PopoverVisualStyle.secondaryText)
                         }
                         Spacer()
                         if candidate.id != WiFiCandidateSelector.anonymousCurrentID, candidate.isPinned {
@@ -525,13 +498,13 @@ struct NetworkModeCard: View {
                                 controller.setWiFiCandidate(candidate.displayName, pinned: !candidate.isPinned)
                             } label: {
                                 Image(systemName: candidate.isPinned ? "star.fill" : "star")
-                                    .foregroundColor(candidate.isPinned ? .yellow : .secondary)
+                                    .foregroundColor(candidate.isPinned ? PopoverVisualStyle.warning : PopoverVisualStyle.secondaryText)
                             }
                             .buttonStyle(.plain)
                             .help(candidate.isPinned ? "从自动候选中移除" : "加入自动候选并置顶")
                         } else {
                             Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
+                                .foregroundColor(PopoverVisualStyle.healthy)
                                 .help("当前连接可直接用于故障回退")
                         }
                     }
@@ -539,8 +512,8 @@ struct NetworkModeCard: View {
                 }
             }
         }
-        .padding(8)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        .padding(10)
+        .background(PopoverVisualStyle.controlFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func candidateDetail(_ candidate: NetworkAccessCandidate) -> String {

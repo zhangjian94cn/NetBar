@@ -74,6 +74,13 @@ class StatusBarController: NSObject, NSWindowDelegate {
             coordinator: coordinator
         )
         let controller = NSHostingController(rootView: contentView)
+        #if DEBUG
+        if let appearanceName = ProcessInfo.processInfo.environment["NETBAR_CAPTURE_APPEARANCE"] {
+            controller.view.appearance = NSAppearance(
+                named: appearanceName == "dark" ? .darkAqua : .aqua
+            )
+        }
+        #endif
         return controller
     }
 

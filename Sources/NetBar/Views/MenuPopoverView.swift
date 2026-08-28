@@ -54,6 +54,7 @@ struct MenuPopoverView: View {
         VStack(alignment: .leading, spacing: 0) {
             headerSection
             statusStrip
+
             Divider().padding(.horizontal, 12)
 
             contentSection
@@ -66,12 +67,12 @@ struct MenuPopoverView: View {
         }
         .frame(width: 380)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: PopoverVisualStyle.Radius.shell, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: PopoverVisualStyle.Radius.shell, style: .continuous)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: PopoverVisualStyle.Radius.shell, style: .continuous))
         .onAppear {
             normalizeSelectedSection()
             preloadVisibleIcons()
@@ -106,19 +107,19 @@ struct MenuPopoverView: View {
 
     private var headerSection: some View {
         HStack(spacing: 10) {
-            Image(systemName: "network")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.accentColor)
+            Image(systemName: "globe")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundColor(.secondary)
             Text("NetBar")
-                .font(.system(size: 16, weight: .bold))
+                .font(PopoverVisualStyle.Typography.title)
             Spacer()
             Button(action: refreshSelectedSection) {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 13, weight: .semibold))
-                    .frame(width: 24, height: 24)
             }
             .buttonStyle(.plain)
             .foregroundColor(.secondary)
+            .frame(width: 24, height: 24)
             .help("刷新当前页面")
 
             Menu {
@@ -132,11 +133,11 @@ struct MenuPopoverView: View {
             } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 13, weight: .semibold))
-                    .frame(width: 24, height: 24)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .frame(width: 24, height: 24)
             .foregroundColor(.secondary)
             .help("设置与退出")
         }
@@ -146,61 +147,54 @@ struct MenuPopoverView: View {
     }
 
     private var statusStrip: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 7) {
-                statusValue(
-                    title: nil,
-                    value: statusPresentation.connectivity.displayName,
-                    icon: "circle.fill",
-                    tint: statusColor
-                )
-                stripDivider
-                statusValue(title: "出口", value: statusPresentation.outletText, icon: nil, tint: statusColor)
-                stripDivider
-                statusValue(title: "Clash", value: statusPresentation.clashText, icon: "shield.lefthalf.filled", tint: statusColor)
-                stripDivider
-                statusValue(title: "DNS", value: statusPresentation.dnsText, icon: "globe", tint: dnsColor)
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 8, height: 8)
+                Text(statusPresentation.connectivity.displayName)
+                    .font(PopoverVisualStyle.Typography.section)
+                Spacer()
+                Text("当前出口：")
+                    .font(PopoverVisualStyle.Typography.caption)
+                    .foregroundColor(.secondary)
+                Text(statusPresentation.outletText)
+                    .font(PopoverVisualStyle.Typography.bodyStrong)
+                    .foregroundColor(statusColor)
+            }
+
+            HStack(spacing: 12) {
+                compactStatus(title: "Clash", value: statusPresentation.clashText, icon: "shield.lefthalf.filled", tint: clashColor)
+                compactStatus(title: "DNS", value: statusPresentation.dnsText, icon: "server.rack", tint: dnsColor)
             }
 
             if statusPresentation.connectivity != .online,
                let reason = statusPresentation.primaryReason {
                 Text(reason)
-                    .font(.system(size: 9))
                     .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                    .lineLimit(2)
                     .help(reason)
+                .font(PopoverVisualStyle.Typography.caption)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(statusColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .padding(11)
+        .background(
+            PopoverVisualStyle.statusFill(for: statusPresentation.tone),
+            in: RoundedRectangle(cornerRadius: PopoverVisualStyle.Radius.card, style: .continuous)
+        )
         .padding(.horizontal, 16)
         .padding(.bottom, 9)
     }
 
-    private func statusValue(title: String?, value: String, icon: String?, tint: Color) -> some View {
+    private func compactStatus(title: String, value: String, icon: String, tint: Color) -> some View {
         HStack(spacing: 4) {
-            if let icon {
-                Image(systemName: icon)
-                    .font(.system(size: icon == "circle.fill" ? 7 : 9, weight: .semibold))
-                    .foregroundColor(tint)
-            }
-            if let title {
-                Text(title)
-                    .foregroundColor(.secondary)
-            }
-            Text(value)
-                .fontWeight(.semibold)
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+            Text("\(title)：").foregroundColor(.secondary)
+            Text(value).fontWeight(.medium).lineLimit(1)
         }
-        .font(.system(size: 9))
-    }
-
-    private var stripDivider: some View {
-        Divider().frame(height: 14)
+        .font(PopoverVisualStyle.Typography.caption)
     }
 
     @ViewBuilder
@@ -234,31 +228,31 @@ struct MenuPopoverView: View {
     }
 
     private var bottomTabBar: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 2) {
             ForEach(availableSections, id: \.self) { section in
                 Button {
                     selectedSection = section
                 } label: {
-                    VStack(spacing: 3) {
+                    VStack(spacing: 2) {
                         ZStack(alignment: .topTrailing) {
                             Image(systemName: section.systemImage)
-                                .font(.system(size: 15, weight: .semibold))
+                                .font(.system(size: 14, weight: .semibold))
                                 .frame(width: 24, height: 19)
                             if tabNeedsAttention(section) {
                                 Circle()
-                                    .fill(Color.orange)
-                                    .frame(width: 5, height: 5)
+                                    .fill(PopoverVisualStyle.warning)
+                                    .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1))
+                                    .frame(width: 7, height: 7)
                                     .offset(x: 2, y: -1)
                             }
                         }
-                        Text(section.title)
-                            .font(.system(size: 9, weight: .medium))
+                        Text(section.title).font(PopoverVisualStyle.Typography.captionStrong)
                     }
-                    .foregroundColor(selectedSection == section ? tabAccentColor(section) : .secondary)
-                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .foregroundColor(selectedSection == section ? .primary : .secondary)
+                    .frame(maxWidth: .infinity, minHeight: 42)
                     .background {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .fill(selectedSection == section ? Color.primary.opacity(0.08) : Color.clear)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(selectedSection == section ? PopoverVisualStyle.selectedFill : Color.clear)
                     }
                     .contentShape(Rectangle())
                 }
@@ -267,17 +261,11 @@ struct MenuPopoverView: View {
                 .accessibilityAddTraits(selectedSection == section ? .isSelected : [])
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-    }
-
-    private func tabAccentColor(_ section: PopoverSection) -> Color {
-        switch section {
-        case .outlet: return .green
-        case .clash: return .indigo
-        case .applications: return .blue
-        case .monitoring: return .cyan
-        }
+        .padding(4)
+        .background(PopoverVisualStyle.controlFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 9)
+        .padding(.top, 6)
     }
 
     private func tabNeedsAttention(_ section: PopoverSection) -> Bool {
@@ -290,16 +278,24 @@ struct MenuPopoverView: View {
     }
 
     private var statusColor: Color {
-        switch statusPresentation.tone {
-        case .positive: return .green
-        case .caution: return .orange
-        case .negative: return .red
-        case .neutral: return .secondary
-        }
+        PopoverVisualStyle.color(for: statusPresentation.tone)
     }
 
     private var dnsColor: Color {
-        statusPresentation.monitoringNeedsAttention ? .orange : .green
+        statusPresentation.monitoringNeedsAttention ? PopoverVisualStyle.warning : PopoverVisualStyle.healthy
+    }
+
+    private var clashColor: Color {
+        statusPresentation.clashNeedsAttention ? PopoverVisualStyle.warning : PopoverVisualStyle.healthy
+    }
+
+    private var connectivityIcon: String {
+        switch statusPresentation.connectivity {
+        case .online: return "checkmark"
+        case .limited: return "exclamationmark"
+        case .recovering: return "arrow.triangle.2.circlepath"
+        case .offline: return "xmark"
+        }
     }
 
     private func normalizeSelectedSection() {
@@ -363,16 +359,16 @@ private struct ApplicationsTabView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             speedSection
-            Divider().padding(.horizontal, 16)
             trafficSelector
                 .padding(.horizontal, 16)
-                .padding(.vertical, 9)
+                .padding(.vertical, 10)
 
             if selectedTrafficTab == 0 {
                 TrafficTable(
                     isEmpty: processTrafficMonitor.appSpeeds.isEmpty,
                     emptyText: L10n.Table.noActiveApps,
-                    bodyHeight: 230
+                    emptyDetail: "打开应用并产生网络请求后，实时流量会显示在这里。",
+                    bodyHeight: 150
                 ) {
                     ForEach(Array(processTrafficMonitor.appSpeeds.prefix(maxTableApps))) { app in
                         AppSpeedRow(app: app, iconResolver: appIconResolver)
@@ -390,7 +386,8 @@ private struct ApplicationsTabView: View {
                     TrafficTable(
                         isEmpty: processTrafficMonitor.cumulativeRanking.isEmpty,
                         emptyText: L10n.Table.noTrafficRecords,
-                        bodyHeight: 202
+                        emptyDetail: "选择时间范围后，累计使用量会显示在这里。",
+                        bodyHeight: 128
                     ) {
                         ForEach(Array(processTrafficMonitor.cumulativeRanking.prefix(maxTableApps))) { app in
                             CumulativeRow(app: app, iconResolver: appIconResolver)
@@ -404,34 +401,38 @@ private struct ApplicationsTabView: View {
     }
 
     private var speedSection: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 0) {
             speedValue(
                 title: L10n.Speed.download,
                 value: networkMonitor.currentSpeed.formattedDownload,
-                icon: "arrow.down.circle.fill",
+                icon: "arrow.down",
                 color: .blue
             )
-            Divider().frame(height: 31)
+            Rectangle()
+                .fill(PopoverVisualStyle.hairline)
+                .frame(width: 1, height: 38)
             speedValue(
                 title: L10n.Speed.upload,
                 value: networkMonitor.currentSpeed.formattedUpload,
-                icon: "arrow.up.circle.fill",
-                color: .green
+                icon: "arrow.up",
+                color: PopoverVisualStyle.healthy
             )
         }
+        .padding(.vertical, 9)
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.top, 6)
     }
 
     private func speedValue(title: String, value: String, icon: String, color: Color) -> some View {
         VStack(spacing: 3) {
             Label(title, systemImage: icon)
-                .font(.system(size: 9))
-                .foregroundColor(.secondary)
+                .font(PopoverVisualStyle.Typography.captionStrong)
+                .foregroundColor(color)
                 .symbolRenderingMode(.hierarchical)
                 .tint(color)
             Text(value)
-                .font(.system(size: 15, weight: .bold, design: .monospaced))
+                .font(PopoverVisualStyle.Typography.metric)
+                .foregroundColor(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
@@ -440,28 +441,28 @@ private struct ApplicationsTabView: View {
 
     private var trafficSelector: some View {
         HStack(spacing: 0) {
-            trafficButton(title: L10n.Tab.realtime, icon: "bolt.fill", tag: 0, color: .orange)
-            trafficButton(title: L10n.Tab.cumulative, icon: "chart.bar.fill", tag: 1, color: .blue)
+            trafficButton(title: L10n.Tab.realtime, icon: "bolt.fill", tag: 0)
+            trafficButton(title: L10n.Tab.cumulative, icon: "chart.bar.fill", tag: 1)
         }
-        .padding(2)
-        .frame(height: 28)
-        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(3)
+        .frame(height: 34)
+        .background(PopoverVisualStyle.controlFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
-    private func trafficButton(title: String, icon: String, tag: Int, color: Color) -> some View {
+    private func trafficButton(title: String, icon: String, tag: Int) -> some View {
         Button {
             selectedTrafficTab = tag
             if tag == 1 { processTrafficMonitor.requestCumulativeRefresh() }
         } label: {
             Label(title, systemImage: icon)
-                .font(.system(size: 10, weight: .semibold))
+                .font(PopoverVisualStyle.Typography.bodyStrong)
                 .foregroundColor(selectedTrafficTab == tag ? .primary : .secondary)
                 .symbolRenderingMode(.hierarchical)
-                .tint(color)
-                .frame(maxWidth: .infinity, minHeight: 24)
+                .tint(selectedTrafficTab == tag ? PopoverVisualStyle.warning : .secondary)
+                .frame(maxWidth: .infinity, minHeight: 28)
                 .background {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(selectedTrafficTab == tag ? Color.primary.opacity(0.14) : Color.clear)
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(selectedTrafficTab == tag ? PopoverVisualStyle.selectedFill : Color.clear)
                 }
         }
         .buttonStyle(.plain)
@@ -495,41 +496,35 @@ private struct MonitoringTabView: View {
     }
 
     private var networkFacts: some View {
-        VStack(spacing: 0) {
-            factRow("当前物理出口", value: statusPresentation.outletText, icon: "arrow.triangle.branch")
-            Divider().padding(.leading, 24)
-            factRow(
-                "Wi-Fi",
-                value: NetworkIdentityFormatter.wifiText(
-                    ssid: networkInfoProvider.wifiSSID,
-                    hideWiFiName: appConfig.hideWiFiName
-                ),
-                icon: "wifi"
-            )
-            Divider().padding(.leading, 24)
-            factRow("局域网地址", value: networkInfoProvider.localIP, icon: "pc", monospaced: true)
-            Divider().padding(.leading, 24)
-            factRow("DNS", value: dnsFacts?.dependency.displayName ?? "DNS 待检测", icon: "server.rack")
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                factTile("当前物理出口", value: statusPresentation.outletText, icon: "arrow.triangle.branch")
+                factTile(
+                    "Wi-Fi",
+                    value: NetworkIdentityFormatter.wifiText(
+                        ssid: networkInfoProvider.wifiSSID,
+                        hideWiFiName: appConfig.hideWiFiName
+                    ),
+                    icon: "wifi"
+                )
+            }
+            HStack(spacing: 12) {
+                factTile("局域网地址", value: networkInfoProvider.localIP, icon: "pc", monospaced: true)
+                factTile("DNS", value: dnsFacts?.dependency.displayName ?? "DNS 待检测", icon: "server.rack")
+            }
         }
-        .padding(.horizontal, 10)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
-    private func factRow(_ title: String, value: String, icon: String, monospaced: Bool = false) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: icon)
-                .font(.system(size: 10, weight: .medium))
+    private func factTile(_ title: String, value: String, icon: String, monospaced: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label(title, systemImage: icon)
+                .font(PopoverVisualStyle.Typography.caption)
                 .foregroundColor(.secondary)
-                .frame(width: 16)
-            Text(title)
-                .font(.system(size: 9))
-                .foregroundColor(.secondary)
-            Spacer()
             Text(value)
-                .font(.system(size: 9, weight: .medium, design: monospaced ? .monospaced : .default))
+                .font(monospaced ? PopoverVisualStyle.Typography.data : PopoverVisualStyle.Typography.bodyStrong)
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        .frame(minHeight: 30)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

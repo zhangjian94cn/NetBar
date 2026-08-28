@@ -20,6 +20,7 @@
 | 🌐 网络信息 | Wi-Fi 名称 + 本机 IP 地址 |
 | ⚡ Mac mini 链路 | 固定双端 IP、Wi-Fi 候选保网、Mini 上游自愈、故障自动回退及稳定 30 秒后自动切回（Direct Full） |
 | 🧭 四个顶层 Tab | 固定高度弹窗将 `出口 / Clash / 应用 / 监控` 分开，顶部持续显示端到端状态（Direct Full） |
+| 🎨 原生轻量界面 | 保留 macOS 材质与紧凑信息密度，出口、Clash、公网 IP 和 VPS 使用克制的业务色 |
 | 🖼 应用图标 | 自动识别进程对应的 macOS 应用图标 |
 | 🚀 开机自启 | 支持 Launch Agent 自动启动 |
 
@@ -32,6 +33,10 @@
 ### 固定高度四 Tab 弹窗
 
 ![出口、Clash、应用与监控四个顶层 Tab](screenshots/popover-tabs.png)
+
+### 深色模式
+
+![四个顶层 Tab 的深色模式](screenshots/popover-tabs-dark.png)
 
 ## 🔧 安装
 

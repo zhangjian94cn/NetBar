@@ -27,20 +27,15 @@ struct ClashModeTabView: View {
     }
 
     private var hero: some View {
-        HStack(alignment: .center, spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(healthColor.opacity(0.14))
-                    .frame(width: 34, height: 34)
-                Image(systemName: "shield.lefthalf.filled")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(healthColor)
-            }
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "shield.lefthalf.filled")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(healthColor)
             VStack(alignment: .leading, spacing: 2) {
                 Text(controller.snapshot.mode?.displayName ?? "正在检测 Clash")
-                    .font(.system(size: 15, weight: .bold))
+                    .font(PopoverVisualStyle.Typography.section)
                 Text(controller.snapshot.health.displayName)
-                    .font(.system(size: 9))
+                    .font(PopoverVisualStyle.Typography.caption)
                     .foregroundColor(.secondary)
             }
             Spacer()
@@ -59,31 +54,26 @@ struct ClashModeTabView: View {
             modeButton(.systemProxy, icon: "network")
             modeButton(.tunFull, icon: "point.3.connected.trianglepath.dotted")
         }
-        .padding(2)
-        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .padding(3)
+        .background(PopoverVisualStyle.controlFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func modeButton(_ mode: ClashOverlayMode, icon: String) -> some View {
         let selected = controller.snapshot.mode == mode
-        return Button {
+        return PopoverSegmentedOption(
+            title: mode.displayName,
+            icon: icon,
+            isSelected: selected,
+            isEnabled: !controller.isSwitching,
+            accent: PopoverVisualStyle.warning
+        ) {
             controller.switchMode(to: mode)
-        } label: {
-            Label(mode.displayName, systemImage: icon)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(selected ? .white : .primary)
-                .frame(maxWidth: .infinity, minHeight: 30)
-                .background {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(selected ? Color.indigo.opacity(0.88) : Color.clear)
-                }
         }
-        .buttonStyle(.plain)
-        .disabled(controller.isSwitching)
     }
 
     private var explanation: some View {
         Text(modeExplanation)
-            .font(.system(size: 9))
+            .font(PopoverVisualStyle.Typography.caption)
             .foregroundColor(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -98,20 +88,21 @@ struct ClashModeTabView: View {
             Divider().padding(.leading, 20)
             factRow("共存基线", value: controller.snapshot.coexistenceBaselineReady ? "完整" : "需要修复")
         }
-        .padding(.horizontal, 10)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .padding(.horizontal, 12)
+        .popoverGroup()
     }
 
     private func factRow(_ name: String, value: String) -> some View {
         HStack {
             Text(name)
-                .foregroundColor(.secondary)
+                .foregroundColor(PopoverVisualStyle.secondaryText)
             Spacer()
             Text(value)
                 .fontWeight(.medium)
+                .foregroundColor(PopoverVisualStyle.primaryText)
         }
-        .font(.system(size: 9))
-        .frame(minHeight: 29)
+        .font(PopoverVisualStyle.Typography.caption)
+        .frame(minHeight: 32)
     }
 
     private var diagnosticsDisclosure: some View {
@@ -126,10 +117,11 @@ struct ClashModeTabView: View {
                         .fontWeight(.medium)
                     Spacer()
                     Image(systemName: showsDiagnostics ? "chevron.down" : "chevron.right")
-                        .foregroundColor(.secondary)
+                        .foregroundColor(PopoverVisualStyle.secondaryText)
                 }
-                .font(.system(size: 10))
-                .frame(minHeight: 34)
+                .font(PopoverVisualStyle.Typography.body)
+                .foregroundColor(PopoverVisualStyle.primaryText)
+                .frame(minHeight: 38)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -143,16 +135,16 @@ struct ClashModeTabView: View {
                     diagnosticRow("ZCode 后台链路", ready: applicationFacts?.zcodeDiagnosticReady)
                     if let code = applicationFacts?.zcodeHTTPStatus {
                         Text("ZCode 匿名 HTTP 状态：\(code)（2xx–4xx 表示传输可达）")
-                            .font(.system(size: 8))
-                            .foregroundColor(.secondary)
+                            .font(PopoverVisualStyle.Typography.caption)
+                            .foregroundColor(PopoverVisualStyle.secondaryText)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
                 .padding(.vertical, 8)
             }
         }
-        .padding(.horizontal, 10)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .padding(.horizontal, 12)
+        .popoverGroup()
     }
 
     private func diagnosticRow(_ title: String, ready: Bool?) -> some View {
@@ -160,9 +152,9 @@ struct ClashModeTabView: View {
             Text(title)
             Spacer()
             Text(ready == true ? "可达" : (ready == false ? "不可达" : "待检测"))
-                .foregroundColor(ready == true ? .green : .orange)
+                .foregroundColor(ready == true ? PopoverVisualStyle.healthy : PopoverVisualStyle.warning)
         }
-        .font(.system(size: 9))
+        .font(PopoverVisualStyle.Typography.caption)
     }
 
     private func warningRow(_ reason: String) -> some View {
@@ -174,8 +166,10 @@ struct ClashModeTabView: View {
             Button("打开 Clash") { openClash() }
                 .buttonStyle(.link)
         }
-        .font(.system(size: 9))
-        .foregroundColor(.orange)
+        .font(PopoverVisualStyle.Typography.caption)
+        .foregroundColor(PopoverVisualStyle.warning)
+        .padding(10)
+        .background(PopoverVisualStyle.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private var modeExplanation: String {
@@ -191,9 +185,9 @@ struct ClashModeTabView: View {
 
     private var healthColor: Color {
         switch controller.snapshot.health {
-        case .ready: return .green
+        case .ready: return PopoverVisualStyle.healthy
         case .switching: return .secondary
-        case .unavailable, .configurationDrift, .degraded: return .orange
+        case .unavailable, .configurationDrift, .degraded: return PopoverVisualStyle.warning
         }
     }
 
