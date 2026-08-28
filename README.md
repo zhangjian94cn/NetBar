@@ -130,7 +130,7 @@ Direct Full 版本把网络控制拆成两个 Tab。顶部总览固定显示在�
 
 首次初始化需要在 Mac mini 终端和本机各完成一次管理员授权。Mini Helper v5 仅允许 `status`、`prepare`、`migrate`、`rollback`、`finalize-rollback`、`report-egress-failure` 六个固定无参数命令；迁移先建立并验证管理地址 SSH，再切换 DHCP，回滚先恢复并验证旧链路，最后移除管理别名。本机 Route Safety Helper v4 仅允许固定无参数命令，并持续补回管理别名。NetBar 不接收或保存管理员密码。SSH 连接目标改为 `10.254.254.1` 后仍严格复用 `192.168.2.1` 的 `HostKeyAlias`，不自动接受未知或变化的密钥。
 
-Mac mini 的唯一上游是内置以太网 `en0`。`en0` 或 Internet Sharing 断开时，`10.254.254.1/.2` 管理链路仍用于 SSH、VNC、健康检查和恢复，MacBook 自动回退 Wi-Fi。Mini Guardian 不重写 `en0`、公司 DNS、NAT 或 DHCP；它只维护管理别名、观察 Apple 数据面，并在共享意图仍开启时受限重启原生服务。共享总开关关闭时状态为 `manual_pending`，必须在“系统设置 → 通用 → 共享 → 互联网共享”中人工开启。
+Mac mini 的唯一上游是内置以太网 `en0`。`en0` 或 Internet Sharing 断开时，`10.254.254.1/.2` 管理链路仍用于 SSH、VNC、健康检查和恢复，MacBook 自动回退 Wi-Fi。Mini Guardian 不重写 `en0`、公司 DNS、NAT 或 DHCP；它只维护管理别名、观察 Apple 数据面，并在共享意图和 Apple DHCP 均有效时受限重启原生服务。共享总开关关闭，或 `/etc/bootpd.plist` 明确显示 Apple DHCP 未启用时，状态为 `manual_pending`；后者必须在“系统设置 → 通用 → 共享 → 互联网共享”中关闭并重新开启，Guardian 不会循环重拉进程或直接改写 Apple 私有配置。
 
 Guardian 的 `ready` 现在必须同时满足 `en0` 载波、预期地址与路由、共享拓扑、Network Sharing 进程、`net.inet.ip.forwarding=1` 和 Mini 自身上游探测。Helper 与 Guardian 对同一事实不一致时显示“共享状态证据冲突”；进程 running 但 forwarding=0 时显示“Mac mini 上游正常 · 共享转发未就绪”，期间保持 Wi-Fi。较新的 macOS/SIP 不允许对该关键系统服务执行 `launchctl kickstart -k`，因此 Guardian 会严格验证 `/usr/libexec/InternetSharing` 的进程身份，终止旧实例并等待其完全退出，再使用不带 `-k` 的启动请求让 launchd 重建原生服务；它不直接强写 forwarding。若公司 VPN 随即再次关闭 forwarding，Guardian 进入退避并继续保持 Wi-Fi，不与 VPN 循环争夺。`forwarding=1` 只是必要条件，绿色仍要求 MacBook 下游和切换后系统/Clash 数据面共同验证。
 

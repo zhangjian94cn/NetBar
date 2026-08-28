@@ -18,6 +18,7 @@ ARP=/usr/sbin/arp
 
 PROFILE=/Library/Application\ Support/NetBar/MacMiniLinkProfile.plist
 NAT_PROFILE=/Library/Preferences/SystemConfiguration/com.apple.nat.plist
+BOOTPD_PROFILE=/etc/bootpd.plist
 STATE_DIR=/Library/Application\ Support/NetBar/ThunderboltLink
 BACKUP_PLIST="$STATE_DIR/mini-network-backup-v5.plist"
 BACKUP_DNS="$STATE_DIR/mini-dns-backup-v5.txt"
@@ -185,6 +186,12 @@ sharing_intent_enabled() {
     [[ "$enabled" == true || "$enabled" == 1 ]]
 }
 
+dhcp_server_enabled() {
+    local enabled
+    enabled="$($PLUTIL -extract dhcp_enabled raw -o - "$BOOTPD_PROFILE" 2>/dev/null || true)"
+    [[ "$enabled" == true || "$enabled" == <1-> ]]
+}
+
 hotspot_ap_active() {
     "$SYSTEM_PROFILER" SPAirPortDataType 2>/dev/null | "$GREP" -q 'Network Type: Wi-Fi Internet Sharing'
 }
@@ -195,7 +202,7 @@ hotspot_client_observed() {
 
 emit_status() {
     local info router shared_ip upstream_active sharing_process_running forwarding_enabled
-    local sharing_configured sharing_intent hotspot_configured hotspot_active hotspot_client configured bridge_dhcp
+    local sharing_configured sharing_intent dhcp_server hotspot_configured hotspot_active hotspot_client configured bridge_dhcp
     local upstream_info sharing_output forwarding_value
     info="$($NETWORKSETUP -getinfo "$BRIDGE_SERVICE")"
     router="$(network_value "Router" "$info")"
@@ -211,6 +218,7 @@ emit_status() {
     [[ "${forwarding_value//$'\n'/}" == 1 ]] && forwarding_enabled=true || forwarding_enabled=false
     sharing_configuration_matches && sharing_configured=true || sharing_configured=false
     sharing_intent_enabled && sharing_intent=true || sharing_intent=false
+    dhcp_server_enabled && dhcp_server=true || dhcp_server=false
     sharing_devices_include en1 && hotspot_configured=true || hotspot_configured=false
     hotspot_ap_active && hotspot_active=true || hotspot_active=false
     hotspot_client_observed && hotspot_client=true || hotspot_client=false
@@ -235,7 +243,7 @@ emit_status() {
             [[ "$generation" == <-> ]] && guardian_generation="$generation"
         fi
     fi
-    print -r -- "{\"protocolVersion\":5,\"configured\":$configured,\"serviceIPv4\":$(json_optional_string "$shared_ip"),\"gatewayIPv4\":$(json_optional_string "$router"),\"managementIPv4\":\"$MANAGEMENT_MINI_ADDRESS\",\"managementPeerIPv4\":\"$MANAGEMENT_LOCAL_ADDRESS\",\"bridgeUsesDHCP\":$bridge_dhcp,\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"sharingIntentEnabled\":$sharing_intent,\"hotspotAPConfigured\":$hotspot_configured,\"hotspotAPActive\":$hotspot_active,\"hotspotClientObserved\":$hotspot_client,\"sharingProcessRunning\":$sharing_process_running,\"forwardingEnabled\":$forwarding_enabled,\"guardianObservedAt\":$guardian_observed_at,\"guardianGeneration\":$guardian_generation,\"evidenceConflict\":$evidence_conflict,\"guardian\":$guardian}"
+    print -r -- "{\"protocolVersion\":5,\"configured\":$configured,\"serviceIPv4\":$(json_optional_string "$shared_ip"),\"gatewayIPv4\":$(json_optional_string "$router"),\"managementIPv4\":\"$MANAGEMENT_MINI_ADDRESS\",\"managementPeerIPv4\":\"$MANAGEMENT_LOCAL_ADDRESS\",\"bridgeUsesDHCP\":$bridge_dhcp,\"upstreamDevice\":\"$UPSTREAM_DEVICE\",\"upstreamActive\":$upstream_active,\"sharingConfigured\":$sharing_configured,\"sharingIntentEnabled\":$sharing_intent,\"dhcpServerEnabled\":$dhcp_server,\"hotspotAPConfigured\":$hotspot_configured,\"hotspotAPActive\":$hotspot_active,\"hotspotClientObserved\":$hotspot_client,\"sharingProcessRunning\":$sharing_process_running,\"forwardingEnabled\":$forwarding_enabled,\"guardianObservedAt\":$guardian_observed_at,\"guardianGeneration\":$guardian_generation,\"evidenceConflict\":$evidence_conflict,\"guardian\":$guardian}"
 }
 
 wait_for_management_alias() {
