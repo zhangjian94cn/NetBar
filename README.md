@@ -175,6 +175,8 @@ log show --last 1h --style compact --predicate 'subsystem == "com.zjah.NetBarMin
 
 它们分别验证远端 Helper/Guardian/`launchctl`/`sysctl` 一致性、完整 Mini 下游路径，以及脱敏故障轨迹能否收敛而不重复报告或刷回退日志。
 
+Direct Full 当前同时运行只读 `NetworkPolicyMachine` 影子协调器。SCDynamicStore 与 CoreWLAN 的连续事件先合并 250 ms，再形成一个 generation；Mini Guardian 等远端证据发生实质变化也会形成新 generation。影子协调器只把 `network_policy_shadow_observation`、`network_policy_shadow_generation` 和 `network_policy_shadow_proposal` 写入上述 JSONL，不执行 proposal。必须完成覆盖插拔、睡眠、Mini VPN、Wi-Fi 变化和两种 Clash 模式的 24 小时审阅后，才允许它接管真实路由。
+
 自动网络策略不关闭或重启 Clash、aTrust、Tailscale、Amnezia 等 VPN，也不修改 Clash 模式。只有用户在 `Clash 模式` Tab 点击时才执行上述窄事务。VPN 开启时公网 IP 仍可能显示 VPN 出口；卡片展示的是 VPN 下层的物理出口。系统设置即使仍显示黄色“未知状态”，也不影响 NetBar 根据载波、IP、网关、绑定 TCP/TLS 和默认路由给出的实测结果。
 
 App Store Lite 受沙盒限制，不包含网络模式切换、SSH 写入、初始化按钮、Mini Helper 或 Clash 模式写入能力。

@@ -14,9 +14,13 @@ class MonitorCoordinator {
     let vpsTrafficMonitor = VPSTrafficMonitor()
     private let egressIdentityRefreshScheduler = DebouncedRefreshScheduler(delay: 3)
     lazy var clashOverlayModeController = ClashOverlayModeController()
-    lazy var networkModeController = NetworkModeController(onNetworkChanged: { [weak self] in
-        self?.refreshAfterNetworkModeChange()
-    })
+    private lazy var networkPolicyShadow = NetworkPolicyShadowCoordinator()
+    lazy var networkModeController = NetworkModeController(
+        policyShadow: networkPolicyShadow,
+        onNetworkChanged: { [weak self] in
+            self?.refreshAfterNetworkModeChange()
+        }
+    )
 
     /// 所有遵循 MonitorProtocol 的服务（按启动顺序）
     private var allMonitors: [MonitorProtocol] {

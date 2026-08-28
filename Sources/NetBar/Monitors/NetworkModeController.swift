@@ -782,12 +782,14 @@ final class NetworkModeController: ObservableObject {
     private let eventLogger: NetworkEventLogging
     private let candidateStore: WiFiCandidatePreferenceStore
     private let networkChangeObserver: NetworkChangeObserver
+    private let policyShadow: NetworkPolicyShadowCoordinator?
     private let userDefaults: UserDefaults
     private let now: () -> Date
     private let sleeper: (TimeInterval) -> Void
     private let workQueue = DispatchQueue(label: "com.zjah.NetBar.network-mode", qos: .utility)
     private let onNetworkChanged: () -> Void
     private var policyTimer: Timer?
+    private var policyEventWorkItem: DispatchWorkItem?
     private var policyCheckInFlight = false
     private var policyCheckPending = false
     private var fallbackFailureMessage: String?
@@ -817,6 +819,7 @@ final class NetworkModeController: ObservableObject {
         mihomoRecovery: MihomoRouteRecovering = LiveMihomoRouteRecovery(),
         eventLogger: NetworkEventLogging = NetworkEventLogger.shared,
         networkChangeObserver: NetworkChangeObserver = NetworkChangeObserver(),
+        policyShadow: NetworkPolicyShadowCoordinator? = nil,
         userDefaults: UserDefaults = .standard,
         now: @escaping () -> Date = Date.init,
         sleeper: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
@@ -834,6 +837,7 @@ final class NetworkModeController: ObservableObject {
         self.mihomoRecovery = mihomoRecovery
         self.eventLogger = eventLogger
         self.networkChangeObserver = networkChangeObserver
+        self.policyShadow = policyShadow
         self.candidateStore = WiFiCandidatePreferenceStore(defaults: userDefaults)
         self.userDefaults = userDefaults
         self.now = now
@@ -873,8 +877,9 @@ final class NetworkModeController: ObservableObject {
         refreshWiFiCandidates()
         wifiCandidateController.startMonitoring { [weak self] in
             DispatchQueue.main.async {
-                self?.refreshWiFiCandidates()
-                self?.performPolicyCheck(force: true)
+                guard let self else { return }
+                self.refreshWiFiCandidates()
+                self.schedulePolicyCheckAfterNetworkChange(.other)
             }
         }
         networkChangeObserver.start { [weak self] event in
@@ -890,9 +895,7 @@ final class NetworkModeController: ObservableObject {
                 if let message = reaction.message {
                     self.policyMessage = message
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + reaction.delay) { [weak self] in
-                    self?.performPolicyCheck(force: true)
-                }
+                self.schedulePolicyCheckAfterNetworkChange(event, fallbackDelay: reaction.delay)
             }
         }
         guard policyTimer == nil else { return }
@@ -907,8 +910,11 @@ final class NetworkModeController: ObservableObject {
     func stopPolicyMonitoring() {
         policyTimer?.invalidate()
         policyTimer = nil
+        policyEventWorkItem?.cancel()
+        policyEventWorkItem = nil
         wifiCandidateController.stopMonitoring()
         networkChangeObserver.stop()
+        if let policyShadow { Task { await policyShadow.stop() } }
     }
 
     func runPolicyCheckNow() {
@@ -1100,6 +1106,8 @@ final class NetworkModeController: ObservableObject {
 
     private func performPolicyCheck(force: Bool = false) {
         guard !isSwitching, !isProvisioning else { return }
+        let shadowCandidates = wifiCandidates
+        let shadowUnderlayVerified = currentUnderlayVerified
         workQueue.async { [weak self] in
             guard let self else { return }
             if force { self.nextWiFiFallbackAttemptAt = nil }
@@ -1125,6 +1133,16 @@ final class NetworkModeController: ObservableObject {
             }
             guard let current = try? self.provider.readSnapshot() else { return }
             let checkDate = self.now()
+            if let policyShadow = self.policyShadow {
+                let observation = NetworkPolicyShadowObservation.make(
+                    snapshot: current,
+                    preference: preference,
+                    currentUnderlayVerified: shadowUnderlayVerified,
+                    wifiCandidates: shadowCandidates,
+                    observedAt: checkDate
+                )
+                Task { await policyShadow.observe(observation) }
+            }
             _ = self.rebindMihomoUnderlayIfNeeded(snapshot: current, previousHint: nil, at: checkDate)
             guard preference == .miniPreferred else { return }
             self.policyState.clearExpiredCircuitBreaker(at: checkDate)
@@ -1141,6 +1159,25 @@ final class NetworkModeController: ObservableObject {
                 self.handleUnhealthySnapshot(current, at: checkDate, helperAvailable: helperAvailable)
             }
         }
+    }
+
+    private func schedulePolicyCheckAfterNetworkChange(
+        _ event: NetworkChangeEvent,
+        fallbackDelay: TimeInterval = 0.25
+    ) {
+        guard let policyShadow else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + fallbackDelay) { [weak self] in
+                self?.performPolicyCheck(force: true)
+            }
+            return
+        }
+        Task { await policyShadow.networkDidChange(event) }
+        policyEventWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.performPolicyCheck(force: true)
+        }
+        policyEventWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
     }
 
     private func handleHealthySnapshot(
