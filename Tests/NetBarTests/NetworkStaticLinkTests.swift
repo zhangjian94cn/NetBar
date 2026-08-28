@@ -82,7 +82,7 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertEqual(snapshot.gatewayState, .unknown)
     }
 
-    func testLiveSnapshotTreatsMissingMiniDNSAsNotProvisioned() throws {
+    func testLiveSnapshotDoesNotCoupleFixedLinkReadinessToDNSChoice() throws {
         let runner = SnapshotCommandRunner(
             bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
             router: "192.168.2.1",
@@ -91,8 +91,12 @@ final class NetworkStaticLinkTests: XCTestCase {
 
         let snapshot = try LiveNetworkModeSystemProvider(commandRunner: runner).readSnapshot()
 
-        XCTAssertEqual(snapshot.linkState, .addressNotProvisioned)
-        XCTAssertEqual(snapshot.gatewayState, .unknown)
+        XCTAssertEqual(snapshot.linkState, .connected)
+        XCTAssertEqual(snapshot.gatewayState, .ready)
+        XCTAssertFalse(runner.invocations.contains { invocation in
+            invocation.executable == "/usr/sbin/networksetup" &&
+                invocation.arguments.first == "-getdnsservers"
+        })
     }
 
     func testLiveSnapshotReportsNoCarrierAndUnreachablePeer() throws {
