@@ -401,6 +401,8 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(helperSource.contains("SLEEP=/bin/sleep"))
         XCTAssertTrue(helperSource.contains("wait_for_management_alias"))
         XCTAssertTrue(helperSource.contains("for attempt in {1..10}"))
+        XCTAssertTrue(helperSource.contains("if ($4 != \"bridge0\")"))
+        XCTAssertFalse(helperSource.contains("if ($NF != \"bridge0\")"))
     }
 
     func testGuardianUsesDynamicStoreAndNeverRewritesDNSOrAlternativeUpstreams() throws {

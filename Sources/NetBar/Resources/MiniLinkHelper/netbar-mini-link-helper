@@ -108,7 +108,9 @@ check_management_conflict() {
     [[ -z "$conflicts" ]] || fail "management subnet conflict"
     route_conflicts="$($NETSTAT -rn -f inet | "$AWK" '
         $1 == "10.254.254/30" || $1 == "10.254.254.0/30" || $1 == "10.254.254" {
-            if ($NF != "bridge0") print $0
+            # macOS always places Netif in column 4. The optional Expire
+            # column can contain "!", so $NF is not a stable interface field.
+            if ($4 != "bridge0") print $0
         }
     ')"
     [[ -z "$route_conflicts" ]] || fail "management subnet route conflict"
