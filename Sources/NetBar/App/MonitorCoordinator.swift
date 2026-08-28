@@ -13,6 +13,7 @@ class MonitorCoordinator {
     let trafficStore = TrafficStore()
     let vpsTrafficMonitor = VPSTrafficMonitor()
     private let egressIdentityRefreshScheduler = DebouncedRefreshScheduler(delay: 3)
+    lazy var clashOverlayModeController = ClashOverlayModeController()
     lazy var networkModeController = NetworkModeController(onNetworkChanged: { [weak self] in
         self?.refreshAfterNetworkModeChange()
     })
@@ -83,6 +84,7 @@ class MonitorCoordinator {
     private func refreshAfterNetworkModeChange() {
         proxyDetector.checkProxySettings()
         networkInfoProvider.refresh()
+        clashOverlayModeController.refresh()
         scheduleEgressIPRefreshAfterIdentityChange()
     }
 }

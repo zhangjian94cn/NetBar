@@ -26,6 +26,7 @@ enum MihomoClient {
         let mixedPort: Int
         let tunEnabled: Bool
         let ipv6Enabled: Bool
+        let routeExclusions: Set<String>
     }
 
     // MARK: - Public API
@@ -65,8 +66,35 @@ enum MihomoClient {
         return RuntimeConfiguration(
             mixedPort: response.mixedPort,
             tunEnabled: response.tun?.enable ?? false,
-            ipv6Enabled: response.ipv6 ?? false
+            ipv6Enabled: response.ipv6 ?? false,
+            routeExclusions: Set(
+                (response.tun?.routeExcludeAddress ?? []) +
+                (response.tun?.inet4RouteExcludeAddress ?? [])
+            )
         )
+    }
+
+    static func setTunEnabled(_ enabled: Bool) -> Bool {
+        #if APP_STORE
+        return false
+        #else
+        guard FileManager.default.fileExists(atPath: socketPath),
+              let body = try? JSONSerialization.data(withJSONObject: ["tun": ["enable": enabled]]),
+              let bodyString = String(data: body, encoding: .utf8) else {
+            return false
+        }
+        var arguments = [
+            "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+            "--max-time", "4", "-X", "PATCH",
+            "--unix-socket", socketPath,
+            "-H", "Content-Type: application/json"
+        ]
+        if !secret.isEmpty { arguments += ["-H", "Authorization: Bearer \(secret)"] }
+        arguments += ["--data-binary", bodyString, controllerEndpoint(path: "/configs", useUnixHost: true)]
+        let result = runCurlCommand(arguments: arguments)
+        let status = Int(result.output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        return result.exitCode == 0 && status == 204
+        #endif
     }
 
     static func probeHTTPS() -> Bool {
@@ -221,7 +249,17 @@ enum MihomoClient {
     }
 
     private struct RuntimeConfigurationResponse: Decodable {
-        struct Tun: Decodable { let enable: Bool? }
+        struct Tun: Decodable {
+            let enable: Bool?
+            let routeExcludeAddress: [String]?
+            let inet4RouteExcludeAddress: [String]?
+
+            enum CodingKeys: String, CodingKey {
+                case enable
+                case routeExcludeAddress = "route-exclude-address"
+                case inet4RouteExcludeAddress = "inet4-route-exclude-address"
+            }
+        }
         let mixedPort: Int
         let tun: Tun?
         let ipv6: Bool?

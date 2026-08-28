@@ -1,11 +1,12 @@
 # NetBar 网络策略上下文
 
-本文件统一 Direct Full 网络策略的领域术语。长期决策见 [2026-08-27 ADR](docs/2026-08-27-evidence-driven-network-policy-machine-adr.md)。
+本文件统一 Direct Full 网络策略的领域术语。长期决策见 [2026-08-27 状态机 ADR](docs/2026-08-27-evidence-driven-network-policy-machine-adr.md) 与 [2026-08-28 underlay/overlay ADR](docs/2026-08-28-underlay-overlay-control-boundary-adr.md)。
 
 ## 不变量
 
 - 连通性优先于偏好；Mini 是默认首选，但不能为了满足偏好破坏当前健康路径。
-- NetBar 不开关 Wi-Fi，不修改 Mini 公司 DNS，不接管 Apple NAT/PF，不退出、重启、重载或改写 Clash，也不操作其他 VPN/TUN。
+- NetBar 不开关 Wi-Fi，不修改 Mini 公司 DNS，不接管 Apple NAT/PF，不退出、重启或重载 Clash，也不操作其他 VPN/TUN。
+- 只有用户在 `Clash 模式` Tab 点击后，NetBar 才可事务性修改唯一顶层 `enable_tun_mode` 标量和对应 Mihomo runtime TUN；网络事件与出口切换无权改变该模式。
 - `utun` 成功不能证明底层物理出口；`forwarding=1` 也不能单独证明 MacBook 已能经 Mini 上网。
 - App Store Lite 不包含 SSH、Helper、自动路由或 Mihomo 写动作。
 
@@ -34,6 +35,7 @@
 
 - Mini Helper v4：只报告事实，或写入固定的下游失败标记；`apply/rollback` 只管理 Mini `bridge0` 固定地址。
 - Mini Guardian：唯一有权保守重应用 Mini `en0` 既定 Manual 地址以及重拉原生 Network Sharing。
-- Route Safety Helper：只管理 Wi-Fi 与 `bridge0` 的相对服务顺序；未来 v2 通过事务日志 commit/rollback。
+- Route Safety Helper v2：只管理 Wi-Fi 与 `bridge0` 的相对服务顺序；每次写入必须以 commit、rollback 或 manual recovery 结束。
 - NetBar 策略机：读取事实、决定候选与事务，不直接持有管理员密码。
-- Mihomo：物理出口确实变化时每个 route generation 最多清理一次现有连接；不改配置或 TUN 状态。
+- Clash Overlay Controller：只响应用户模式命令；拥有 `enable_tun_mode` 与 runtime TUN 的窄写权限，并负责用户级事务回滚。
+- Mihomo underlay 协作：物理出口确实变化时每个 route generation 最多清理一次现有连接；不改配置或 TUN 状态。

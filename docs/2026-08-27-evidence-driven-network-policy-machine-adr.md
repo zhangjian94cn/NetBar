@@ -1,7 +1,7 @@
 # ADR: 证据驱动的端到端网络策略状态机
 
 - 日期: 2026-08-27
-- 状态: accepted（分阶段启用）
+- 状态: partially superseded（状态机与影子门禁保留；Clash 完全只读边界由 2026-08-28 ADR 取代）
 - 范围: NetBar Direct Full / Mini 共享自愈、MacBook 路由事务与数据面验证
 - 相关源码: [NetworkModeController.swift](../Sources/NetBar/Monitors/NetworkModeController.swift)、[MacMiniLinkProfile.swift](../Sources/NetBar/Monitors/MacMiniLinkProfile.swift)、[Mini Guardian](../Sources/NetBarMiniNetworkGuardian/main.swift)、[Guardian 恢复规划器](../Sources/NetBarMiniNetworkGuardianSupport/RecoveryPlanner.swift)、[Mini Helper](../Sources/NetBar/Resources/MiniLinkHelper/netbar-mini-link-helper)、[诊断命令](../scripts/network-readiness-diagnostics.sh)
 - 取代范围: [Mac mini 优先路由 ADR](2026-08-26-mac-mini-preferred-route-self-healing-adr.md) 中“共享进程运行即可支撑 ready”的判断，以及 [候选故障转移 ADR](2026-08-26-connectivity-first-candidate-failover-adr.md) 中由大型控制器直接交织证据、动作和 UI 的实现选择
@@ -55,6 +55,7 @@ Guardian 的修复退避与观察节奏相互独立：60 秒、5 分钟和 15 �
 - 限制：若公司 VPN 在原生共享重建后再次关闭 forwarding，Guardian 进入退避，MacBook 保持 Wi-Fi；NetBar 不循环强写 forwarding 与公司 VPN 对抗。
 - 限制：持续物理无载波和所有 Wi-Fi 候选不可用时，软件只能报告离线，不能制造连通性。
 - 校正：公网 ICMP 只作为可选遥测，不再作为 Mini 或下游 readiness 的决定性证据；原因与现场对照见 [2026-08-28 证据校正](2026-08-28-underlay-evidence-correction.md)。
+- 边界更新：underlay 与 overlay 拆分、用户手动 TUN 事务及 Route Helper v2 见 [2026-08-28 underlay/overlay ADR](2026-08-28-underlay-overlay-control-boundary-adr.md)。
 
 ## Verification and Rollout
 

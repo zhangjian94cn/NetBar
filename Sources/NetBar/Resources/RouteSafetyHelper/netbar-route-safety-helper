@@ -8,18 +8,20 @@ GREP=/usr/bin/grep
 MKDIR=/bin/mkdir
 CHMOD=/bin/chmod
 SLEEP=/bin/sleep
+RM=/bin/rm
 
 STATE_DIR=/Library/Application\ Support/NetBar/RouteSafety
 BACKUP_ORDER="$STATE_DIR/service-order-backup.txt"
+PENDING_TARGET="$STATE_DIR/pending-target.txt"
 
 fail() {
     print -u2 -- "$1"
     exit 1
 }
 
-[[ "$#" -eq 1 ]] || fail "usage: netbar-route-safety-helper status|prefer-wifi|prefer-mini|rollback"
+[[ "$#" -eq 1 ]] || fail "usage: netbar-route-safety-helper status|prefer-wifi|prefer-mini|commit|rollback"
 case "$1" in
-    status|prefer-wifi|prefer-mini|rollback) ACTION="$1" ;;
+    status|prefer-wifi|prefer-mini|commit|rollback) ACTION="$1" ;;
     *) fail "unsupported command" ;;
 esac
 
@@ -87,16 +89,43 @@ mode_from_order() {
 }
 
 emit_status() {
-    local mode
+    local mode pending=false pending_target=''
     mode="$(mode_from_order)"
-    print -r -- "{\"protocolVersion\":1,\"mode\":\"$mode\",\"wifiService\":\"$(json_escape "$WIFI_SERVICE")\",\"wifiDevice\":\"$(json_escape "$WIFI_DEVICE")\",\"miniService\":\"$(json_escape "$MINI_SERVICE")\",\"backupAvailable\":$([[ -r "$BACKUP_ORDER" ]] && print true || print false)}"
+    if [[ -r "$BACKUP_ORDER" && -r "$PENDING_TARGET" ]]; then
+        pending=true
+        pending_target="$(<"$PENDING_TARGET")"
+    fi
+    print -r -- "{\"protocolVersion\":2,\"mode\":\"$mode\",\"wifiService\":\"$(json_escape "$WIFI_SERVICE")\",\"wifiDevice\":\"$(json_escape "$WIFI_DEVICE")\",\"miniService\":\"$(json_escape "$MINI_SERVICE")\",\"pendingTransaction\":$pending,\"pendingTarget\":\"$(json_escape "$pending_target")\"}"
 }
 
 save_backup() {
+    [[ ! -e "$BACKUP_ORDER" && ! -e "$PENDING_TARGET" ]] || fail "pending transaction requires commit or rollback"
     "$MKDIR" -p "$STATE_DIR"
     "$CHMOD" 700 "$STATE_DIR"
     current_order > "$BACKUP_ORDER"
     "$CHMOD" 600 "$BACKUP_ORDER"
+}
+
+clear_transaction() {
+    "$RM" -f "$BACKUP_ORDER" "$PENDING_TARGET"
+}
+
+rollback_pending() {
+    [[ -r "$BACKUP_ORDER" ]] || fail "backup missing"
+    local -a original
+    local expected wifi_index=0 mini_index=0 index=0 name
+    original=("${(@f)$(<"$BACKUP_ORDER")}")
+    for name in "${original[@]}"; do
+        (( index += 1 ))
+        [[ "$name" == "$WIFI_SERVICE" ]] && wifi_index=$index
+        [[ "$name" == "$MINI_SERVICE" ]] && mini_index=$index
+    done
+    (( wifi_index > 0 && mini_index > 0 )) || fail "backup missing required services"
+    expected=wifi
+    (( mini_index < wifi_index )) && expected=mini
+    "$NETWORKSETUP" -ordernetworkservices "${original[@]}"
+    verify_route "$expected" || fail "manualRecoveryRequired"
+    clear_transaction
 }
 
 apply_mode() {
@@ -154,19 +183,25 @@ case "$ACTION" in
         target=wifi
         [[ "$ACTION" == "prefer-mini" ]] && target=mini
         save_backup
+        print -r -- "$target" > "$PENDING_TARGET"
+        "$CHMOD" 600 "$PENDING_TARGET"
         if ! apply_mode "$target" || ! verify_route "$target"; then
-            if [[ -r "$BACKUP_ORDER" ]]; then
-                original=("${(@f)$(<"$BACKUP_ORDER")}")
-                "$NETWORKSETUP" -ordernetworkservices "${original[@]}" || fail "manualRecoveryRequired"
-            fi
+            rollback_pending
             fail "route verification failed; original order restored"
         fi
         emit_status
         ;;
+    commit)
+        [[ -r "$PENDING_TARGET" && -r "$BACKUP_ORDER" ]] || fail "pending transaction missing"
+        target="$(<"$PENDING_TARGET")"
+        [[ "$target" == "wifi" || "$target" == "mini" ]] || fail "invalid pending target"
+        [[ "$(mode_from_order)" == "$target" ]] || fail "pending target no longer matches service order"
+        verify_route "$target" || fail "pending target route verification failed"
+        clear_transaction
+        emit_status
+        ;;
     rollback)
-        [[ -r "$BACKUP_ORDER" ]] || fail "backup missing"
-        original=("${(@f)$(<"$BACKUP_ORDER")}")
-        "$NETWORKSETUP" -ordernetworkservices "${original[@]}"
+        rollback_pending
         emit_status
         ;;
 esac

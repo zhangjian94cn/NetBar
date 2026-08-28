@@ -18,12 +18,15 @@ struct RouteSafetyHelperStatus: Codable, Equatable {
     let wifiService: String
     let wifiDevice: String
     let miniService: String
-    let backupAvailable: Bool
+    let pendingTransaction: Bool
+    let pendingTarget: String
 }
 
 protocol RouteSafetyControlling {
     func status() -> RouteSafetyHelperStatus?
     func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult
+    func commit() -> NetworkModeCommandResult
+    func rollback() -> NetworkModeCommandResult
     func openInstaller() -> NetworkModeCommandResult
 }
 
@@ -31,6 +34,12 @@ protocol RouteSafetyControlling {
 final class LiveRouteSafetyController: RouteSafetyControlling {
     func status() -> RouteSafetyHelperStatus? { nil }
     func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult {
+        .init(exitCode: 1, standardOutput: "", standardError: "App Store Lite 不支持自动路由")
+    }
+    func commit() -> NetworkModeCommandResult {
+        .init(exitCode: 1, standardOutput: "", standardError: "App Store Lite 不支持自动路由")
+    }
+    func rollback() -> NetworkModeCommandResult {
         .init(exitCode: 1, standardOutput: "", standardError: "App Store Lite 不支持自动路由")
     }
     func openInstaller() -> NetworkModeCommandResult {
@@ -56,7 +65,7 @@ final class LiveRouteSafetyController: RouteSafetyControlling {
         guard result.succeeded,
               let data = result.standardOutput.data(using: .utf8),
               let status = try? JSONDecoder().decode(RouteSafetyHelperStatus.self, from: data),
-              status.protocolVersion == 1 else {
+              status.protocolVersion == 2 else {
             return nil
         }
         return status
@@ -65,6 +74,10 @@ final class LiveRouteSafetyController: RouteSafetyControlling {
     func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult {
         runHelper(mode == .macMiniGateway ? "prefer-mini" : "prefer-wifi")
     }
+
+    func commit() -> NetworkModeCommandResult { runHelper("commit") }
+
+    func rollback() -> NetworkModeCommandResult { runHelper("rollback") }
 
     func openInstaller() -> NetworkModeCommandResult {
         guard let installer = bundle.url(

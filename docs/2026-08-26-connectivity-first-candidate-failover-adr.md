@@ -1,7 +1,7 @@
 # ADR: 连通性优先的候选池故障转移与 Mihomo 无重启收敛
 
 - 日期: 2026-08-26
-- 状态: partially superseded（控制器内联决策由 2026-08-27 ADR 分阶段取代）
+- 状态: partially superseded（控制器内联决策由 2026-08-27 ADR 分阶段取代；Clash 模式边界由 2026-08-28 ADR 取代）
 - 范围: NetBar Direct Full / MacBook 物理出口候选与 Clash 数据面收敛
 - 相关源码: [NetworkConnectivity.swift](../Sources/NetBar/Monitors/NetworkConnectivity.swift)、[NetworkModeController.swift](../Sources/NetBar/Monitors/NetworkModeController.swift)、[NetworkRoutePolicy.swift](../Sources/NetBar/Monitors/NetworkRoutePolicy.swift)、[MihomoClient.swift](../Sources/NetBar/Monitors/MihomoClient.swift)、[NetworkModeCard.swift](../Sources/NetBar/Views/Components/NetworkModeCard.swift)
 - 部分取代: [2026-08-26-mac-mini-preferred-route-self-healing-adr.md](2026-08-26-mac-mini-preferred-route-self-healing-adr.md) 中固定 Mini/Wi-Fi 双候选、固定 10 秒检查和 VPN/TUN 完全只读的选择
@@ -34,11 +34,11 @@
 
 采用方案 4。主界面只提供“Mac mini 优先”和“Wi-Fi 优先”两个持久策略，不再暴露语义重叠的“固定 Wi-Fi”和“立即用 Wi-Fi”。候选集合为 CoreWLAN 发现的“附近可见、macOS 已保存、用户置顶”交集，并保持用户顺序。当前已连接且健康的白名单网络优先保留。CoreWLAN 扫描需要定位权限；权限被拒绝时不尝试其他 SSID。若系统同时隐藏当前 SSID 名称，但 `en0` 已经关联且具有 IPv4，则在候选池持续显示“当前已连接 Wi-Fi”，并允许把它作为不持久化的匿名候选；只调整服务顺序，不执行关联。普通关联通过参数数组调用 `/usr/sbin/networksetup -setairportnetwork en0 <SSID>`，不提供密码，也不读取钥匙串。
 
-`SCDynamicStore` 与 CoreWLAN 事件触发即时复检，10 秒定时器仅兜底。雷雳无载波、`bridge0`/固定地址丢失或 Peer 不可达是明确故障；先关联候选并验证 `en0` 的载波、IPv4 和网关。绑定直连 HTTPS 可用时采用 make-before-break。实机验证发现公司网络会同时阻断 Wi-Fi 与雷雳接口上绕过代理的 HTTPS，但系统与 Clash/TUN 数据面可用。Wi-Fi 要求实际物理出口为 `en0`、系统 HTTPS 与 Clash HTTPS 同时成功；Mini 切换前要求固定链路、绑定 `bridge0` 的公网 ICMP 至少一个目标成功及 Guardian `ready`，切换后要求实际物理出口为 `bridge0`、系统 HTTPS 与 Clash HTTPS 同时成功，否则恢复 Wi-Fi。任何显式链路或 Guardian 故障立即回退；仅有瞬时数据面失败时继续使用既有三轮确认，避免单次抖动误判。
+`SCDynamicStore` 与 CoreWLAN 事件触发即时复检，10 秒定时器仅兜底。雷雳无载波、`bridge0`/固定地址丢失或 Peer 不可达是明确故障；先关联候选并验证 Wi-Fi 设备的载波、IPv4 和网关。绑定直连 HTTPS 可用时采用 make-before-break。实机验证发现公司网络会阻断绕过代理的 HTTPS，因此直连失败只记录为 `directBypassRestricted`：Mini 切换资格由固定 Peer、Mini Guardian、本地 forwarding 和绑定 `bridge0` 的 TCP/TLS 事实组成，切换后再以实际物理路由、系统 HTTPS 与 Clash HTTPS 形成最终证明。公网 ICMP 仅为可选遥测，不再决定 ready/unavailable。
 
 回退后立即使用 Wi-Fi 保网；前 5 分钟每 10 秒探测 Mini，之后每 60 秒探测。Mini 绑定出口连续健康 30 秒且 Guardian `ready` 后自动切回。短期重复失败继续使用 10 分钟熔断。
 
-每次确认实际物理出口由 `bridge0` 切到 `en0`，或由 `en0` 切到 `bridge0`，NetBar 都通过 Mihomo Unix Socket 调用一次 `DELETE /connections`，随后等待并重新验证数据面；不能只在 Wi-Fi 直连成功但代理探测失败时才清理，因为公司网络可能禁止绕过代理直连，而且浏览器旧连接失败时新建的健康探测仍可能成功。相同物理出口的重复检查不清理连接；控制面暂不可用或清理失败时保留待处理转换，并按受控间隔重试。该 API 只关闭当前连接，使新拨号跟随新底层路由；NetBar 不调用重启、重载、TUN 开关或配置写接口。Clash 持久配置仍由 `dual-vpn-config` 独占治理。
+每次确认实际物理出口由 `bridge0` 切到 Wi-Fi，或由 Wi-Fi 切到 `bridge0`，NetBar 都通过 Mihomo Unix Socket 调用一次 `DELETE /connections`，随后等待并重新验证数据面；不能只在 Wi-Fi 直连成功但代理探测失败时才清理，因为公司网络可能禁止绕过代理直连，而且浏览器旧连接失败时新建的健康探测仍可能成功。相同物理出口的重复检查不清理连接；控制面暂不可用或清理失败时保留待处理转换，并按受控间隔重试。underlay 状态机不调用重启、重载、TUN 开关或配置写接口。用户手动 Clash 模式事务的窄写权限由 [2026-08-28 ADR](2026-08-28-underlay-overlay-control-boundary-adr.md) 单独定义。
 
 上述 Mini 分层证明替代“绑定接口直连 HTTPS 必须成功”的旧硬门，但不允许只凭 VPN/TUN 公网可达宣称 Mini 正常：切换前的 `bridge0` 绑定 ICMP 与 Guardian、切换后的服务顺序和实际物理默认路由仍是不可省略的证据。
 

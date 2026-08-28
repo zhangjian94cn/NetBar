@@ -120,6 +120,23 @@ struct WiFiCandidateSnapshot: Equatable {
     let savedSSIDs: Set<String>
     let visibleSSIDs: Set<String>
     let locationAccess: WiFiLocationAccessState
+    let interfaceName: String
+
+    init(
+        candidates: [NetworkAccessCandidate],
+        currentSSID: String?,
+        savedSSIDs: Set<String>,
+        visibleSSIDs: Set<String>,
+        locationAccess: WiFiLocationAccessState,
+        interfaceName: String = "en0"
+    ) {
+        self.candidates = candidates
+        self.currentSSID = currentSSID
+        self.savedSSIDs = savedSSIDs
+        self.visibleSSIDs = visibleSSIDs
+        self.locationAccess = locationAccess
+        self.interfaceName = interfaceName
+    }
 }
 
 enum WiFiAssociationResult: Equatable {
@@ -147,7 +164,8 @@ struct WiFiCandidateSelector {
         securedSSIDs: Set<String>? = nil,
         currentSSID: String?,
         locationAccess: WiFiLocationAccessState,
-        anonymousCurrentAssociated: Bool = false
+        anonymousCurrentAssociated: Bool = false,
+        interfaceName: String = "en0"
     ) -> [NetworkAccessCandidate] {
         let allowedVisible: Set<String>
         if locationAccess == .allowed {
@@ -172,7 +190,7 @@ struct WiFiCandidateSelector {
                 id: candidateID(for: ssid),
                 kind: .wifi,
                 displayName: ssid,
-                interfaceName: "en0",
+                interfaceName: interfaceName,
                 state: allowedVisible.contains(ssid) ? .localOnly : .unavailable,
                 signalStrength: visibleSignals[ssid],
                 isPinned: orderedPinned.contains(ssid),
@@ -180,7 +198,7 @@ struct WiFiCandidateSelector {
             )
         }
         if currentSSID == nil, anonymousCurrentAssociated {
-            candidates.insert(anonymousCurrentCandidate(), at: 0)
+            candidates.insert(anonymousCurrentCandidate(interfaceName: interfaceName), at: 0)
         }
         return candidates
     }
@@ -197,12 +215,12 @@ struct WiFiCandidateSelector {
         return "wifi-" + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
-    static func anonymousCurrentCandidate() -> NetworkAccessCandidate {
+    static func anonymousCurrentCandidate(interfaceName: String = "en0") -> NetworkAccessCandidate {
         NetworkAccessCandidate(
             id: anonymousCurrentID,
             kind: .wifi,
             displayName: "当前已连接 Wi-Fi",
-            interfaceName: "en0",
+            interfaceName: interfaceName,
             state: .localOnly,
             signalStrength: nil,
             isPinned: true,
@@ -344,9 +362,10 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
         guard let interface = client.interface() else {
             return .init(candidates: [], currentSSID: nil, savedSSIDs: [], visibleSSIDs: [], locationAccess: locationAccess)
         }
+        let interfaceName = interface.interfaceName ?? "en0"
         let profiles = interface.configuration()?.networkProfiles.array.compactMap { $0 as? CWNetworkProfile } ?? []
         let saved = Set(profiles.compactMap(\.ssid).filter { !$0.isEmpty })
-        let current = interface.ssid() ?? currentSSIDFromIPConfig()
+        let current = interface.ssid() ?? currentSSIDFromIPConfig(interfaceName: interfaceName)
         var visibleSignals: [String: Int] = [:]
         var securedSSIDs = Set<String>()
         if locationAccess == .allowed,
@@ -369,14 +388,16 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
             securedSSIDs: securedSSIDs,
             currentSSID: current,
             locationAccess: locationAccess,
-            anonymousCurrentAssociated: current == nil && hasActiveWiFiAddress()
+            anonymousCurrentAssociated: current == nil && hasActiveWiFiAddress(interfaceName: interfaceName),
+            interfaceName: interfaceName
         )
         return .init(
             candidates: candidates,
             currentSSID: current,
             savedSSIDs: saved,
             visibleSSIDs: Set(visibleSignals.keys),
-            locationAccess: locationAccess
+            locationAccess: locationAccess,
+            interfaceName: interfaceName
         )
         #endif
     }
@@ -386,9 +407,10 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
         return .unavailable
         #else
         guard !ssid.isEmpty else { return .unavailable }
+        let interfaceName = client.interface()?.interfaceName ?? "en0"
         let result = runner.run(
             executable: "/usr/sbin/networksetup",
-            arguments: Self.associationArguments(ssid: ssid)
+            arguments: Self.associationArguments(ssid: ssid, interfaceName: interfaceName)
         )
         guard result.succeeded else {
             let message = result.combinedMessage.lowercased()
@@ -398,7 +420,7 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
             return .failed(result.combinedMessage.isEmpty ? "Wi-Fi 关联失败" : result.combinedMessage)
         }
         for _ in 0..<12 {
-            if client.interface()?.ssid() == ssid || currentSSIDFromIPConfig() == ssid {
+            if client.interface()?.ssid() == ssid || currentSSIDFromIPConfig(interfaceName: interfaceName) == ssid {
                 return .connected
             }
             Thread.sleep(forTimeInterval: 1)
@@ -407,8 +429,8 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
         #endif
     }
 
-    static func associationArguments(ssid: String) -> [String] {
-        ["-setairportnetwork", "en0", ssid]
+    static func associationArguments(ssid: String, interfaceName: String = "en0") -> [String] {
+        ["-setairportnetwork", interfaceName, ssid]
     }
 
     func requestLocationAccess() {
@@ -446,8 +468,8 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
         }
     }
 
-    private func currentSSIDFromIPConfig() -> String? {
-        let result = runner.run(executable: "/usr/sbin/ipconfig", arguments: ["getsummary", "en0"])
+    private func currentSSIDFromIPConfig(interfaceName: String) -> String? {
+        let result = runner.run(executable: "/usr/sbin/ipconfig", arguments: ["getsummary", interfaceName])
         guard result.succeeded else { return nil }
         for line in result.standardOutput.components(separatedBy: .newlines) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -459,13 +481,13 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
         return nil
     }
 
-    private func hasActiveWiFiAddress() -> Bool {
-        let address = runner.run(executable: "/usr/sbin/ipconfig", arguments: ["getifaddr", "en0"])
+    private func hasActiveWiFiAddress(interfaceName: String) -> Bool {
+        let address = runner.run(executable: "/usr/sbin/ipconfig", arguments: ["getifaddr", interfaceName])
         guard address.succeeded,
               !address.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return false
         }
-        let interface = runner.run(executable: "/sbin/ifconfig", arguments: ["en0"])
+        let interface = runner.run(executable: "/sbin/ifconfig", arguments: [interfaceName])
         return interface.succeeded && interface.standardOutput.contains("status: active")
     }
 }
