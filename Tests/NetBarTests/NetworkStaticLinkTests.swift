@@ -148,7 +148,7 @@ final class NetworkStaticLinkTests: XCTestCase {
         })
     }
 
-    func testRemoteReadyCannotOverrideFailedMacBookBoundEgress() throws {
+    func testRemoteReadyQualifiesTransactionalTrialWhenDirectBypassIsRestricted() throws {
         let runner = SnapshotCommandRunner(
             bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
             router: "192.168.2.1",
@@ -158,7 +158,7 @@ final class NetworkStaticLinkTests: XCTestCase {
 
         let snapshot = try LiveNetworkModeSystemProvider(commandRunner: runner).readSnapshot()
 
-        XCTAssertEqual(snapshot.gatewayState, .boundEgressUnavailable)
+        XCTAssertEqual(snapshot.gatewayState, .ready)
     }
 
     func testLiveSnapshotUsesNWIPhysicalInterfaceWhenDefaultRouteIsUTUN() throws {

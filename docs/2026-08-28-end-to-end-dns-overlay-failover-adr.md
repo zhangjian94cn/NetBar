@@ -34,6 +34,8 @@
 
 对于已经是实际物理出口的路径，最新的 `activeVerified` 端到端证明优先于旧的“绑定接口直连 HTTPS 失败”分类。公司网络可能限制 direct bypass，而 TUN/代理数据面仍完整可用；这种情况下不得仅因 `boundEgressUnavailable`、远端状态暂时未知或证据冲突就拆掉当前健康路径。该优先级只适用于已经激活且物理接口一致的路径，不得用于资格确认一个尚未切入的候选；明确的载波、地址、sharing 或 forwarding 故障仍然 fail closed。
 
+当当前出口是 Wi-Fi 时，Mini Helper 的新鲜 `ready` 原始事实只把 Mini 提升为“可进行事务性试切”的候选；公司网络下的 direct-bypass 失败不能触发 `report-egress-failure`。下游失败报告只允许来自已经激活为实际物理出口的 Mini 路径，否则报告会驱动 Guardian 重拉本来健康的 Internet Sharing，形成“预检失败 → 重拉共享 → 证据冲突 → 再次预检”的反馈环。试切后仍必须用实际 `bridge0` 出口及系统、Clash、TUN 数据面验证，失败立即 rollback Wi-Fi。
+
 Mini 明确断线或下游共享失效时，只要 Wi-Fi 具备载波、IPv4 和网关，就允许提交 Wi-Fi 物理路由。DNS 或 overlay 未恢复时显示 `degradedActive`，不得回滚到已知失效的 Mini。若原路径仍健康，目标路径验证失败仍按原事务回滚。
 
 Route Safety Helper 升级到 v3，并增加唯一固定命令 `repair-wifi-dns`。它动态识别 Wi-Fi 服务，仅接受当前手动 DNS 中精确包含 `192.168.2.1` 且物理模式已经是 Wi-Fi 的场景；原值、服务身份与 SHA-256 保存到 root-only 事务记录。NetBar 验证自动 resolver 和数据面后 `commit`，否则 `rollback`；普通网络事件不调用该命令。
