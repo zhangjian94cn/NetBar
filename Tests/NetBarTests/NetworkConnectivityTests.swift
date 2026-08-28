@@ -172,6 +172,27 @@ final class NetworkConnectivityTests: XCTestCase {
         XCTAssertTrue(contents.contains(WiFiCandidateSelector.candidateID(for: "Corp Secret SSID")))
     }
 
+    func testEventLogSuppressesRepeatedIdenticalStateTransitions() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("netbar-log-dedupe-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("network-events.jsonl")
+        let logger = NetworkEventLogger(fileURL: file)
+
+        for _ in 0..<20 {
+            logger.record(event: "wifi_fallback_started", detail: "雷雳未连接", candidateSSID: nil)
+        }
+
+        XCTAssertTrue(waitUntil {
+            ((try? String(contentsOf: file, encoding: .utf8)) ?? "").contains("wifi_fallback_started")
+        })
+        let lines = try String(contentsOf: file, encoding: .utf8)
+            .split(separator: "\n")
+            .filter { $0.contains("wifi_fallback_started") }
+        XCTAssertEqual(lines.count, 1)
+    }
+
     private func waitUntil(timeout: TimeInterval = 1, predicate: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {

@@ -11,6 +11,7 @@ struct MacMiniLinkProfile: Codable, Equatable {
     let miniSSHUser: String
     let miniBonjourHost: String
     let probeTargets: [String]
+    let httpsProbeTargets: [String]
 
     static let defaults = MacMiniLinkProfile(
         localAddress: "192.168.2.2",
@@ -22,7 +23,11 @@ struct MacMiniLinkProfile: Codable, Equatable {
         miniUpstreamRouter: "10.32.143.1",
         miniSSHUser: "zhangjian",
         miniBonjourHost: "zhangjiandemac-mini.local",
-        probeTargets: ["1.1.1.1", "114.114.114.114"]
+        probeTargets: ["1.1.1.1", "114.114.114.114"],
+        httpsProbeTargets: [
+            "https://www.apple.com/library/test/success.html",
+            "https://cp.cloudflare.com/generate_204"
+        ]
     )
 
     static let bundled: MacMiniLinkProfile = {

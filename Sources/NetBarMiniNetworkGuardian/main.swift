@@ -9,6 +9,7 @@ private struct GuardianProfile: Decodable {
     let miniUpstreamSubnetMask: String
     let miniUpstreamRouter: String
     let probeTargets: [String]
+    let httpsProbeTargets: [String]
 }
 
 private enum GuardianState: String, Codable {
@@ -416,12 +417,18 @@ private final class MiniNetworkGuardian {
     }
 
     private func boundUpstreamIsReachable() -> Bool {
-        profile.probeTargets.contains { target in
-            runner.run("/sbin/ping", [
-                "-b", profile.miniUpstreamDevice,
-                "-S", profile.miniUpstreamAddress,
-                "-c", "1", "-W", "700", target
-            ]).succeeded
+        profile.httpsProbeTargets.contains { target in
+            let result = runner.run("/usr/bin/curl", [
+                "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+                "--connect-timeout", "2", "--max-time", "4", "--max-redirs", "0",
+                "--interface", profile.miniUpstreamDevice,
+                "--noproxy", "*", target
+            ])
+            guard result.succeeded,
+                  let status = Int(result.output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                return false
+            }
+            return target.contains("generate_204") ? status == 204 : status == 200
         }
     }
 

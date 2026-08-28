@@ -54,6 +54,7 @@ Guardian 的修复退避与观察节奏相互独立：60 秒、5 分钟和 15 �
 - 限制：`forwarding=1` 只是必要条件；最终可用性仍必须由 MacBook 下游和切换后系统/Clash HTTPS 证明。
 - 限制：若公司 VPN 在原生共享重建后再次关闭 forwarding，Guardian 进入退避，MacBook 保持 Wi-Fi；NetBar 不循环强写 forwarding 与公司 VPN 对抗。
 - 限制：持续物理无载波和所有 Wi-Fi 候选不可用时，软件只能报告离线，不能制造连通性。
+- 校正：公网 ICMP 只作为可选遥测，不再作为 Mini 或下游 readiness 的决定性证据；原因与现场对照见 [2026-08-28 证据校正](2026-08-28-underlay-evidence-correction.md)。
 
 ## Verification and Rollout
 

@@ -133,6 +133,16 @@ struct NetworkModeCommandResult: Equatable {
     }
 }
 
+extension NetworkModeCommandResult {
+    func isSuccessfulConnectivityHTTPResponse(for target: String) -> Bool {
+        guard succeeded,
+              let status = Int(standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return false
+        }
+        return target.contains("generate_204") ? status == 204 : status == 200
+    }
+}
+
 enum NetworkModeSystemError: LocalizedError {
     case commandFailed(String)
     case invalidServiceOrder
@@ -387,15 +397,16 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
         if linkState != .connected {
             gatewayState = .unknown
         } else {
-            let hasBoundEgress = profile.probeTargets.contains { target in
+            let hasBoundEgress = profile.httpsProbeTargets.contains { target in
                 commandRunner.run(
-                    executable: "/sbin/ping",
+                    executable: "/usr/bin/curl",
                     arguments: [
-                        "-b", thunderboltService?.device ?? "bridge0",
-                        "-S", profile.localAddress,
-                        "-c", "1", "-W", "700", target
+                        "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+                        "--connect-timeout", "2", "--max-time", "4", "--max-redirs", "0",
+                        "--interface", thunderboltService?.device ?? "bridge0",
+                        "--noproxy", "*", target
                     ]
-                ).succeeded
+                ).isSuccessfulConnectivityHTTPResponse(for: target)
             }
             if hasBoundEgress {
                 gatewayState = .ready
