@@ -39,6 +39,8 @@ Guardian 的 ready 同时要求 `en0` 载波、预期地址/路由、正确共�
 
 MacBook 的降级 episode 从首次确认首选路径故障开始，与 Wi-Fi 回退是否成功无关。相同失败只记录一次；候选失败后等待网络事件或退避到期。Mini 自动切回必须看到新鲜、无冲突、forwarding=true 的远端事实以及连续 30 秒下游证明。
 
+2026-08-28 事故补充：一次自动试切即使未通过最终数据面验证、因而没有形成“成功切回”，也必须视为一次失败的自动返回。首次失败清空既有健康计时，重新取得连续 30 秒完整证明后才允许再试；10 分钟内第二次失败打开 10 分钟熔断。这样避免 Mini 公司 VPN 改变共享转发状态时，控制器沿用旧 `readySince` 连续改写服务顺序。
+
 后续接管使用纯 `NetworkPolicyMachine.reduce(state:event:)` 和单 actor。每个 effect 携带 transaction ID、network generation、幂等键和 deadline。Route Safety Helper v2 把完整服务顺序写入 root-only 事务日志，切换后只能 commit、rollback 或进入 manual recovery。该接管先以只读影子模式运行 24 小时；与旧策略出现不安全分歧时保持旧执行路径并记录证据，不自动写路由。
 
 2026-08-28 已启用 [只读影子协调器](../Sources/NetBar/Monitors/NetworkPolicyShadowCoordinator.swift)：网络事件先合并 250 ms，每个事件批次只生成一个 generation；远端 Guardian/VPN 等证据在没有本地路由事件时发生实质变化，也会推进 generation。协调器没有 effect executor 依赖，只记录 observation 与 proposal，因此即使 reducer 提议切换、刷新 Mihomo、验证或回滚，也不能产生真实副作用。部署及证据门禁见 [影子运行手册](2026-08-28-network-policy-shadow-rollout.md)。
