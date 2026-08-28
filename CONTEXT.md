@@ -33,6 +33,8 @@
 
 `degradedActive` 表示物理出口已经切到比失效 Mini 更安全的 Wi-Fi，但 DNS 或 overlay 尚未恢复。该状态不得宣称完整在线，也不得回滚到已知失效的 Mini。
 
+纯 `NetworkPolicyMachine` 将上述证明作为 route generation 内的证据：旧 generation 结果直接丢弃，新 generation 到来时若存在未完成事务则先提出 rollback。Mini 自动切回只接受连续 30 秒完整证明；10 分钟内第二次切回失败在回滚后打开 10 分钟熔断。ZCode 诊断不进入路由证据指纹。
+
 只有 `activeVerified` 可以显示“Mac mini 当前出口正常”。
 
 ## 动作所有权

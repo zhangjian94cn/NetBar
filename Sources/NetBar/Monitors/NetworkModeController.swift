@@ -1174,6 +1174,9 @@ final class NetworkModeController: ObservableObject {
         guard !isSwitching, !isProvisioning else { return }
         let shadowCandidates = wifiCandidates
         let shadowUnderlayVerified = currentUnderlayVerified
+        let shadowConnectivityProof = connectivityProofLevel
+        let shadowDNSPath = dnsPathFacts
+        let shadowApplicationPath = applicationPathFacts
         workQueue.async { [weak self] in
             guard let self else { return }
             if force { self.nextWiFiFallbackAttemptAt = nil }
@@ -1205,6 +1208,9 @@ final class NetworkModeController: ObservableObject {
                     preference: preference,
                     currentUnderlayVerified: shadowUnderlayVerified,
                     wifiCandidates: shadowCandidates,
+                    connectivityProofLevel: shadowConnectivityProof,
+                    dnsPath: shadowDNSPath,
+                    applicationPath: shadowApplicationPath,
                     observedAt: checkDate
                 )
                 Task { await policyShadow.observe(observation) }
