@@ -13,11 +13,33 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
         )
         XCTAssertEqual(
             decide(sharingConfigured: false, sharingRunning: false),
-            .configurationDrift("Internet Sharing must use en0 and include bridge0")
+            .configurationDrift("Internet Sharing must use en0 and include Wi-Fi plus bridge0")
         )
     }
 
-    func testAddressRecoveryWaitsFifteenSecondsThenReappliesManualIPv4() {
+    func testSharingToggleOffIsManualPendingAndNeverRequestsRestart() {
+        XCTAssertEqual(
+            decide(sharingIntentEnabled: false, sharingRunning: false, sharingWaitElapsed: 900),
+            .sharingManualPending
+        )
+    }
+
+    func testManagementAliasIsRepairedButBridgeMustRemainDHCP() {
+        XCTAssertEqual(decide(managementAddressReady: false), .reapplyManagementAlias)
+        XCTAssertEqual(
+            decide(bridgeUsesDHCP: false),
+            .configurationDrift("Thunderbolt Bridge must use DHCP; fixed IPv4 conflicts with Internet Sharing")
+        )
+    }
+
+    func testStaleLeaseOrRunningProcessAloneCannotProduceReady() {
+        XCTAssertEqual(decide(sharedAddressReady: false), .sharingRecovering(15))
+        XCTAssertEqual(decide(hotspotAPActive: false), .sharingRecovering(15))
+        XCTAssertEqual(decide(forwardingEnabled: false), .sharingRecovering(15))
+        XCTAssertEqual(decide(upstreamReachable: false), .sharingRecovering(15))
+    }
+
+    func testAddressRecoveryWaitsFifteenSecondsThenFailsClosedWithoutRewritingEn0() {
         XCTAssertEqual(
             decide(addressReady: false, routeReady: false, addressWaitElapsed: nil),
             .addressRecovering(15)
@@ -28,7 +50,7 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
         )
         XCTAssertEqual(
             decide(addressReady: false, routeReady: false, addressWaitElapsed: 15),
-            .reapplyAddress
+            .repairFailed
         )
     }
 
@@ -155,6 +177,11 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
         carrierActive: Bool = true,
         preferencesMatch: Bool = true,
         sharingConfigured: Bool = true,
+        sharingIntentEnabled: Bool = true,
+        managementAddressReady: Bool = true,
+        bridgeUsesDHCP: Bool = true,
+        sharedAddressReady: Bool = true,
+        hotspotAPActive: Bool = true,
         addressReady: Bool = true,
         routeReady: Bool = true,
         sharingRunning: Bool = true,
@@ -172,6 +199,11 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
                 carrierActive: carrierActive,
                 preferencesMatch: preferencesMatch,
                 sharingConfigured: sharingConfigured,
+                sharingIntentEnabled: sharingIntentEnabled,
+                managementAddressReady: managementAddressReady,
+                bridgeUsesDHCP: bridgeUsesDHCP,
+                sharedAddressReady: sharedAddressReady,
+                hotspotAPActive: hotspotAPActive,
                 addressReady: addressReady,
                 routeReady: routeReady,
                 sharingRunning: sharingRunning,

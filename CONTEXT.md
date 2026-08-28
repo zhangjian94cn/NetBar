@@ -12,7 +12,7 @@
 
 ## 事实层
 
-- `ThunderboltLinkFacts`：`bridge0` 载波、`192.168.2.2/24`、Peer `192.168.2.1`。
+- `ThunderboltLinkFacts`：`bridge0` 载波、独立管理别名 `10.254.254.2/30`、Peer `10.254.254.1`，以及 Apple Internet Sharing 动态分配的数据面 DHCP 地址与网关。管理 Peer 只证明恢复通道，不能冒充共享网关。
 - `MiniUpstreamFacts`：Mini `en0` 载波、预期 Manual 地址/路由、绑定上游探测。
 - `MiniSharingFacts`：共享拓扑、Network Sharing 进程、内核 forwarding、Guardian generation 与新鲜度。
 - `DownstreamEgressFacts`：MacBook 绑定 `bridge0` 的下游出口、实际物理路由、系统及 Clash HTTPS。
@@ -25,7 +25,7 @@
 
 ## Mini 证明层级
 
-1. `linkReady`：固定雷雳链路与 Peer 正常。
+1. `linkReady`：独立 `/30` 管理链路与 Peer 正常，雷雳网络服务保持 DHCP。
 2. `upstreamReady`：Mini `en0` 地址、路由和自身上游正常。
 3. `sharingLocallyReady`：共享拓扑、进程、forwarding 与新鲜 Guardian 全部正常。
 4. `downstreamPreflightReady`：MacBook 绑定 `bridge0` 的下游探测通过。
@@ -43,9 +43,9 @@ Wi-Fi 是当前出口时，Mini Helper 的 `ready` 只允许进入 30 秒资格�
 
 ## 动作所有权
 
-- Mini Helper v4：只报告事实，或写入固定的下游失败标记；`apply/rollback` 只管理 Mini `bridge0` 固定地址。
-- Mini Guardian：唯一有权保守重应用 Mini `en0` 既定 Manual 地址以及重拉原生 Network Sharing。
-- Route Safety Helper v3：管理 Wi-Fi 与 `bridge0` 的相对服务顺序，并只在用户明确点击且 Wi-Fi DNS 精确依赖 `192.168.2.1` 时恢复自动 DNS；每次写入必须以 commit、rollback 或 manual recovery 结束。
+- Mini Helper v5：只接受 `status/prepare/migrate/rollback/finalize-rollback/report-egress-failure` 六个固定命令；迁移管理别名与 `bridge0` DHCP 契约，不写 Apple NAT/DHCP 私有配置。
+- Mini Guardian：维护 Mini 管理别名并观察 `en0`、Apple Internet Sharing、forwarding 与共享数据面；不重写公司 DNS、NAT/DHCP 或 VPN。共享总开关关闭时进入 `manual_pending`。
+- Route Safety Helper v4：管理 Wi-Fi 与 `bridge0` 的相对服务顺序、补回本机管理别名，并只在用户明确点击且 Wi-Fi DNS 精确依赖 `192.168.2.1` 时恢复自动 DNS；每次事务必须以 commit、rollback 或 manual recovery 结束。
 - NetBar 策略机：读取事实、决定候选与事务，不直接持有管理员密码。
 - Clash Overlay Controller：只响应用户模式命令；拥有 `enable_tun_mode` 与 runtime TUN 的窄写权限，并负责用户级事务回滚。
 - Mihomo underlay 协作：物理出口确实变化时每个 route generation 最多清理一次现有连接；不改配置或 TUN 状态。

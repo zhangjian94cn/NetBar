@@ -38,7 +38,7 @@
 
 Mini 明确断线或下游共享失效时，只要 Wi-Fi 具备载波、IPv4 和网关，就允许提交 Wi-Fi 物理路由。DNS 或 overlay 未恢复时显示 `degradedActive`，不得回滚到已知失效的 Mini。若原路径仍健康，目标路径验证失败仍按原事务回滚。
 
-Route Safety Helper 升级到 v3，并增加唯一固定命令 `repair-wifi-dns`。它动态识别 Wi-Fi 服务，仅接受当前手动 DNS 中精确包含 `192.168.2.1` 且物理模式已经是 Wi-Fi 的场景；原值、服务身份与 SHA-256 保存到 root-only 事务记录。NetBar 验证自动 resolver 和数据面后 `commit`，否则 `rollback`；普通网络事件不调用该命令。
+Route Safety Helper 最初升级到 v3 并增加唯一固定命令 `repair-wifi-dns`；地址面拆分后由 v4 继续拥有该事务，并增加固定命令 `ensure-management-alias`。它动态识别 Wi-Fi 服务，仅接受当前手动 DNS 中精确包含旧 Mini 地址 `192.168.2.1` 且物理模式已经是 Wi-Fi 的场景；原值、服务身份与 SHA-256 保存到 root-only 事务记录。NetBar 验证自动 resolver 和数据面后 `commit`，否则 `rollback`；普通网络事件不调用 DNS 修复命令。
 
 固定链路初始化继续保存和恢复原 DNS，但新固定配置保留本机雷雳服务的原 DNS，`verifyFixedLink` 只验证 `bridge0` 地址、载波和 Peer。Mini 公司 DNS、Clash DNS/Fake-IP 与 Internet Sharing DNS proxy 始终在 Helper 写入边界之外。
 

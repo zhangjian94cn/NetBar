@@ -4,6 +4,8 @@ import os
 import SystemConfiguration
 
 private struct GuardianProfile: Decodable {
+    let managementMiniAddress: String
+    let managementSubnetMask: String
     let miniUpstreamDevice: String
     let miniUpstreamAddress: String
     let miniUpstreamSubnetMask: String
@@ -20,6 +22,10 @@ private enum GuardianState: String, Codable {
     case ready
     case configurationDrift
     case recoveryBackoff
+    case sharingManualPending
+    case managementLinkRecovering
+    case dhcpLeaseRecovering
+    case hotspotClientUnverified
 }
 
 private struct GuardianStatus: Codable {
@@ -39,6 +45,12 @@ private struct GuardianStatus: Codable {
     var upstreamReachable: Bool
     var nextRetryAt: String?
     var failureCount: Int
+    var managementAddressReady: Bool
+    var bridgeUsesDHCP: Bool
+    var sharingIntentEnabled: Bool
+    var hotspotAPConfigured: Bool
+    var hotspotAPActive: Bool
+    var hotspotClientObserved: Bool
 }
 
 private struct CommandResult {
@@ -113,7 +125,13 @@ private final class MiniNetworkGuardian {
             sharingConfigured: false,
             upstreamReachable: false,
             nextRetryAt: nil,
-            failureCount: 0
+            failureCount: 0,
+            managementAddressReady: false,
+            bridgeUsesDHCP: false,
+            sharingIntentEnabled: false,
+            hotspotAPConfigured: false,
+            hotspotAPActive: false,
+            hotspotClientObserved: false
         )
         if GuardianPersistedRecoveryMigration.shouldResetBackoff(lastError: status.lastError) {
             status.failureCount = 0
@@ -184,6 +202,13 @@ private final class MiniNetworkGuardian {
         let addressReady = interfaceHasExpectedAddress()
         let routeReady = scopedDefaultRouteIsExpected()
         let sharingConfigured = sharingConfigurationMatches()
+        let sharingIntentEnabled = sharingIntentIsEnabled()
+        let managementAddressReady = managementAliasIsReady()
+        let bridgeUsesDHCP = bridgeServiceUsesDHCP()
+        let sharedAddressReady = sharedBridgeAddressIsReady()
+        let hotspotAPConfigured = hotspotIsConfigured()
+        let hotspotAPActive = hotspotAPIsActive()
+        let hotspotClientObserved = hotspotClientIsObserved()
         let sharingRunning = internetSharingIsRunning()
         let forwardingEnabled = kernelForwardingIsEnabled()
         let reachable = addressReady && routeReady && upstreamReachability(at: now)
@@ -198,6 +223,12 @@ private final class MiniNetworkGuardian {
         status.sharingRunning = sharingRunning
         status.forwardingEnabled = forwardingEnabled
         status.upstreamReachable = reachable
+        status.managementAddressReady = managementAddressReady
+        status.bridgeUsesDHCP = bridgeUsesDHCP
+        status.sharingIntentEnabled = sharingIntentEnabled
+        status.hotspotAPConfigured = hotspotAPConfigured
+        status.hotspotAPActive = hotspotAPActive
+        status.hotspotClientObserved = hotspotClientObserved
 
         if previousCarrier != carrier {
             previousCarrier = carrier
@@ -212,7 +243,8 @@ private final class MiniNetworkGuardian {
             transition(to: carrier ? .addressRecovering : .carrierDown, action: "carrier \(carrier ? "active" : "inactive")")
         }
 
-        let fullyHealthy = carrier && addressReady && routeReady && sharingRunning && forwardingEnabled && reachable
+        let fullyHealthy = carrier && addressReady && routeReady && managementAddressReady &&
+            bridgeUsesDHCP && sharedAddressReady && hotspotAPActive && sharingRunning && forwardingEnabled && reachable
         if fullyHealthy {
             if healthySince == nil { healthySince = now }
         } else {
@@ -224,6 +256,11 @@ private final class MiniNetworkGuardian {
                 carrierActive: carrier,
                 preferencesMatch: carrier ? preferencesMatchExpectedConfiguration() : true,
                 sharingConfigured: sharingConfigured,
+                sharingIntentEnabled: sharingIntentEnabled,
+                managementAddressReady: managementAddressReady,
+                bridgeUsesDHCP: bridgeUsesDHCP,
+                sharedAddressReady: sharedAddressReady,
+                hotspotAPActive: hotspotAPActive,
                 addressReady: addressReady,
                 routeReady: routeReady,
                 sharingRunning: sharingRunning,
@@ -246,6 +283,26 @@ private final class MiniNetworkGuardian {
         case .configurationDrift(let message):
             transition(to: .configurationDrift, error: message)
             scheduleEvaluation(after: 15)
+
+        case .sharingManualPending:
+            pendingRepairVerification = false
+            transition(to: .sharingManualPending, error: "enable Internet Sharing in System Settings")
+            scheduleEvaluation(after: 15)
+
+        case .reapplyManagementAlias:
+            let result = runner.run("/sbin/ifconfig", [
+                "bridge0", "alias", profile.managementMiniAddress,
+                "netmask", profile.managementSubnetMask
+            ])
+            guard result.succeeded else {
+                registerFailure(now: now, message: result.output)
+                return
+            }
+            status.lastAction = "restored Thunderbolt management alias"
+            status.lastError = nil
+            pendingRepairVerification = true
+            transition(to: .managementLinkRecovering, action: status.lastAction)
+            scheduleEvaluation(after: 5)
 
         case .readyStabilizing(let delay):
             addressWaitStarted = nil
@@ -277,27 +334,6 @@ private final class MiniNetworkGuardian {
             if addressWaitStarted == nil { addressWaitStarted = now }
             transition(to: .addressRecovering)
             scheduleEvaluation(after: delay)
-
-        case .reapplyAddress:
-            let service = findService(device: profile.miniUpstreamDevice)
-            guard let service else {
-                registerFailure(now: now, message: "network service for en0 not found")
-                return
-            }
-            let result = runner.run("/usr/sbin/networksetup", [
-                "-setmanual", service, profile.miniUpstreamAddress,
-                profile.miniUpstreamSubnetMask, profile.miniUpstreamRouter
-            ])
-            guard result.succeeded else {
-                registerFailure(now: now, message: result.output)
-                return
-            }
-            status.lastAction = "reapplied en0 manual IPv4 configuration"
-            status.lastError = nil
-            pendingRepairVerification = true
-            addressWaitStarted = nil
-            transition(to: .addressRecovering, action: status.lastAction)
-            scheduleEvaluation(after: 10)
 
         case .sharingRecovering(let delay):
             if sharingWaitStarted == nil { sharingWaitStarted = now }
@@ -471,7 +507,58 @@ private final class MiniNetworkGuardian {
               let devices = nat["SharingDevices"] as? [String] else {
             return false
         }
-        return devices.contains("bridge0")
+        return devices.contains("bridge0") && devices.contains("en1")
+    }
+
+    private func sharingIntentIsEnabled() -> Bool {
+        guard let data = try? Data(contentsOf: natProfileURL),
+              let object = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let nat = object["NAT"] as? [String: Any] else {
+            return false
+        }
+        if let enabled = nat["Enabled"] as? Bool { return enabled }
+        if let enabled = nat["Enabled"] as? Int { return enabled == 1 }
+        return false
+    }
+
+    private func managementAliasIsReady() -> Bool {
+        runner.run("/sbin/ifconfig", ["bridge0"]).output
+            .contains("inet \(profile.managementMiniAddress) ")
+    }
+
+    private func bridgeServiceUsesDHCP() -> Bool {
+        guard let service = findService(device: "bridge0") else { return false }
+        return runner.run("/usr/sbin/networksetup", ["-getinfo", service]).output
+            .contains("DHCP Configuration")
+    }
+
+    private func sharedBridgeAddressIsReady() -> Bool {
+        runner.run("/sbin/ifconfig", ["bridge0"]).output
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("inet ") }
+            .compactMap { $0.split(separator: " ").dropFirst().first.map(String.init) }
+            .contains { $0 != profile.managementMiniAddress && !$0.hasPrefix("169.254.") }
+    }
+
+    private func hotspotIsConfigured() -> Bool {
+        guard let data = try? Data(contentsOf: natProfileURL),
+              let object = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let nat = object["NAT"] as? [String: Any],
+              let devices = nat["SharingDevices"] as? [String] else {
+            return false
+        }
+        return devices.contains("en1")
+    }
+
+    private func hotspotAPIsActive() -> Bool {
+        let output = runner.run("/usr/sbin/system_profiler", ["SPAirPortDataType"]).output
+        return output.contains("Network Type: Wi-Fi Internet Sharing")
+    }
+
+    private func hotspotClientIsObserved() -> Bool {
+        let result = runner.run("/usr/sbin/arp", ["-an", "-i", "ap1"])
+        return result.succeeded && result.output.contains(" at ")
     }
 
     private func findService(device: String) -> String? {
