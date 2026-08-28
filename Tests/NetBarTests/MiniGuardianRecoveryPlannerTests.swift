@@ -2,6 +2,14 @@ import XCTest
 import NetBarMiniNetworkGuardianSupport
 
 final class MiniGuardianRecoveryPlannerTests: XCTestCase {
+    func testAppleDHCPRequiresBridgeZeroInCurrentInterfaceListEncoding() {
+        XCTAssertTrue(MiniGuardianRecoveryPlanner.appleDHCPEnabled(from: ["bridge100", "bridge0"]))
+        XCTAssertFalse(MiniGuardianRecoveryPlanner.appleDHCPEnabled(from: ["bridge100", "en1"]))
+        XCTAssertTrue(MiniGuardianRecoveryPlanner.appleDHCPEnabled(from: true))
+        XCTAssertTrue(MiniGuardianRecoveryPlanner.appleDHCPEnabled(from: NSNumber(value: 1)))
+        XCTAssertFalse(MiniGuardianRecoveryPlanner.appleDHCPEnabled(from: NSNumber(value: 2)))
+    }
+
     func testCarrierDownOnlyWaitsForCarrier() {
         XCTAssertEqual(decide(carrierActive: false), .carrierDown)
     }

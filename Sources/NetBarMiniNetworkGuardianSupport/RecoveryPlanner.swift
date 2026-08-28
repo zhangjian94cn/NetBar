@@ -121,6 +121,15 @@ public enum MiniGuardianRecoveryDecision: Equatable {
 }
 
 public enum MiniGuardianRecoveryPlanner {
+    public static func appleDHCPEnabled(from value: Any?) -> Bool {
+        if let interfaces = value as? [String] {
+            return interfaces.contains("bridge0")
+        }
+        if let enabled = value as? Bool { return enabled }
+        if let enabled = value as? NSNumber { return enabled.intValue == 1 }
+        return false
+    }
+
     public static func decide(_ input: MiniGuardianRecoveryInput) -> MiniGuardianRecoveryDecision {
         guard input.carrierActive else { return .carrierDown }
         guard input.preferencesMatch else {

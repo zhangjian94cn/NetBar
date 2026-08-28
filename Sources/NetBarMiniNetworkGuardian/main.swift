@@ -535,9 +535,7 @@ private final class MiniNetworkGuardian {
         guard let data = try? Data(contentsOf: bootpdProfileURL),
               let object = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
         else { return false }
-        if let value = object["dhcp_enabled"] as? Bool { return value }
-        if let value = object["dhcp_enabled"] as? NSNumber { return value.boolValue }
-        return false
+        return MiniGuardianRecoveryPlanner.appleDHCPEnabled(from: object["dhcp_enabled"])
     }
 
     private func managementAliasIsReady() -> Bool {

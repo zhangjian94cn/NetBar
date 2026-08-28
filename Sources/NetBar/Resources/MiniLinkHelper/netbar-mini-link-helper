@@ -188,8 +188,8 @@ sharing_intent_enabled() {
 
 dhcp_server_enabled() {
     local enabled
-    enabled="$($PLUTIL -extract dhcp_enabled raw -o - "$BOOTPD_PROFILE" 2>/dev/null || true)"
-    [[ "$enabled" == true || "$enabled" == <1-> ]]
+    enabled="$($PLUTIL -extract dhcp_enabled json -o - "$BOOTPD_PROFILE" 2>/dev/null || true)"
+    [[ "$enabled" == true || "$enabled" == 1 || "$enabled" == *'"bridge0"'* ]]
 }
 
 hotspot_ap_active() {
