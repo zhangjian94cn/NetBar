@@ -14,7 +14,10 @@ class MonitorCoordinator {
     let vpsTrafficMonitor = VPSTrafficMonitor()
     private let egressIdentityRefreshScheduler = DebouncedRefreshScheduler(delay: 3)
     lazy var clashOverlayModeController = ClashOverlayModeController()
-    private lazy var networkPolicyShadow = NetworkPolicyShadowCoordinator()
+    /// `nil` unless the shadow run is explicitly enabled; the controller guards
+    /// every use, so a disabled shadow costs nothing at runtime.
+    private lazy var networkPolicyShadow: NetworkPolicyShadowCoordinator? =
+        AppConfig.shared.networkPolicyShadowEnabled ? NetworkPolicyShadowCoordinator() : nil
     lazy var networkModeController = NetworkModeController(
         policyShadow: networkPolicyShadow,
         onNetworkChanged: { [weak self] in
@@ -45,9 +48,21 @@ class MonitorCoordinator {
         for monitor in allMonitors {
             monitor.start()
         }
-        if DistributionFlavor.current.supportsNetworkModeSwitch {
+        if DistributionFlavor.current.supportsNetworkModeSwitch, !Self.isVisualCaptureRun {
             networkModeController.startPolicyMonitoring()
         }
+    }
+
+    /// Visual QA captures render the panel from live facts but must never drive
+    /// the policy state machine: the capture build runs alongside the installed
+    /// app, and two policy owners competing for route transactions would fight
+    /// over the machine's real network.
+    static var isVisualCaptureRun: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["NETBAR_CAPTURE_POPOVER_PATH"] != nil
+        #else
+        return false
+        #endif
     }
 
     /// 停止所有监控服务

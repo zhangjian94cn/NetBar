@@ -87,6 +87,26 @@ final class AppConfig: ObservableObject {
         }
     }
 
+    /// Read-only shadow run of `NetworkPolicyMachine`, off by default.
+    ///
+    /// The reducer only ever produces diagnostic proposals, and the takeover
+    /// gate restarts its 24-hour observation window on any build that changes
+    /// reducer effects. Leaving it on during unrelated iteration burns CPU and
+    /// log volume for observations that will be discarded anyway, so observation
+    /// is now something you opt into for the duration of a real window.
+    var networkPolicyShadowEnabled: Bool {
+        get {
+            if ProcessInfo.processInfo.environment["NETBAR_POLICY_SHADOW"] == "1" {
+                return true
+            }
+            return defaults.bool(forKey: Keys.networkPolicyShadowEnabled)
+        }
+        set {
+            objectWillChange.send()
+            defaults.set(newValue, forKey: Keys.networkPolicyShadowEnabled)
+        }
+    }
+
     var ping0APIKey: String {
         get { KeychainHelper.loadString(key: Keys.ping0APIKey) ?? "" }
         set {
@@ -311,5 +331,6 @@ final class AppConfig: ObservableObject {
         static let vpsConfigs = "vps_configs_v2"
         static let refreshInterval = "refresh_interval"
         static let selectedPopoverSection = "popover_selected_section_v1"
+        static let networkPolicyShadowEnabled = "network_policy_shadow_enabled"
     }
 }

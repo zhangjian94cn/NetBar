@@ -5,10 +5,10 @@ import SwiftUI
 
 /// 菜单栏控制器 — 管理 NSStatusItem 和原生风格浮层面板
 class StatusBarController: NSObject, NSWindowDelegate {
-    private let panelWidth: CGFloat = 380
-    private let directFullPanelHeight: CGFloat = 540
-    private let appStoreLitePanelHeight: CGFloat = 460
-    private let panelMinHeight: CGFloat = 420
+    private let panelWidth = PopoverVisualStyle.Metrics.panelWidth
+    private let directFullPanelHeight = PopoverVisualStyle.Metrics.directFullHeight
+    private let appStoreLitePanelHeight = PopoverVisualStyle.Metrics.appStoreLiteHeight
+    private let panelMinHeight = PopoverVisualStyle.Metrics.panelMinHeight
     private let screenEdgeMargin: CGFloat = 8
     private let panelMenuBarGap: CGFloat = 0
 
@@ -38,10 +38,12 @@ class StatusBarController: NSObject, NSWindowDelegate {
 
     private func setupStatusItem() {
         // 固定宽度避免抖动
-        statusItem = NSStatusBar.system.statusItem(withLength: 72)
+        statusItem = NSStatusBar.system.statusItem(withLength: StatusBarView.preferredWidth)
 
         // 使用自定义视图替代默认 button.title
-        statusBarView = StatusBarView(frame: NSRect(x: 0, y: 0, width: 72, height: 22))
+        statusBarView = StatusBarView(
+            frame: NSRect(x: 0, y: 0, width: StatusBarView.preferredWidth, height: 22)
+        )
 
         if let button = statusItem.button {
             // 将自定义视图添加到 button 内部
@@ -195,7 +197,12 @@ class StatusBarController: NSObject, NSWindowDelegate {
         guard let path = ProcessInfo.processInfo.environment["NETBAR_CAPTURE_POPOVER_PATH"],
               !path.isEmpty else { return }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak panel] in
+        // Long enough for the first fact sample to land, so captures review the
+        // settled panel instead of its loading state. Slow `networksetup` /
+        // `route` sampling can need more, so the wait is tunable.
+        let delay = ProcessInfo.processInfo.environment["NETBAR_CAPTURE_DELAY"]
+            .flatMap(Double.init) ?? 3
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak panel] in
             guard let view = panel?.contentView else { return }
             view.layoutSubtreeIfNeeded()
             let bounds = view.bounds

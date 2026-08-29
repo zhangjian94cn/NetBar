@@ -87,7 +87,8 @@ struct PopoverStatusPresentation: Equatable {
         effectiveMode: NetworkRouteMode?,
         overlay: ClashOverlaySnapshot,
         dnsFacts: DNSPathFacts?,
-        primaryReason: String?
+        primaryReason: String?,
+        outletFault: Bool = false
     ) {
         let dnsReady = dnsFacts?.systemResolutionReady == true &&
             dnsFacts?.dependency != .miniDependent &&
@@ -130,9 +131,24 @@ struct PopoverStatusPresentation: Equatable {
         }
 
         self.primaryReason = primaryReason?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-        outletNeedsAttention = proofLevel != .activeVerified
-        clashNeedsAttention = overlay.health != .ready
-        monitoringNeedsAttention = !dnsReady
+
+        // Tab badges mark work the user can actually do something about.
+        // Treating "not verified yet" or "currently switching" as an alert put a
+        // dot on three of four tabs at all times, which made the badge carry no
+        // information at all.
+        outletNeedsAttention = outletFault || proofLevel == .unavailable
+        switch overlay.health {
+        case .unavailable, .configurationDrift, .degraded:
+            clashNeedsAttention = true
+        case .ready, .switching:
+            clashNeedsAttention = false
+        }
+        switch dnsFacts?.dependency {
+        case .miniDependent, .unreachable:
+            monitoringNeedsAttention = true
+        case .independent, .overlayOnly, .unknown, nil:
+            monitoringNeedsAttention = false
+        }
     }
 
     func needsAttention(_ section: PopoverSection) -> Bool {
@@ -147,4 +163,164 @@ struct PopoverStatusPresentation: Equatable {
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+/// Display logic for the outlet page.
+///
+/// The information-architecture ADR names the presentation layer the single
+/// owner of popover display logic; the outlet page had grown its own copy of
+/// that logic inside the view, where it could not be unit tested.
+struct NetworkOutletPresentation: Equatable {
+    let outletText: String
+    let heroState: PopoverFactState
+    let linkText: String
+    let addressText: String
+
+    let linkValue: String
+    let linkDetail: String?
+    let linkStateDot: PopoverFactState
+
+    let sharingValue: String
+    let sharingDetail: String?
+    let sharingStateDot: PopoverFactState
+
+    let proofValue: String
+    let proofDetail: String
+    let proofStateDot: PopoverFactState
+
+    let preferenceDetail: String
+    let outletStateDot: PopoverFactState
+
+    let managementValue: String
+    let managementState: PopoverFactState
+    let dnsValue: String
+    let dnsState: PopoverFactState
+    let hotspotAPValue: String
+    let hotspotAPState: PopoverFactState
+    let hotspotClientValue: String
+    let hotspotClientState: PopoverFactState
+    let proxyUnawareValue: String
+    let proxyUnawareState: PopoverFactState
+
+    init(
+        snapshot: NetworkModeSnapshot?,
+        helperStatus: MacMiniHelperStatus?,
+        proofLevel: ConnectivityProofLevel,
+        failoverPhase: NetworkFailoverPhase,
+        routePreference: NetworkRoutePreference,
+        requiresManualRecovery: Bool,
+        dnsFacts: DNSPathFacts?,
+        applicationFacts: ApplicationPathFacts?
+    ) {
+        outletText = snapshot?.effectiveMode?.displayName ?? "待确认"
+
+        if requiresManualRecovery {
+            heroState = .fault
+        } else if let snapshot {
+            switch snapshot.linkState {
+            case .unavailable, .disconnected:
+                heroState = .fault
+            case .connected:
+                heroState = snapshot.gatewayState == .ready && snapshot.isConsistent ? .ok : .warning
+            case .addressNotProvisioned, .miniUnreachable:
+                heroState = .warning
+            }
+        } else {
+            heroState = .unknown
+        }
+
+        if let snapshot {
+            if snapshot.linkState == .connected, snapshot.gatewayState != .ready {
+                linkText = "雷雳可用 · \(snapshot.gatewayState.displayName)"
+            } else {
+                linkText = snapshot.linkState.displayName
+            }
+        } else {
+            linkText = "正在检测雷雳链路"
+        }
+
+        addressText = Self.addressText(local: snapshot?.bridgeIPv4, mini: snapshot?.miniGateway)
+
+        linkValue = snapshot?.linkState.displayName ?? "待检测"
+        linkDetail = snapshot?.bridgeIPv4
+        linkStateDot = snapshot.map { $0.linkState == .connected ? .ok : .warning } ?? .unknown
+
+        sharingValue = snapshot?.gatewayState.displayName ?? "待检测"
+        sharingDetail = snapshot?.miniGateway
+        sharingStateDot = snapshot.map { $0.gatewayState == .ready ? .ok : .warning } ?? .unknown
+
+        switch proofLevel {
+        case .activeVerified: proofValue = "已验证"
+        case .preflightEligible: proofValue = "预检通过"
+        case .routeEligible: proofValue = "路由可用"
+        case .degradedActive: proofValue = "受限可用"
+        case .unavailable: proofValue = "不可用"
+        }
+        proofDetail = failoverPhase.displayName
+        switch proofLevel {
+        case .activeVerified: proofStateDot = .ok
+        case .preflightEligible, .routeEligible, .degradedActive: proofStateDot = .warning
+        case .unavailable: proofStateDot = snapshot == nil ? .unknown : .warning
+        }
+
+        preferenceDetail = routePreference.displayName
+        // The active outlet is a fact, not a proof: being on Wi-Fi is a normal
+        // working state and must not inherit the end-to-end verification dot.
+        outletStateDot = snapshot?.effectiveMode == nil ? .unknown : .ok
+
+        let managementReady = helperStatus?.managementIPv4 == MacMiniLinkProfile.defaults.managementMiniAddress &&
+            snapshot?.linkState == .connected
+        managementValue = managementReady
+            ? "\(MacMiniLinkProfile.defaults.managementLocalAddress) → \(MacMiniLinkProfile.defaults.managementMiniAddress)"
+            : "待验证"
+        managementState = helperStatus == nil ? .unknown : (managementReady ? .ok : .warning)
+
+        dnsValue = dnsFacts?.dependency.displayName ?? "待检测"
+        if let dnsFacts {
+            let healthy = dnsFacts.systemResolutionReady &&
+                dnsFacts.dependency != .miniDependent &&
+                dnsFacts.dependency != .unreachable
+            dnsState = healthy ? .ok : .warning
+        } else {
+            dnsState = .unknown
+        }
+
+        if let helperStatus {
+            if helperStatus.hotspotAPActive == true {
+                hotspotAPValue = "AP 已建立"
+                hotspotAPState = .ok
+            } else {
+                hotspotAPValue = helperStatus.hotspotAPConfigured ? "已配置，尚未建立" : "未配置"
+                hotspotAPState = helperStatus.hotspotAPConfigured ? .warning : .unknown
+            }
+            if helperStatus.hotspotClientObserved == true {
+                hotspotClientValue = "客户端已观测"
+                hotspotClientState = .ok
+            } else {
+                hotspotClientValue = "客户端出口未验证"
+                hotspotClientState = .unknown
+            }
+        } else {
+            hotspotAPValue = "待检测"
+            hotspotAPState = .unknown
+            hotspotClientValue = "待检测"
+            hotspotClientState = .unknown
+        }
+
+        proxyUnawareState = PopoverFactState(ready: applicationFacts?.proxyUnawareHTTPSReady)
+        switch proxyUnawareState {
+        case .ok: proxyUnawareValue = "可用"
+        case .warning, .fault: proxyUnawareValue = "不可用"
+        case .unknown: proxyUnawareValue = "待检测"
+        }
+    }
+
+    /// Only renders the halves that are actually known, so a panel that has not
+    /// sampled yet does not show "本机 — · Mini —".
+    static func addressText(local: String?, mini: String?) -> String {
+        var parts: [String] = []
+        if let local, !local.isEmpty { parts.append("本机 \(local)") }
+        if let mini, !mini.isEmpty { parts.append("Mini \(mini)") }
+        return parts.joined(separator: " · ")
+    }
 }

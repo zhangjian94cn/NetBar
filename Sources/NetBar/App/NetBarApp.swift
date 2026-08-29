@@ -10,8 +10,13 @@ struct NetBarApp {
 
     static func main() {
         let currentPID = ProcessInfo.processInfo.processIdentifier
+        // Guard against a second copy of *this* bundle. Hardcoding the shipping
+        // identifier also blocked the Debug visual-QA bundle whenever the
+        // installed app was running, which made design captures impossible
+        // without quitting the user's menu bar app first.
+        let identifier = Bundle.main.bundleIdentifier ?? "com.zjah.NetBar"
         let existingApp = NSRunningApplication
-            .runningApplications(withBundleIdentifier: "com.zjah.NetBar")
+            .runningApplications(withBundleIdentifier: identifier)
             .first { $0.processIdentifier != currentPID }
         guard existingApp == nil else { return }
 

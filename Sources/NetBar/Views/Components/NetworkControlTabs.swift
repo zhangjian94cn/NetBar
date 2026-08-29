@@ -8,7 +8,7 @@ struct ClashModeTabView: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: PopoverVisualStyle.blockSpacing) {
                 hero
                 modeSelector
                 explanation
@@ -16,35 +16,37 @@ struct ClashModeTabView: View {
                 diagnosticsDisclosure
 
                 if let reason = controller.snapshot.reason, !reason.isEmpty {
-                    warningRow(reason)
+                    PopoverBanner(message: reason) {
+                        Button("打开 Clash") { openClash() }
+                            .buttonStyle(.link)
+                            .font(PopoverVisualStyle.Typography.caption)
+                    }
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.horizontal, PopoverVisualStyle.contentInset)
+            .padding(.vertical, PopoverVisualStyle.Spacing.sm)
         }
         .onAppear { controller.refresh() }
         .help("Clash 模式只会在你点击后切换；网络故障转移不会自动开关 TUN。")
     }
 
     private var hero: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .center, spacing: PopoverVisualStyle.Spacing.sm) {
             Image(systemName: "shield.lefthalf.filled")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(healthColor)
-            VStack(alignment: .leading, spacing: 2) {
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(PopoverVisualStyle.secondaryText)
+            VStack(alignment: .leading, spacing: 1) {
                 Text(controller.snapshot.mode?.displayName ?? "正在检测 Clash")
                     .font(PopoverVisualStyle.Typography.section)
                 Text(controller.snapshot.health.displayName)
                     .font(PopoverVisualStyle.Typography.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(PopoverVisualStyle.secondaryText)
             }
             Spacer()
             if controller.isSwitching {
                 ProgressView().controlSize(.small)
             } else {
-                Circle()
-                    .fill(healthColor)
-                    .frame(width: 7, height: 7)
+                PopoverStatusDot(state: healthState)
             }
         }
     }
@@ -54,18 +56,15 @@ struct ClashModeTabView: View {
             modeButton(.systemProxy, icon: "network")
             modeButton(.tunFull, icon: "point.3.connected.trianglepath.dotted")
         }
-        .padding(3)
-        .background(PopoverVisualStyle.controlFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .popoverSegmentedTrack()
     }
 
     private func modeButton(_ mode: ClashOverlayMode, icon: String) -> some View {
-        let selected = controller.snapshot.mode == mode
-        return PopoverSegmentedOption(
+        PopoverSegmentedOption(
             title: mode.displayName,
             icon: icon,
-            isSelected: selected,
-            isEnabled: !controller.isSwitching,
-            accent: PopoverVisualStyle.warning
+            isSelected: controller.snapshot.mode == mode,
+            isEnabled: !controller.isSwitching
         ) {
             controller.switchMode(to: mode)
         }
@@ -74,102 +73,81 @@ struct ClashModeTabView: View {
     private var explanation: some View {
         Text(modeExplanation)
             .font(PopoverVisualStyle.Typography.caption)
-            .foregroundColor(.secondary)
+            .foregroundColor(PopoverVisualStyle.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
     }
 
     private var configurationFacts: some View {
         VStack(spacing: 0) {
-            factRow("持久配置", value: controller.snapshot.persistentTunEnabled.map { $0 ? "TUN" : "系统代理" } ?? "未知")
-            Divider().padding(.leading, 20)
-            factRow("Runtime", value: controller.snapshot.runtimeTunEnabled.map { $0 ? "TUN" : "系统代理" } ?? "未知")
-            Divider().padding(.leading, 20)
-            factRow("系统代理", value: controller.snapshot.systemProxyEnabled ? "已开启" : "未开启")
-            Divider().padding(.leading, 20)
-            factRow("共存基线", value: controller.snapshot.coexistenceBaselineReady ? "完整" : "需要修复")
+            PopoverFactRow(title: "持久配置", value: tunText(controller.snapshot.persistentTunEnabled))
+            Divider()
+            PopoverFactRow(title: "Runtime", value: tunText(controller.snapshot.runtimeTunEnabled))
+            Divider()
+            PopoverFactRow(title: "系统代理", value: controller.snapshot.systemProxyEnabled ? "已开启" : "未开启")
+            Divider()
+            PopoverFactRow(
+                title: "共存基线",
+                value: controller.snapshot.coexistenceBaselineReady ? "完整" : "需要修复",
+                state: controller.snapshot.coexistenceBaselineReady ? .ok : .warning
+            )
         }
-        .padding(.horizontal, 12)
-        .popoverGroup()
+        .padding(.horizontal, PopoverVisualStyle.cardPadding)
+        .popoverSurface()
     }
 
-    private func factRow(_ name: String, value: String) -> some View {
-        HStack {
-            Text(name)
-                .foregroundColor(PopoverVisualStyle.secondaryText)
-            Spacer()
-            Text(value)
-                .fontWeight(.medium)
-                .foregroundColor(PopoverVisualStyle.primaryText)
-        }
-        .font(PopoverVisualStyle.Typography.caption)
-        .frame(minHeight: 32)
+    private func tunText(_ enabled: Bool?) -> String {
+        guard let enabled else { return "待检测" }
+        return enabled ? "TUN" : "系统代理"
     }
 
     private var diagnosticsDisclosure: some View {
-        VStack(spacing: 0) {
-            Button {
-                showsDiagnostics.toggle()
-            } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: "stethoscope")
-                        .frame(width: 16)
-                    Text("应用兼容性诊断")
-                        .fontWeight(.medium)
-                    Spacer()
-                    Image(systemName: showsDiagnostics ? "chevron.down" : "chevron.right")
-                        .foregroundColor(PopoverVisualStyle.secondaryText)
+        PopoverDisclosure(
+            icon: "stethoscope",
+            title: "应用兼容性诊断",
+            isExpanded: $showsDiagnostics
+        ) {
+            VStack(spacing: 0) {
+                Divider()
+                PopoverFactRow(
+                    title: "系统 HTTPS",
+                    value: reachabilityText(applicationFacts?.systemProxyAwareHTTPSReady),
+                    state: PopoverFactState(ready: applicationFacts?.systemProxyAwareHTTPSReady),
+                    compact: true
+                )
+                PopoverFactRow(
+                    title: "显式 Clash HTTPS",
+                    value: reachabilityText(applicationFacts?.explicitClashHTTPSReady),
+                    state: PopoverFactState(ready: applicationFacts?.explicitClashHTTPSReady),
+                    compact: true
+                )
+                PopoverFactRow(
+                    title: "代理不感知 / TUN",
+                    value: reachabilityText(applicationFacts?.proxyUnawareHTTPSReady),
+                    state: PopoverFactState(ready: applicationFacts?.proxyUnawareHTTPSReady),
+                    compact: true
+                )
+                PopoverFactRow(
+                    title: "ZCode 后台链路",
+                    value: reachabilityText(applicationFacts?.zcodeDiagnosticReady),
+                    state: PopoverFactState(ready: applicationFacts?.zcodeDiagnosticReady),
+                    compact: true
+                )
+                if let code = applicationFacts?.zcodeHTTPStatus {
+                    Text("ZCode 匿名 HTTP 状态 \(code)，2xx–4xx 表示传输可达。")
+                        .font(PopoverVisualStyle.Typography.caption)
+                        .foregroundColor(PopoverVisualStyle.tertiaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, PopoverVisualStyle.Spacing.xs)
                 }
-                .font(PopoverVisualStyle.Typography.body)
-                .foregroundColor(PopoverVisualStyle.primaryText)
-                .frame(minHeight: 38)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if showsDiagnostics {
-                Divider().padding(.leading, 22)
-                VStack(spacing: 5) {
-                    diagnosticRow("系统 HTTPS", ready: applicationFacts?.systemProxyAwareHTTPSReady)
-                    diagnosticRow("显式 Clash HTTPS", ready: applicationFacts?.explicitClashHTTPSReady)
-                    diagnosticRow("代理不感知 / TUN", ready: applicationFacts?.proxyUnawareHTTPSReady)
-                    diagnosticRow("ZCode 后台链路", ready: applicationFacts?.zcodeDiagnosticReady)
-                    if let code = applicationFacts?.zcodeHTTPStatus {
-                        Text("ZCode 匿名 HTTP 状态：\(code)（2xx–4xx 表示传输可达）")
-                            .font(PopoverVisualStyle.Typography.caption)
-                            .foregroundColor(PopoverVisualStyle.secondaryText)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .padding(.vertical, 8)
             }
         }
-        .padding(.horizontal, 12)
-        .popoverGroup()
+        .padding(.horizontal, PopoverVisualStyle.cardPadding)
+        .popoverSurface()
     }
 
-    private func diagnosticRow(_ title: String, ready: Bool?) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(ready == true ? "可达" : (ready == false ? "不可达" : "待检测"))
-                .foregroundColor(ready == true ? PopoverVisualStyle.healthy : PopoverVisualStyle.warning)
-        }
-        .font(PopoverVisualStyle.Typography.caption)
-    }
-
-    private func warningRow(_ reason: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: "exclamationmark.triangle.fill")
-            Text(reason)
-                .lineLimit(3)
-            Spacer(minLength: 4)
-            Button("打开 Clash") { openClash() }
-                .buttonStyle(.link)
-        }
-        .font(PopoverVisualStyle.Typography.caption)
-        .foregroundColor(PopoverVisualStyle.warning)
-        .padding(10)
-        .background(PopoverVisualStyle.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    private func reachabilityText(_ ready: Bool?) -> String {
+        guard let ready else { return "待检测" }
+        return ready ? "可达" : "不可达"
     }
 
     private var modeExplanation: String {
@@ -183,11 +161,11 @@ struct ClashModeTabView: View {
         }
     }
 
-    private var healthColor: Color {
+    private var healthState: PopoverFactState {
         switch controller.snapshot.health {
-        case .ready: return PopoverVisualStyle.healthy
-        case .switching: return .secondary
-        case .unavailable, .configurationDrift, .degraded: return PopoverVisualStyle.warning
+        case .ready: return .ok
+        case .switching: return .unknown
+        case .unavailable, .configurationDrift, .degraded: return .warning
         }
     }
 
