@@ -38,10 +38,12 @@ class StatusBarController: NSObject, NSWindowDelegate {
 
     private func setupStatusItem() {
         // 固定宽度避免抖动
-        statusItem = NSStatusBar.system.statusItem(withLength: 72)
+        statusItem = NSStatusBar.system.statusItem(withLength: StatusBarView.preferredWidth)
 
         // 使用自定义视图替代默认 button.title
-        statusBarView = StatusBarView(frame: NSRect(x: 0, y: 0, width: 72, height: 22))
+        statusBarView = StatusBarView(
+            frame: NSRect(x: 0, y: 0, width: StatusBarView.preferredWidth, height: 22)
+        )
 
         if let button = statusItem.button {
             // 将自定义视图添加到 button 内部
