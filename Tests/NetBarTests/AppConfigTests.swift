@@ -2,6 +2,16 @@ import XCTest
 @testable import NetBar
 
 final class AppConfigTests: XCTestCase {
+    func testNetworkPolicyShadowIsOffUnlessExplicitlyEnabled() {
+        let defaults = makeDefaults()
+        let config = AppConfig(defaults: defaults)
+
+        XCTAssertFalse(config.networkPolicyShadowEnabled)
+
+        config.networkPolicyShadowEnabled = true
+        XCTAssertTrue(AppConfig(defaults: defaults).networkPolicyShadowEnabled)
+    }
+
     func testV2SchemaDefaultsProviderAndCertificateFlag() throws {
         let defaults = makeDefaults()
         let legacyV2JSON = """

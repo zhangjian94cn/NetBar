@@ -1,7 +1,7 @@
 # ADR: NetBar 弹窗沿用原生轻量视觉语言
 
 - 日期: 2026-08-28
-- 状态: accepted
+- 状态: superseded（着色与状态条部分由 [2026-08-29 弹窗设计系统 ADR](2026-08-29-popover-shell-visual-system-adr.md) 取代；四栏信息架构与原生材质方向仍然有效）
 - 范围: NetBar 菜单栏弹窗视觉语言
 - 相关源码: [PopoverVisualStyle.swift](../Sources/NetBar/Views/PopoverVisualStyle.swift)、[MenuPopoverView.swift](../Sources/NetBar/Views/MenuPopoverView.swift)、[NetworkModeCard.swift](../Sources/NetBar/Views/Components/NetworkModeCard.swift)
 

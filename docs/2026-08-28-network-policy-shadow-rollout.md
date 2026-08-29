@@ -1,7 +1,7 @@
 # NetworkPolicyMachine 只读影子运行手册
 
 - 日期: 2026-08-28
-- 状态: active / 接管门禁未满足
+- 状态: opt-in / 接管门禁未满足（自 2026-08-29 起默认关闭，见 [默认关闭 ADR](2026-08-29-network-policy-shadow-default-off-adr.md)）
 - 范围: NetBar Direct Full 网络出口状态机
 - 相关源码: [影子协调器](../Sources/NetBar/Monitors/NetworkPolicyShadowCoordinator.swift)、[纯状态机](../Sources/NetBar/Monitors/NetworkPolicyMachine.swift)、[旧执行控制器](../Sources/NetBar/Monitors/NetworkModeController.swift)、[影子测试](../Tests/NetBarTests/NetworkPolicyShadowCoordinatorTests.swift)
 - 相关决策: [证据驱动状态机 ADR](2026-08-27-evidence-driven-network-policy-machine-adr.md)、[underlay/overlay 边界 ADR](2026-08-28-underlay-overlay-control-boundary-adr.md)
@@ -11,6 +11,15 @@
 影子期用于比较纯 reducer 的提议与当前生产控制器的实际稳定结果。`NetworkPolicyShadowCoordinator` 是 actor，串行接收事实；它没有 Route Helper、Mini Helper、Mihomo 或配置写入依赖，所有 `NetworkPolicyEffect` 都只会成为诊断日志中的 proposal。
 
 旧 `NetworkModeController` 在影子期继续是唯一真实副作用所有者。24 小时门禁未满足前，不得把 proposal 接到任何执行器，也不得因为影子分歧自动改变 Mini/Wi-Fi 或 Clash 模式。
+
+## 如何开启一次观察窗口
+
+影子运行默认关闭。开窗观察时二选一：
+
+- 临时运行：以 `NETBAR_POLICY_SHADOW=1` 启动 NetBar。
+- 持续观察：把 `AppConfig.networkPolicyShadowEnabled` 置为 `true`（UserDefaults key `network_policy_shadow_enabled`）。
+
+开关只决定 `MonitorCoordinator` 是否构造 `NetworkPolicyShadowCoordinator`；关闭时 `NetworkModeController.policyShadow` 为 `nil`，与该参数从未传入等价。窗口结束后请关闭，避免无人复核的观察继续写日志。
 
 ## Generation 与收敛
 

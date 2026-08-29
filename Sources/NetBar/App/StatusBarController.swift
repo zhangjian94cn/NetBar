@@ -195,7 +195,12 @@ class StatusBarController: NSObject, NSWindowDelegate {
         guard let path = ProcessInfo.processInfo.environment["NETBAR_CAPTURE_POPOVER_PATH"],
               !path.isEmpty else { return }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak panel] in
+        // Long enough for the first fact sample to land, so captures review the
+        // settled panel instead of its loading state. Slow `networksetup` /
+        // `route` sampling can need more, so the wait is tunable.
+        let delay = ProcessInfo.processInfo.environment["NETBAR_CAPTURE_DELAY"]
+            .flatMap(Double.init) ?? 3
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak panel] in
             guard let view = panel?.contentView else { return }
             view.layoutSubtreeIfNeeded()
             let bounds = view.bounds

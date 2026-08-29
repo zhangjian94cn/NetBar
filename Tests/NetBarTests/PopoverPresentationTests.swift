@@ -75,6 +75,109 @@ final class PopoverPresentationTests: XCTestCase {
         XCTAssertFalse(presentation.needsAttention(.applications))
     }
 
+    // MARK: - Tab badges mark actionable work only
+
+    func testInProgressProofLevelsDoNotBadgeTheOutletTab() {
+        for level in [ConnectivityProofLevel.routeEligible, .preflightEligible, .degradedActive] {
+            let presentation = PopoverStatusPresentation(
+                proofLevel: level,
+                effectiveMode: .localWiFi,
+                overlay: overlay(health: .ready, dataPlaneReady: true, mode: .tunFull),
+                dnsFacts: dns(dependency: .independent, ready: true),
+                primaryReason: nil
+            )
+            XCTAssertFalse(
+                presentation.needsAttention(.outlet),
+                "\(level) is in-progress, not something the user can act on"
+            )
+        }
+    }
+
+    func testActionableOutletFaultBadgesEvenWhenTheRouteIsVerified() {
+        let presentation = PopoverStatusPresentation(
+            proofLevel: .activeVerified,
+            effectiveMode: .localWiFi,
+            overlay: overlay(health: .ready, dataPlaneReady: true, mode: .tunFull),
+            dnsFacts: dns(dependency: .independent, ready: true),
+            primaryReason: "路由事务需要手动恢复",
+            outletFault: true
+        )
+
+        XCTAssertTrue(presentation.needsAttention(.outlet))
+    }
+
+    func testSwitchingClashDoesNotBadgeTheClashTab() {
+        let presentation = PopoverStatusPresentation(
+            proofLevel: .activeVerified,
+            effectiveMode: .localWiFi,
+            overlay: overlay(health: .switching, dataPlaneReady: false, mode: .tunFull),
+            dnsFacts: dns(dependency: .independent, ready: true),
+            primaryReason: nil
+        )
+
+        XCTAssertFalse(presentation.needsAttention(.clash))
+    }
+
+    func testUnsampledDNSDoesNotBadgeMonitoring() {
+        let presentation = PopoverStatusPresentation(
+            proofLevel: .routeEligible,
+            effectiveMode: nil,
+            overlay: overlay(health: .ready, dataPlaneReady: true, mode: .tunFull),
+            dnsFacts: nil,
+            primaryReason: nil
+        )
+
+        XCTAssertFalse(presentation.needsAttention(.monitoring))
+        XCTAssertEqual(presentation.dnsText, "待检测")
+    }
+
+    // MARK: - Outlet presentation
+
+    func testUnsampledOutletFactsAreUnknownRatherThanWarnings() {
+        let presentation = NetworkOutletPresentation(
+            snapshot: nil,
+            helperStatus: nil,
+            proofLevel: .unavailable,
+            failoverPhase: .miniActive,
+            routePreference: .miniPreferred,
+            requiresManualRecovery: false,
+            dnsFacts: nil,
+            applicationFacts: nil
+        )
+
+        XCTAssertEqual(presentation.heroState, .unknown)
+        XCTAssertEqual(presentation.linkStateDot, .unknown)
+        XCTAssertEqual(presentation.sharingStateDot, .unknown)
+        XCTAssertEqual(presentation.proofStateDot, .unknown)
+        XCTAssertEqual(presentation.dnsState, .unknown)
+        XCTAssertEqual(presentation.managementState, .unknown)
+        XCTAssertEqual(presentation.hotspotAPState, .unknown)
+        XCTAssertEqual(presentation.proxyUnawareState, .unknown)
+        XCTAssertEqual(presentation.outletText, "待确认")
+    }
+
+    func testAddressTextOmitsUnknownHalvesInsteadOfPrintingDashes() {
+        XCTAssertEqual(NetworkOutletPresentation.addressText(local: nil, mini: nil), "")
+        XCTAssertEqual(NetworkOutletPresentation.addressText(local: "10.254.254.2", mini: nil), "本机 10.254.254.2")
+        XCTAssertEqual(
+            NetworkOutletPresentation.addressText(local: "10.254.254.2", mini: "192.168.2.1"),
+            "本机 10.254.254.2 · Mini 192.168.2.1"
+        )
+    }
+
+    func testFactStateTreatsNilAsUnknownAndFalseAsWarning() {
+        XCTAssertEqual(PopoverFactState(ready: nil), .unknown)
+        XCTAssertEqual(PopoverFactState(ready: false), .warning)
+        XCTAssertEqual(PopoverFactState(ready: true), .ok)
+    }
+
+    func testPlaceholderDetailsAreDropped() {
+        XCTAssertNil(PopoverFactTile.meaningfulDetail(nil))
+        XCTAssertNil(PopoverFactTile.meaningfulDetail("—"))
+        XCTAssertNil(PopoverFactTile.meaningfulDetail("  "))
+        XCTAssertEqual(PopoverFactTile.meaningfulDetail(" 10.254.254.2 "), "10.254.254.2")
+    }
+
     private func overlay(
         health: ClashOverlayHealth,
         dataPlaneReady: Bool,
