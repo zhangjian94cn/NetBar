@@ -1,63 +1,59 @@
 # NetBar Popover Visual QA
 
 - Date: 2026-08-29
-- Scope: Direct Full fixed-height four-tab popover, unified design system and demoted status shell
-- Reference: the rejected 2026-08-28 build (permanent status band, two-state fact colors, hardcoded spacing)
+- Scope: Direct Full four-tab popover — compact geometry, dense type scale, two-role palette, data meters
+- Reference: the 2026-08-29 first pass (380 × 540pt, 11–20pt type, purple/cyan card icons)
 - Decision: [2026-08-29 弹窗设计系统 ADR](docs/2026-08-29-popover-shell-visual-system-adr.md)
-- Implementation: [PopoverVisualStyle.swift](Sources/NetBar/Views/PopoverVisualStyle.swift), [PopoverKit.swift](Sources/NetBar/Views/Components/PopoverKit.swift), [MenuPopoverView.swift](Sources/NetBar/Views/MenuPopoverView.swift), [PopoverPresentation.swift](Sources/NetBar/App/PopoverPresentation.swift)
+- Implementation: [PopoverVisualStyle.swift](Sources/NetBar/Views/PopoverVisualStyle.swift), [PopoverKit.swift](Sources/NetBar/Views/Components/PopoverKit.swift), [MenuPopoverView.swift](Sources/NetBar/Views/MenuPopoverView.swift)
 - Captured implementation: [light](screenshots/popover-tabs.png), [dark](screenshots/popover-tabs-dark.png)
 
 ## Comparison method
 
-The four tabs were captured from one Debug build at `380 × 540pt` in both Aqua and Dark Aqua, via the Debug-only capture hook in [StatusBarController.swift](Sources/NetBar/App/StatusBarController.swift). Captures preserve the machine's live network facts.
+Four tabs captured from one Debug build in both Aqua and Dark Aqua via the Debug-only hook in [StatusBarController.swift](Sources/NetBar/App/StatusBarController.swift), rendered from the machine's live network facts. Captures measured 680 × 920px at 2x, confirming the 340 × 460pt frame.
 
-Two changes make the harness safe to run next to the installed app:
-
-- The capture run no longer starts policy monitoring ([MonitorCoordinator.swift](Sources/NetBar/App/MonitorCoordinator.swift)), so two policy owners cannot compete for real route transactions.
-- The single-instance guard now keys on the running bundle identifier ([NetBarApp.swift](Sources/NetBar/App/NetBarApp.swift)) instead of the hardcoded shipping one, so a Debug capture bundle can run while the user's menu bar app stays up. Previously every capture exited silently.
-
-`NETBAR_CAPTURE_DELAY` tunes how long the harness waits before snapshotting, because `networksetup` / `route` sampling can take several seconds to settle.
+The capture bundle uses its own bundle identifier and does not start policy monitoring, so it neither touches the installed app's preferences nor competes with it for route transactions. `NETBAR_CAPTURE_DELAY` was set to 12s so the sparkline window had enough samples to render.
 
 ## Fixed in this pass
 
-| Priority | Defect in the previous build | Resolution |
+| Priority | Defect | Resolution |
 |---|---|---|
-| P0 | Unsampled facts rendered as orange warnings (`healthy ? green : orange`), so a freshly opened panel was a wall of problems | `PopoverFactState`四态；`unknown` 为空心灰环加次要色文字 |
-| P0 | Badges on three of four tabs at all times, carrying no information | `needsAttention` 改由可处理信号驱动；`.switching`、`routeEligible`、`preflightEligible`、`degradedActive` 与未采样不再触发 |
-| P0 | Permanent pink alarm band occupying three lines at the top of every tab | 状态并入 header 单行；`primaryReason` 改由拥有该问题的页面以 banner 呈现 |
-| P1 | Tab bar inset 12 against content inset 16, a visible 4pt misalignment | 唯一 `contentInset = 16`，导航与内容共用 |
-| P1 | Selected pill only 0.04 alpha above its own container | 选中态改用 accent 色相；Graphite 系统强调色回退到 `systemBlue` |
-| P1 | Card surfaces invisible in Dark Aqua over `.regularMaterial` | 表面改用 `NSColor(name:dynamicProvider:)`，浅深各自调 alpha |
-| P1 | Applications tab left dead space below a hard-coded 150pt table body | 表体改 `maxHeight: .infinity`，填满固定外框 |
-| P2 | 10pt primary tier below `NSFont.smallSystemFontSize`; spacing 13/11/9/7/6/4/3; radii 5/6/9/10/11/12/18 | 字号最小档提到 11pt；间距 4/8/12/16；圆角 6/10/10/16 |
-| P2 | Seven hues with green meaning both "healthy" and "press me" | 状态色仅用于点与横幅；选中与操作用 accent；业务色降级为卡片前导图标 |
-| P2 | `—` placeholders dominating the outlet evidence grid | 空占位不渲染；`addressText` 只拼接已知的一半 |
-
-## Structural results
-
-- Removed 5 fact-row implementations, 2 disclosure implementations, 2 segmented-control treatments, 4 badge implementations, 3 banner implementations, and 2 pure pass-through row files.
-- Outlet display logic moved from the view into `NetworkOutletPresentation`, now covered by `PopoverPresentationTests`.
-- `swift test`: 223 tests, 0 failures. Network state machine, Helper, failover and Clash/TUN sources unchanged.
+| P0 | Panel too large at 380 × 540pt | 340 × 460（Lite 340 × 390），几何收进 `PopoverVisualStyle.Metrics` |
+| P0 | Type scale too large (11–20pt) | 整体下移一档 → 10 / 11 / 12 / 13 / 15 |
+| P1 | Width declared twice (`StatusBarController` + `MenuPopoverView`) | 两处都从 `Metrics.panelWidth` 读 |
+| P1 | IP rendered at a hardcoded 20pt mono, bypassing the type scale | 改用 `Typography.metric` |
+| P1 | Row rhythm loose | fact 30→26 / 折叠 36→30 / Tab 40→34 / 表格行 30→26 / 表格图标 20→16；`contentInset` 16→12 |
+| P2 | Purple and cyan card icons were the last decorative hues | 全部中性化，面板只剩状态色与强调色 |
+| P2 | Quota, share and risk existed as numbers only | `PopoverMeter` 用于 VPS 配额、应用占比、IP 风险值 |
+| P2 | Speed shown as two instantaneous figures with no trend | `PopoverSparkline` + `NetworkMonitor.speedHistory`（上限 60） |
 
 ## Verified in the captures
 
 | Check | Result |
 |---|---|
-| All four tabs render inside one `380 × 540pt` frame in both appearances | Passed |
-| Tab bar and page content share the same left/right edge | Passed |
-| Exactly one accent-filled element per page (the current selection) | Passed |
-| Unknown facts render as hollow rings, not warnings | Passed |
-| Tab badges appear only for the two genuinely faulted domains (offline outlet, Clash coexistence baseline) | Passed |
-| Card surfaces legible in both Aqua and Dark Aqua | Passed |
-| Applications table fills the frame and truncates long app names without overflow | Passed |
-| Outlet, Clash and monitoring pages keep their own scrolling viewport | Passed |
-| No content overflows the fixed frame at the larger type scale | Passed |
+| Captures measure 680 × 920px at 2x, i.e. the intended 340 × 460pt | Passed |
+| Applications table shows 10 full rows with the 11th clipped, signalling scroll | Passed |
+| App names, `Mac mini 上游待检测` and the IP location string fit at 340pt wide | Passed |
+| Share tracks readable behind rows without consuming a column | Passed |
+| Sparkline reads as a trend, not as a rule pinned to the top edge | Passed |
+| IP risk meter correctly absent when `ipRisk` is nil | Passed |
+| Only status colors and the accent appear; no decorative hues | Passed |
+| Card surfaces and meters legible in both Aqua and Dark Aqua | Passed |
+| No content overflows the 460pt frame | Passed |
+
+`swift test`: 230 tests, 0 failures. Both distribution flavors build.
+
+## Regressions guarded by tests
+
+`PopoverMeterTests` covers the two ways a meter can lie:
+
+- An undefined proportion returns `nil`, so an unlimited VPS quota omits the bar instead of drawing 0%.
+- A constant rate keeps every sparkline point below the ceiling, so a steady connection cannot render as a flat rule along the top edge.
 
 ## Known, not addressed here
 
-- The outlet grid can pair `端到端验证 / 不可用` with the detail `Mac mini 正常`, because the proof level and `NetworkFailoverPhase` disagree. That is controller state, not presentation, and is left untouched by this pass.
-- `SettingsView` has not been migrated onto the token scale.
-- `L10n` still covers only part of the user-visible strings.
+- The VPS quota meter has no on-machine data to exercise it (no VPS configured); its behaviour is covered by unit tests only.
+- The outlet grid can still pair `端到端验证 / 不可用` with the detail `Mac mini 正常`, because the proof level and `NetworkFailoverPhase` disagree. Controller state, untouched by this pass.
+- `SettingsView` is not on the token scale; `L10n` still covers only part of the user-visible strings.
 
 ## Final result
 

@@ -67,7 +67,7 @@ struct MenuPopoverView: View {
                 bottomTabBar
             }
         }
-        .frame(width: 380)
+        .frame(width: PopoverVisualStyle.Metrics.panelWidth)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: PopoverVisualStyle.Radius.shell, style: .continuous))
         .overlay {
@@ -115,7 +115,7 @@ struct MenuPopoverView: View {
     /// actionable banner themselves.
     private var headerSection: some View {
         HStack(spacing: PopoverVisualStyle.Spacing.sm) {
-            PopoverStatusDot(state: statusPresentation.tone.factState, diameter: 8)
+            PopoverStatusDot(state: statusPresentation.tone.factState, diameter: 7)
 
             Text(statusPresentation.connectivity.displayName)
                 .font(PopoverVisualStyle.Typography.title)
@@ -130,11 +130,11 @@ struct MenuPopoverView: View {
 
             Button(action: refreshSelectedSection) {
                 Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
             }
             .buttonStyle(.plain)
             .foregroundColor(PopoverVisualStyle.secondaryText)
-            .frame(width: 24, height: 24)
+            .frame(width: 20, height: 20)
             .help("刷新当前页面")
 
             Menu {
@@ -147,17 +147,17 @@ struct MenuPopoverView: View {
                 }
             } label: {
                 Image(systemName: "gearshape")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .frame(width: 24, height: 24)
+            .frame(width: 20, height: 20)
             .foregroundColor(PopoverVisualStyle.secondaryText)
             .help("设置与退出")
         }
         .padding(.horizontal, PopoverVisualStyle.contentInset)
-        .padding(.vertical, PopoverVisualStyle.Spacing.sm + 2)
+        .padding(.vertical, PopoverVisualStyle.Spacing.xs + 2)
     }
 
     @ViewBuilder
@@ -207,7 +207,7 @@ struct MenuPopoverView: View {
             }
         }
         .padding(.horizontal, PopoverVisualStyle.contentInset)
-        .padding(.vertical, PopoverVisualStyle.Spacing.sm)
+        .padding(.vertical, PopoverVisualStyle.Spacing.xs + 2)
     }
 
     private func tabLabel(_ section: PopoverSection) -> some View {
@@ -215,8 +215,8 @@ struct MenuPopoverView: View {
         return VStack(spacing: 3) {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: section.systemImage)
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(width: 24, height: 18)
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 20, height: 15)
                 if tabNeedsAttention(section) {
                     Circle()
                         .fill(PopoverVisualStyle.warning)
@@ -227,7 +227,7 @@ struct MenuPopoverView: View {
             Text(section.title).font(PopoverVisualStyle.Typography.captionStrong)
         }
         .foregroundColor(isSelected ? PopoverVisualStyle.accent : PopoverVisualStyle.secondaryText)
-        .frame(maxWidth: .infinity, minHeight: 40)
+        .frame(maxWidth: .infinity, minHeight: 34)
         .background {
             RoundedRectangle(cornerRadius: PopoverVisualStyle.Radius.control, style: .continuous)
                 .fill(isSelected ? PopoverVisualStyle.accent.opacity(0.16) : Color.clear)
@@ -318,7 +318,8 @@ private struct ApplicationsTabView: View {
                             app: app,
                             iconResolver: appIconResolver,
                             downloadText: app.formattedDownload,
-                            uploadText: app.formattedUpload
+                            uploadText: app.formattedUpload,
+                            share: PopoverMeter.fraction(app.totalSpeed, of: peakSpeed)
                         )
                     }
                 }
@@ -338,31 +339,45 @@ private struct ApplicationsTabView: View {
                             app: app,
                             iconResolver: appIconResolver,
                             downloadText: app.formattedCumulativeDown,
-                            uploadText: app.formattedCumulativeUp
+                            uploadText: app.formattedCumulativeUp,
+                            share: PopoverMeter.fraction(app.totalCumulative, of: peakCumulative)
                         )
                     }
                 }
             }
         }
         .padding(.horizontal, PopoverVisualStyle.contentInset)
-        .padding(.vertical, PopoverVisualStyle.Spacing.md)
+        .padding(.vertical, PopoverVisualStyle.Spacing.sm)
+    }
+
+    private var peakSpeed: Double {
+        processTrafficMonitor.appSpeeds.prefix(maxTableApps).map(\.totalSpeed).max() ?? 0
+    }
+
+    private var peakCumulative: UInt64 {
+        processTrafficMonitor.cumulativeRanking.prefix(maxTableApps).map(\.totalCumulative).max() ?? 0
     }
 
     private var speedSection: some View {
-        HStack(spacing: 0) {
-            speedValue(
-                title: L10n.Speed.download,
-                value: networkMonitor.currentSpeed.formattedDownload,
-                icon: "arrow.down"
-            )
-            Rectangle()
-                .fill(PopoverVisualStyle.hairline)
-                .frame(width: 1, height: 36)
-            speedValue(
-                title: L10n.Speed.upload,
-                value: networkMonitor.currentSpeed.formattedUpload,
-                icon: "arrow.up"
-            )
+        VStack(spacing: PopoverVisualStyle.Spacing.xs) {
+            HStack(spacing: 0) {
+                speedValue(
+                    title: L10n.Speed.download,
+                    value: networkMonitor.currentSpeed.formattedDownload,
+                    icon: "arrow.down"
+                )
+                Rectangle()
+                    .fill(PopoverVisualStyle.hairline)
+                    .frame(width: 1, height: 28)
+                speedValue(
+                    title: L10n.Speed.upload,
+                    value: networkMonitor.currentSpeed.formattedUpload,
+                    icon: "arrow.up"
+                )
+            }
+
+            PopoverSparkline(samples: networkMonitor.speedHistory.map(\.total), height: 16)
+                .padding(.horizontal, PopoverVisualStyle.Spacing.xs)
         }
     }
 
@@ -415,7 +430,7 @@ private struct MonitoringTabView: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: PopoverVisualStyle.Spacing.md) {
+            VStack(alignment: .leading, spacing: PopoverVisualStyle.blockSpacing) {
                 networkFacts
 
                 if appConfig.ipCheckEnabled {
@@ -427,12 +442,12 @@ private struct MonitoringTabView: View {
                 }
             }
             .padding(.horizontal, PopoverVisualStyle.contentInset)
-            .padding(.vertical, PopoverVisualStyle.Spacing.md)
+            .padding(.vertical, PopoverVisualStyle.Spacing.sm)
         }
     }
 
     private var networkFacts: some View {
-        VStack(spacing: PopoverVisualStyle.Spacing.md) {
+        VStack(spacing: PopoverVisualStyle.blockSpacing) {
             HStack(spacing: PopoverVisualStyle.Spacing.md) {
                 PopoverFactTile(
                     title: "当前物理出口",

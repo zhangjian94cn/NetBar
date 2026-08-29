@@ -103,7 +103,7 @@ struct PopoverFactRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        .frame(minHeight: compact ? 20 : 30)
+        .frame(minHeight: compact ? 18 : 26)
     }
 }
 
@@ -122,10 +122,10 @@ struct PopoverCard<Trailing: View, Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: PopoverVisualStyle.Spacing.sm) {
+        VStack(alignment: .leading, spacing: PopoverVisualStyle.Spacing.xs + 2) {
             HStack(spacing: PopoverVisualStyle.Spacing.sm) {
                 Image(systemName: icon)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(accent)
                 Text(title)
                     .font(PopoverVisualStyle.Typography.section)
@@ -135,7 +135,7 @@ struct PopoverCard<Trailing: View, Content: View>: View {
             }
             content()
         }
-        .padding(PopoverVisualStyle.Spacing.md)
+        .padding(PopoverVisualStyle.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .popoverSurface()
     }
@@ -187,7 +187,7 @@ struct PopoverDisclosure<Content: View>: View {
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 }
                 .font(PopoverVisualStyle.Typography.body)
-                .frame(minHeight: 36)
+                .frame(minHeight: 30)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -220,7 +220,7 @@ struct PopoverSegmentedOption: View {
             Label(title, systemImage: icon)
                 .font(PopoverVisualStyle.Typography.bodyStrong)
                 .foregroundColor(isSelected ? accent : PopoverVisualStyle.secondaryText)
-                .frame(maxWidth: .infinity, minHeight: 28)
+                .frame(maxWidth: .infinity, minHeight: 24)
                 .background {
                     RoundedRectangle(cornerRadius: PopoverVisualStyle.Radius.control - 2, style: .continuous)
                         .fill(isSelected ? accent.opacity(0.16) : Color.clear)
@@ -236,7 +236,7 @@ struct PopoverSegmentedOption: View {
 extension View {
     /// Track behind a row of `PopoverSegmentedOption`s.
     func popoverSegmentedTrack() -> some View {
-        padding(3)
+        padding(2)
             .popoverSurface(radius: PopoverVisualStyle.Radius.control)
     }
 }
@@ -286,7 +286,7 @@ struct PopoverBanner<Action: View>: View {
         }
         .font(PopoverVisualStyle.Typography.caption)
         .foregroundColor(tint)
-        .padding(PopoverVisualStyle.Spacing.sm + 2)
+        .padding(PopoverVisualStyle.Spacing.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: PopoverVisualStyle.Radius.card, style: .continuous)
@@ -327,7 +327,7 @@ struct PopoverActionButton: View {
             Label(title, systemImage: icon)
                 .font(PopoverVisualStyle.Typography.bodyStrong)
                 .foregroundColor(PopoverVisualStyle.accent)
-                .frame(maxWidth: .infinity, minHeight: 32)
+                .frame(maxWidth: .infinity, minHeight: 28)
                 .popoverSurface(radius: PopoverVisualStyle.Radius.control)
                 .contentShape(Rectangle())
         }
@@ -356,6 +356,97 @@ extension PopoverStatusTone {
         case .caution: return .warning
         case .negative: return .fault
         case .neutral: return .unknown
+        }
+    }
+}
+
+// MARK: - Meters
+
+/// Horizontal proportion bar for quota, share and score.
+///
+/// `fraction` is pre-clamped by `PopoverMeter.fraction(_:of:)`, which returns
+/// `nil` when a proportion is undefined (no limit, or nothing to compare
+/// against) so callers can omit the bar entirely rather than draw a misleading
+/// empty one.
+struct PopoverMeter: View {
+    let fraction: Double
+    var tint: Color = PopoverVisualStyle.meterFill
+    var height: CGFloat = 3
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(PopoverVisualStyle.meterTrack)
+                Capsule()
+                    .fill(tint)
+                    .frame(width: max(0, min(1, fraction)) * geometry.size.width)
+            }
+        }
+        .frame(height: height)
+    }
+
+    /// `nil` when the proportion is undefined: a zero or negative total means
+    /// "unlimited" or "nothing measured yet", neither of which is 0%.
+    static func fraction(_ value: some BinaryInteger, of total: some BinaryInteger) -> Double? {
+        guard total > 0 else { return nil }
+        return min(1, max(0, Double(value) / Double(total)))
+    }
+
+    /// Floating-point variant for speeds.
+    static func fraction(_ value: Double, of total: Double) -> Double? {
+        guard total > 0, value.isFinite, total.isFinite else { return nil }
+        return min(1, max(0, value / total))
+    }
+}
+
+/// Compact line chart over a fixed-length sample window.
+///
+/// Scales to the window's own maximum so idle periods stay flat instead of
+/// amplifying noise into a busy-looking chart.
+struct PopoverSparkline: View {
+    let samples: [Double]
+    var tint: Color = PopoverVisualStyle.meterFill
+    var height: CGFloat = 18
+
+    /// Below this the window is too short to read as a trend, and a two-point
+    /// line looks like a stray rule rather than a chart.
+    static let minimumSamples = 6
+
+    var body: some View {
+        GeometryReader { geometry in
+            let points = Self.points(samples, in: geometry.size)
+            if !points.isEmpty {
+                ZStack {
+                    Path { path in
+                        path.addLines(points)
+                        path.addLine(to: CGPoint(x: geometry.size.width, y: geometry.size.height))
+                        path.addLine(to: CGPoint(x: 0, y: geometry.size.height))
+                        path.closeSubpath()
+                    }
+                    .fill(tint.opacity(0.12))
+
+                    Path { path in path.addLines(points) }
+                        .stroke(tint, style: StrokeStyle(lineWidth: 1.2, lineJoin: .round))
+                }
+            }
+        }
+        .frame(height: height)
+        .accessibilityHidden(true)
+    }
+
+    static func points(_ samples: [Double], in size: CGSize) -> [CGPoint] {
+        guard samples.count >= minimumSamples else { return [] }
+        let peak = samples.max() ?? 0
+        guard peak > 0 else { return [] }
+
+        // Scale against the peak plus headroom. Without it a steady rate
+        // normalises to 1.0 at every point and draws a hard line along the top
+        // edge, which reads as a divider instead of a trend.
+        let ceiling = peak * 1.25
+        let step = size.width / CGFloat(samples.count - 1)
+        return samples.enumerated().map { index, value in
+            let normalized = min(1, max(0, value / ceiling))
+            return CGPoint(x: CGFloat(index) * step, y: size.height * (1 - normalized))
         }
     }
 }

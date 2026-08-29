@@ -4,11 +4,22 @@ import SwiftUI
 /// Shared presentation tokens for the menu popover.
 ///
 /// Every page consumes the same spacing, radius, type and semantic-color scale.
-/// Business identity survives only as a leading icon tint, never as a surface
-/// fill, so the panel keeps one neutral material instead of a tinted card per
-/// feature. Status colors carry exactly one meaning: how the network path is
-/// doing right now.
+/// The panel carries exactly two color roles: status (green / orange / red) and
+/// accent (selection, actions and meters). Everything else is neutral, so a
+/// colored pixel always means something.
 enum PopoverVisualStyle {
+
+    // MARK: - Panel geometry
+
+    /// The panel's only geometry source. `StatusBarController` sizes the window
+    /// from it and `MenuPopoverView` frames the root view from it, so a resize
+    /// is a single edit instead of two constants drifting apart.
+    enum Metrics {
+        static let panelWidth: CGFloat = 340
+        static let directFullHeight: CGFloat = 460
+        static let appStoreLiteHeight: CGFloat = 390
+        static let panelMinHeight: CGFloat = 340
+    }
 
     // MARK: - Spacing
 
@@ -21,31 +32,42 @@ enum PopoverVisualStyle {
 
     /// The single horizontal inset shared by every page and by the tab bar, so
     /// content edges and navigation edges always line up.
-    static let contentInset: CGFloat = Spacing.lg
+    static let contentInset: CGFloat = Spacing.md
+
+    /// Gap between the stacked blocks of a page.
+    static let blockSpacing: CGFloat = Spacing.sm
+
+    /// Inner padding of a card or a grouped list.
+    static let cardPadding: CGFloat = 10
 
     // MARK: - Radius
 
     enum Radius {
-        static let badge: CGFloat = 6
-        static let control: CGFloat = 10
-        static let card: CGFloat = 10
-        static let shell: CGFloat = 16
+        static let badge: CGFloat = 5
+        static let control: CGFloat = 8
+        static let card: CGFloat = 8
+        static let shell: CGFloat = 12
     }
 
     // MARK: - Typography
 
-    /// The smallest tier is 11pt: `NSFont.smallSystemFontSize` is the macOS
-    /// floor for readable interface text, and the previous 10pt tier was the
-    /// main reason the panel read as low quality.
+    /// A dense five-tier scale for a compact utility panel: 10 / 11 / 12 / 13 / 15.
+    ///
+    /// An earlier revision raised the floor to 11pt because that is
+    /// `NSFont.smallSystemFontSize`. In this panel that traded away the density
+    /// the tool is for, and 10pt is ordinary for short secondary labels in a
+    /// macOS menu bar utility. The hierarchy defect that revision fixed was the
+    /// *absence of distinct tiers*, not the floor itself, so the tiers stay
+    /// distinct here while every one of them drops a step.
     enum Typography {
-        static let title = Font.system(size: 16, weight: .semibold)
-        static let section = Font.system(size: 14, weight: .semibold)
-        static let body = Font.system(size: 12, weight: .regular)
-        static let bodyStrong = Font.system(size: 12, weight: .semibold)
-        static let caption = Font.system(size: 11, weight: .regular)
-        static let captionStrong = Font.system(size: 11, weight: .semibold)
-        static let data = Font.system(size: 11, weight: .medium, design: .monospaced)
-        static let metric = Font.system(size: 20, weight: .semibold, design: .monospaced)
+        static let title = Font.system(size: 13, weight: .semibold)
+        static let section = Font.system(size: 12, weight: .semibold)
+        static let body = Font.system(size: 11, weight: .regular)
+        static let bodyStrong = Font.system(size: 11, weight: .semibold)
+        static let caption = Font.system(size: 10, weight: .regular)
+        static let captionStrong = Font.system(size: 10, weight: .semibold)
+        static let data = Font.system(size: 10, weight: .medium, design: .monospaced)
+        static let metric = Font.system(size: 15, weight: .semibold, design: .monospaced)
     }
 
     // MARK: - Semantic status colors
@@ -73,11 +95,16 @@ enum PopoverVisualStyle {
 
     private static let graphiteAccentValue = -1
 
-    // MARK: - Business identity
+    // MARK: - Meters
 
-    /// Used to tint a card's leading icon. Never used as a surface fill.
-    static let ipAccent = Color(nsColor: .systemPurple)
-    static let vpsAccent = Color(nsColor: .systemCyan)
+    /// Fill for proportion bars and sparklines. Data density, not decoration:
+    /// it is the accent at low opacity so a meter never competes with the
+    /// status dots sitting next to it.
+    static let meterFill = accent.opacity(0.55)
+    static let meterTrack = Color(nsColor: .popoverDynamic(
+        light: NSColor.black.withAlphaComponent(0.08),
+        dark: NSColor.white.withAlphaComponent(0.12)
+    ))
 
     // MARK: - Text
 

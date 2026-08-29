@@ -5,7 +5,7 @@ struct VPSTrafficCard: View {
     let vps: VPSTrafficMonitor.VPSTraffic
 
     var body: some View {
-        PopoverCard(icon: "cloud.fill", title: vps.name, accent: PopoverVisualStyle.vpsAccent) {
+        PopoverCard(icon: "cloud.fill", title: vps.name) {
             Text(vps.lastUpdatedText)
                 .font(PopoverVisualStyle.Typography.caption)
                 .foregroundColor(PopoverVisualStyle.tertiaryText)
@@ -16,6 +16,10 @@ struct VPSTrafficCard: View {
                     metric(title: "下载", icon: "arrow.down", value: vps.formattedDownload)
                     metric(title: "总计", icon: nil, value: vps.formattedTotal, suffix: "/ \(vps.formattedLimit)")
                     Spacer(minLength: 0)
+                }
+
+                if let fraction = PopoverMeter.fraction(vps.total, of: vps.totalLimit) {
+                    PopoverMeter(fraction: fraction, tint: quotaTint(fraction))
                 }
 
                 if let error = vps.error {
@@ -43,6 +47,14 @@ struct VPSTrafficCard: View {
                 }
             }
         }
+    }
+
+    /// Quota nearing its limit is a real warning, so the bar escalates instead
+    /// of staying a decorative accent.
+    private func quotaTint(_ fraction: Double) -> Color {
+        if fraction >= 0.9 { return PopoverVisualStyle.fault }
+        if fraction >= 0.75 { return PopoverVisualStyle.warning }
+        return PopoverVisualStyle.meterFill
     }
 
     private func metric(title: String, icon: String?, value: String, suffix: String? = nil) -> some View {

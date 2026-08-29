@@ -5,10 +5,10 @@ import SwiftUI
 
 /// 菜单栏控制器 — 管理 NSStatusItem 和原生风格浮层面板
 class StatusBarController: NSObject, NSWindowDelegate {
-    private let panelWidth: CGFloat = 380
-    private let directFullPanelHeight: CGFloat = 540
-    private let appStoreLitePanelHeight: CGFloat = 460
-    private let panelMinHeight: CGFloat = 420
+    private let panelWidth = PopoverVisualStyle.Metrics.panelWidth
+    private let directFullPanelHeight = PopoverVisualStyle.Metrics.directFullHeight
+    private let appStoreLitePanelHeight = PopoverVisualStyle.Metrics.appStoreLiteHeight
+    private let panelMinHeight = PopoverVisualStyle.Metrics.panelMinHeight
     private let screenEdgeMargin: CGFloat = 8
     private let panelMenuBarGap: CGFloat = 0
 

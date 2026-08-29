@@ -8,7 +8,7 @@ struct ClashModeTabView: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: PopoverVisualStyle.Spacing.md) {
+            VStack(alignment: .leading, spacing: PopoverVisualStyle.blockSpacing) {
                 hero
                 modeSelector
                 explanation
@@ -24,7 +24,7 @@ struct ClashModeTabView: View {
                 }
             }
             .padding(.horizontal, PopoverVisualStyle.contentInset)
-            .padding(.vertical, PopoverVisualStyle.Spacing.md)
+            .padding(.vertical, PopoverVisualStyle.Spacing.sm)
         }
         .onAppear { controller.refresh() }
         .help("Clash 模式只会在你点击后切换；网络故障转移不会自动开关 TUN。")
@@ -33,7 +33,7 @@ struct ClashModeTabView: View {
     private var hero: some View {
         HStack(alignment: .center, spacing: PopoverVisualStyle.Spacing.sm) {
             Image(systemName: "shield.lefthalf.filled")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(PopoverVisualStyle.secondaryText)
             VStack(alignment: .leading, spacing: 1) {
                 Text(controller.snapshot.mode?.displayName ?? "正在检测 Clash")
@@ -91,7 +91,7 @@ struct ClashModeTabView: View {
                 state: controller.snapshot.coexistenceBaselineReady ? .ok : .warning
             )
         }
-        .padding(.horizontal, PopoverVisualStyle.Spacing.md)
+        .padding(.horizontal, PopoverVisualStyle.cardPadding)
         .popoverSurface()
     }
 
@@ -141,7 +141,7 @@ struct ClashModeTabView: View {
                 }
             }
         }
-        .padding(.horizontal, PopoverVisualStyle.Spacing.md)
+        .padding(.horizontal, PopoverVisualStyle.cardPadding)
         .popoverSurface()
     }
 

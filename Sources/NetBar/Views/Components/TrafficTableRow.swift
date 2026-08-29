@@ -3,12 +3,12 @@ import Cocoa
 
 private enum TrafficTableLayout {
     static let columnSpacing = PopoverVisualStyle.Spacing.xs
-    static let rowHorizontalPadding = PopoverVisualStyle.Spacing.sm
-    static let rowHeight: CGFloat = 30
-    static let iconSize: CGFloat = 20
-    static let iconTextGap: CGFloat = 8
-    static let routeWidth: CGFloat = 48
-    static let trafficWidth: CGFloat = 72
+    static let rowHorizontalPadding: CGFloat = 6
+    static let rowHeight: CGFloat = 26
+    static let iconSize: CGFloat = 16
+    static let iconTextGap: CGFloat = 6
+    static let routeWidth: CGFloat = 40
+    static let trafficWidth: CGFloat = 60
 }
 
 /// Shared header for realtime and cumulative traffic tables.
@@ -107,6 +107,9 @@ struct TrafficTableRow: View {
     @ObservedObject var iconResolver: AppIconResolver
     let downloadText: String
     let uploadText: String
+    /// Share of the busiest row, drawn as a track behind the row so relative
+    /// weight is readable without spending a column on it.
+    var share: Double?
 
     var body: some View {
         HStack(spacing: TrafficTableLayout.columnSpacing) {
@@ -138,5 +141,14 @@ struct TrafficTableRow: View {
         }
         .padding(.horizontal, TrafficTableLayout.rowHorizontalPadding)
         .frame(height: TrafficTableLayout.rowHeight)
+        .background(alignment: .leading) {
+            if let share {
+                GeometryReader { geometry in
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(PopoverVisualStyle.meterFill.opacity(0.12))
+                        .frame(width: max(0, min(1, share)) * geometry.size.width)
+                }
+            }
+        }
     }
 }

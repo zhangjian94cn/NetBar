@@ -6,8 +6,7 @@ struct EgressIPCard: View {
     var body: some View {
         PopoverCard(
             icon: "globe.asia.australia.fill",
-            title: "公网出口 IP",
-            accent: PopoverVisualStyle.ipAccent
+            title: "公网出口 IP"
         ) {
             if monitor.isLoading {
                 ProgressView()
@@ -36,7 +35,7 @@ struct EgressIPCard: View {
         VStack(alignment: .leading, spacing: PopoverVisualStyle.Spacing.sm) {
             HStack(spacing: PopoverVisualStyle.Spacing.sm) {
                 Text(info.ip)
-                    .font(.system(size: 20, weight: .semibold, design: .monospaced))
+                    .font(PopoverVisualStyle.Typography.metric)
                     .foregroundColor(PopoverVisualStyle.primaryText)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
@@ -46,6 +45,11 @@ struct EgressIPCard: View {
                 Spacer(minLength: PopoverVisualStyle.Spacing.xs)
 
                 PopoverBadge(text: info.riskLabel, color: riskColor(info))
+            }
+
+            if let risk = info.ipRisk,
+               let fraction = PopoverMeter.fraction(risk, of: 100) {
+                PopoverMeter(fraction: fraction, tint: riskColor(info))
             }
 
             VStack(alignment: .leading, spacing: 0) {

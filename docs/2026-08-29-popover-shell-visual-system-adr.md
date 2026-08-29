@@ -1,6 +1,6 @@
 # ADR: 弹窗改用统一设计系统与降级状态外壳
 
-- 日期: 2026-08-29
+- 日期: 2026-08-29（同日修订：紧凑化与可视化）
 - 状态: accepted
 - 范围: NetBar 菜单栏弹窗视觉系统与视图层结构
 - 相关源码: [PopoverVisualStyle.swift](../Sources/NetBar/Views/PopoverVisualStyle.swift)、[PopoverKit.swift](../Sources/NetBar/Views/Components/PopoverKit.swift)、[MenuPopoverView.swift](../Sources/NetBar/Views/MenuPopoverView.swift)、[PopoverPresentation.swift](../Sources/NetBar/App/PopoverPresentation.swift)
@@ -41,11 +41,28 @@
 
 **状态条降级并入 header。** 去掉 globe 与 "NetBar" 字样，header 一行承载状态点、连通状态与当前出口。`primaryReason` 改由拥有该问题的页面以 `PopoverBanner` 呈现，而不是常驻顶条。
 
-**强调色与状态色分职。** `healthy/warning/fault` 只用于状态点与横幅；选中态与操作使用 `PopoverVisualStyle.accent`。该 accent 跟随系统强调色，但系统设为 Graphite 时回退到 `systemBlue`——灰色强调色会让选中态失去色相差异，正是本次要消除的问题。业务色（公网 IP 淡紫、VPS 淡蓝）降级为卡片前导图标着色，不再填充整块卡面。整页只有当前选中项使用强调色填充，`PopoverActionButton` 落在中性面上，避免修复按钮与主控件同权重。
+**强调色与状态色分职。** `healthy/warning/fault` 只用于状态点与横幅；选中态、操作与占比条使用 `PopoverVisualStyle.accent`。该 accent 跟随系统强调色，但系统设为 Graphite 时回退到 `systemBlue`——灰色强调色会让选中态失去色相差异，正是本次要消除的问题。整页只有当前选中项使用强调色填充，`PopoverActionButton` 落在中性面上，避免修复按钮与主控件同权重。
 
-**一套尺度。** 间距 4/8/12/16 与唯一 `contentInset = 16`（Tab 栏同用）；圆角 6/10/10/16；字号最小档提到 11pt。表面色改用 `NSColor(name:dynamicProvider:)`，浅色深色各自调 alpha。
+面板最终只保留**两个颜色职责**：状态（绿/橙/红）与强调（蓝）。业务色最初打算作为卡片前导图标保留（公网 IP 淡紫、VPS 淡蓝），修订时一并去掉：它们是面板上仅剩的装饰色相，去掉之后「有颜色 = 有含义」才成立。
+
+**一套尺度。** 间距沿用 4/8/12/16，唯一 `contentInset`（Tab 栏同用）；圆角 5/8/8/12。表面色改用 `NSColor(name:dynamicProvider:)`，浅色深色各自调 alpha。
+
+**面板尺寸与字号（同日修订）。** 首版落在 380 × 540pt、字号 11–20pt，实测过大。改为：
+
+- 几何收敛到 `PopoverVisualStyle.Metrics`，面板 **340 × 460pt**（App Store Lite 340 × 390）。此前宽度在 `StatusBarController` 和 `MenuPopoverView` 各写了一遍，现在只有一处。
+- 字号整体下移一档，得到 **10 / 11 / 12 / 13 / 15** 五档。
+
+首版把最小档从 10pt 提到 11pt，理由是 `NSFont.smallSystemFontSize` 是 11。这个理由本身没错，但用错了地方：菜单栏工具面板的价值在密度，而首版真正的层级缺陷是**各档之间没有区分**，不是下限本身。修订保持各档彼此可分，同时每一档都降一级；10pt 用于短次要标签，在 macOS 工具面板中是常规做法。
+
+行高同步压紧（fact 行 30→26、折叠行 36→30、Tab 项 40→34、表格行 30→26、表格图标 20→16），`contentInset` 16→12。340 宽下应用名列剩约 110pt，460 高下应用表可见 10 行。
 
 **共享组件。** `PopoverKit.swift` 提供 `PopoverFactTile`、`PopoverFactRow`、`PopoverCard`、`PopoverDisclosure`、`PopoverSegmentedOption`、`PopoverBadge`、`PopoverBanner`、`PopoverActionButton`。出口页的展示逻辑移入 `NetworkOutletPresentation`，与 `PopoverStatusPresentation` 并列，可单测。
+
+**可视化（同日修订）。** 新增 `PopoverMeter` 与 `PopoverSparkline`，用在四处本来就有数值却只以文字呈现的位置：VPS 配额（`total` / `totalLimit`）、应用流量占比（占最忙一行的比例，画成行背景轨道，不占列宽）、公网 IP 风险值（`ipRisk` 0–100）、实时速率趋势。
+
+`PopoverMeter.fraction(_:of:)` 在比例无定义时返回 `nil`（`totalLimit == 0` 表示无限，而不是 0%），调用方据此整条省略而不是画一条误导性的空条。`PopoverSparkline` 按窗口峰值加 25% 余量归一化：不留余量时恒定速率会把折线压在顶边，看起来像一条分隔线而不是趋势。
+
+为此 `NetworkMonitor` 增加了 `speedHistory`（上限 60 个采样）。它是纯展示缓冲，在既有采样点追加，不参与任何判定。
 
 ## Consequences
 
@@ -53,6 +70,9 @@
 - 正面：视图层删除 5 套事实行、2 套折叠行、2 套分段控件、4 套徽章、3 套告警条与 2 个纯转发文件。
 - 正面：出口页展示逻辑进入 presentation 层后可被 `PopoverPresentationTests` 覆盖。
 - 正面：深色模式卡片面由动态色提供，不再消失在 `.regularMaterial` 上。
-- 代价：本 ADR 修订了 2026-08-28 视觉语言 ADR 中"绿色策略按钮、橙色 Clash、淡紫公网 IP 卡、淡蓝 VPS 卡"的着色方式；业务色保留但只作用于图标。
+- 正面：面板从 380 × 540 收到 340 × 460，字号五档全部下移，观感回到菜单栏工具应有的紧凑度。
+- 正面：四处已有数值获得占比条或趋势线，不再只有文字。
+- 代价：本 ADR 取代了 2026-08-28 视觉语言 ADR 中"绿色策略按钮、橙色 Clash、淡紫公网 IP 卡、淡蓝 VPS 卡"的全部着色方式；业务色被完全移除，而非降级保留。
+- 代价：`NetworkMonitor` 多了一个展示用缓冲，是本轮唯一进入 Monitors 层的改动。
 - 代价：accent 需要感知 Graphite 回退，这是一处平台相关分支。
 - 后续：`SettingsView` 尚未迁移到本 token 体系；`L10n` 仍只覆盖部分文案。

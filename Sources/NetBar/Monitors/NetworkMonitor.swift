@@ -22,6 +22,8 @@ class NetworkMonitor: ObservableObject, MonitorProtocol {
         var compactDownload: String { Formatters.formatSpeedCompact(download) }
         var compactUpload: String { Formatters.formatSpeedCompact(upload) }
 
+        var total: Double { download + upload }
+
         /// 菜单栏紧凑格式
         var menuBarText: String {
             "↑ \(formattedUpload)  ↓ \(formattedDownload)"
@@ -30,6 +32,15 @@ class NetworkMonitor: ObservableObject, MonitorProtocol {
 
     @Published var currentSpeed: Speed = .zero
     @Published var interfaceSpeeds: [String: Speed] = [:]
+
+    /// Bounded window of recent samples, for the popover sparkline.
+    ///
+    /// Purely a display buffer: it is appended at the existing sampling point
+    /// and never feeds a decision, so sampling cadence and every downstream
+    /// judgement are unchanged.
+    @Published private(set) var speedHistory: [Speed] = []
+
+    static let speedHistoryLimit = 60
 
     private var previousStats: [String: InterfaceStats] = [:]
     private var previousTime: Date = Date()
@@ -102,8 +113,13 @@ class NetworkMonitor: ObservableObject, MonitorProtocol {
         }
 
         DispatchQueue.main.async {
-            self.currentSpeed = Speed(download: totalDownload, upload: totalUpload)
+            let speed = Speed(download: totalDownload, upload: totalUpload)
+            self.currentSpeed = speed
             self.interfaceSpeeds = speeds
+            self.speedHistory.append(speed)
+            if self.speedHistory.count > Self.speedHistoryLimit {
+                self.speedHistory.removeFirst(self.speedHistory.count - Self.speedHistoryLimit)
+            }
         }
 
         previousStats = currentStats

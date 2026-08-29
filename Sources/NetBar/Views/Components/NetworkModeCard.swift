@@ -21,7 +21,7 @@ struct NetworkModeCard: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: PopoverVisualStyle.Spacing.md) {
+            VStack(alignment: .leading, spacing: PopoverVisualStyle.blockSpacing) {
                 hero
                 evidenceGrid
                 modeSelector
@@ -49,7 +49,7 @@ struct NetworkModeCard: View {
                 }
             }
             .padding(.horizontal, PopoverVisualStyle.contentInset)
-            .padding(.vertical, PopoverVisualStyle.Spacing.md)
+            .padding(.vertical, PopoverVisualStyle.Spacing.sm)
         }
         .help("切换的是 Wi-Fi 与雷雳网桥的物理出口优先级，不会关闭 Clash、aTrust、Tailscale 或其他 VPN。")
     }
@@ -59,7 +59,7 @@ struct NetworkModeCard: View {
         return VStack(alignment: .leading, spacing: PopoverVisualStyle.Spacing.xs + 2) {
             HStack(spacing: PopoverVisualStyle.Spacing.sm) {
                 Image(systemName: "cable.connector")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(PopoverVisualStyle.secondaryText)
                 Text("Mac mini 链路")
                     .font(PopoverVisualStyle.Typography.section)
@@ -87,8 +87,8 @@ struct NetworkModeCard: View {
 
     private var evidenceGrid: some View {
         let facts = presentation
-        return VStack(spacing: PopoverVisualStyle.Spacing.md) {
-            HStack(spacing: PopoverVisualStyle.Spacing.md) {
+        return VStack(spacing: PopoverVisualStyle.blockSpacing) {
+            HStack(spacing: PopoverVisualStyle.Spacing.sm + 2) {
                 PopoverFactTile(
                     title: "雷雳链路",
                     value: facts.linkValue,
@@ -102,7 +102,7 @@ struct NetworkModeCard: View {
                     state: facts.sharingStateDot
                 )
             }
-            HStack(spacing: PopoverVisualStyle.Spacing.md) {
+            HStack(spacing: PopoverVisualStyle.Spacing.sm + 2) {
                 PopoverFactTile(
                     title: "端到端验证",
                     value: facts.proofValue,
@@ -214,7 +214,7 @@ struct NetworkModeCard: View {
                 advancedDiagnostics
             }
         }
-        .padding(.horizontal, PopoverVisualStyle.Spacing.md)
+        .padding(.horizontal, PopoverVisualStyle.cardPadding)
         .popoverSurface()
     }
 
