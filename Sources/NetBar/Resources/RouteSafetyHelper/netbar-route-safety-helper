@@ -27,9 +27,9 @@ fail() {
     exit 1
 }
 
-[[ "$#" -eq 1 ]] || fail "usage: netbar-route-safety-helper status|prefer-wifi|prefer-mini|ensure-management-alias|repair-wifi-dns|commit|rollback"
+[[ "$#" -eq 1 ]] || fail "usage: netbar-route-safety-helper status|prefer-wifi|prefer-mini|ensure-management-alias|remove-legacy-mini-dns|repair-wifi-dns|commit|rollback"
 case "$1" in
-    status|prefer-wifi|prefer-mini|ensure-management-alias|repair-wifi-dns|commit|rollback) ACTION="$1" ;;
+    status|prefer-wifi|prefer-mini|ensure-management-alias|remove-legacy-mini-dns|repair-wifi-dns|commit|rollback) ACTION="$1" ;;
     *) fail "unsupported command" ;;
 esac
 
@@ -97,7 +97,7 @@ mode_from_order() {
 }
 
 emit_status() {
-    local mode pending=false pending_target='' pending_kind='' dns_mode dns_mini_dependent=false dns_output
+    local mode pending=false pending_target='' pending_kind='' dns_mode dns_mini_dependent=false dns_legacy_present=false dns_output dns_count
     local management_address management_ready=false bridge_dhcp=false
     mode="$(mode_from_order)"
     if [[ -r "$PENDING_KIND" ]]; then
@@ -108,11 +108,15 @@ emit_status() {
     dns_output="$(wifi_dns_output)"
     dns_mode=manual
     "$GREP" -q "There aren't any DNS Servers" <<< "$dns_output" && dns_mode=automatic
-    "$GREP" -qx '192.168.2.1' <<< "$dns_output" && dns_mini_dependent=true
+    dns_count="$(print -r -- "$dns_output" | "$AWK" '/^[0-9a-fA-F:.]+$/ { count += 1 } END { print count + 0 }')"
+    if "$GREP" -qx '192.168.2.1' <<< "$dns_output"; then
+        dns_legacy_present=true
+        (( dns_count == 1 )) && dns_mini_dependent=true
+    fi
     management_address="$($PLUTIL -extract managementLocalAddress raw -o - "$PROFILE" 2>/dev/null || true)"
     [[ -n "$management_address" ]] && "$IFCONFIG" bridge0 | "$GREP" -q "inet $management_address " && management_ready=true
     "$NETWORKSETUP" -getinfo "$MINI_SERVICE" | "$GREP" -q '^DHCP Configuration' && bridge_dhcp=true
-    print -r -- "{\"protocolVersion\":4,\"mode\":\"$mode\",\"wifiService\":\"$(json_escape "$WIFI_SERVICE")\",\"wifiDevice\":\"$(json_escape "$WIFI_DEVICE")\",\"miniService\":\"$(json_escape "$MINI_SERVICE")\",\"pendingTransaction\":$pending,\"pendingKind\":\"$(json_escape "$pending_kind")\",\"pendingTarget\":\"$(json_escape "$pending_target")\",\"wifiDNSMode\":\"$dns_mode\",\"wifiDNSMiniDependent\":$dns_mini_dependent,\"managementAddressReady\":$management_ready,\"bridgeUsesDHCP\":$bridge_dhcp}"
+    print -r -- "{\"protocolVersion\":5,\"mode\":\"$mode\",\"wifiService\":\"$(json_escape "$WIFI_SERVICE")\",\"wifiDevice\":\"$(json_escape "$WIFI_DEVICE")\",\"miniService\":\"$(json_escape "$MINI_SERVICE")\",\"pendingTransaction\":$pending,\"pendingKind\":\"$(json_escape "$pending_kind")\",\"pendingTarget\":\"$(json_escape "$pending_target")\",\"wifiDNSMode\":\"$dns_mode\",\"wifiDNSMiniDependent\":$dns_mini_dependent,\"wifiDNSLegacyMiniResolverPresent\":$dns_legacy_present,\"managementAddressReady\":$management_ready,\"bridgeUsesDHCP\":$bridge_dhcp}"
 }
 
 ensure_management_alias() {
@@ -170,13 +174,14 @@ wifi_dns_depends_on_mini() {
 }
 
 save_dns_backup() {
+    local target="${1:-automatic}"
     ensure_no_pending_transaction
     "$MKDIR" -p "$STATE_DIR"
     "$CHMOD" 700 "$STATE_DIR"
     wifi_dns_output > "$BACKUP_DNS"
     "$SHASUM" -a 256 "$BACKUP_DNS" | "$AWK" '{ print $1 }' > "$BACKUP_DNS_SHA"
     print -r -- dns > "$PENDING_KIND"
-    print -r -- automatic > "$PENDING_TARGET"
+    print -r -- "$target" > "$PENDING_TARGET"
     "$CHMOD" 600 "$BACKUP_DNS" "$BACKUP_DNS_SHA" "$PENDING_KIND" "$PENDING_TARGET"
 }
 
@@ -295,11 +300,32 @@ case "$ACTION" in
     repair-wifi-dns)
         [[ "$(mode_from_order)" == wifi ]] || fail "Wi-Fi must be the preferred physical service before DNS repair"
         wifi_dns_depends_on_mini || fail "Wi-Fi DNS does not depend on the fixed Mac mini address"
-        save_dns_backup
+        save_dns_backup automatic
         if ! "$NETWORKSETUP" -setdnsservers "$WIFI_SERVICE" Empty || ! wifi_dns_is_automatic; then
             restore_dns
             clear_transaction
             fail "DNS repair failed; original DNS restored"
+        fi
+        emit_status
+        ;;
+    remove-legacy-mini-dns)
+        [[ "$(mode_from_order)" == wifi ]] || fail "Wi-Fi must be the preferred physical service before DNS cleanup"
+        wifi_dns_depends_on_mini || fail "Wi-Fi DNS does not contain the legacy Mac mini address"
+        save_dns_backup legacy-removed
+        values=("${(@f)$(wifi_dns_output)}")
+        cleaned=()
+        for value in "${values[@]}"; do
+            [[ "$value" == '192.168.2.1' ]] || cleaned+=("$value")
+        done
+        if (( ${#cleaned[@]} == 0 )); then
+            "$NETWORKSETUP" -setdnsservers "$WIFI_SERVICE" Empty
+        else
+            "$NETWORKSETUP" -setdnsservers "$WIFI_SERVICE" "${cleaned[@]}"
+        fi
+        if wifi_dns_depends_on_mini; then
+            restore_dns
+            clear_transaction
+            fail "legacy DNS cleanup failed; original DNS restored"
         fi
         emit_status
         ;;
@@ -308,8 +334,13 @@ case "$ACTION" in
         kind="$(<"$PENDING_KIND")"
         target="$(<"$PENDING_TARGET")"
         if [[ "$kind" == dns ]]; then
-            [[ "$target" == automatic ]] || fail "invalid pending DNS target"
-            wifi_dns_is_automatic || fail "pending DNS target no longer matches configuration"
+            if [[ "$target" == automatic ]]; then
+                wifi_dns_is_automatic || fail "pending DNS target no longer matches configuration"
+            elif [[ "$target" == legacy-removed ]]; then
+                ! wifi_dns_depends_on_mini || fail "legacy Mini DNS is still configured"
+            else
+                fail "invalid pending DNS target"
+            fi
         else
             [[ "$kind" == route && ( "$target" == "wifi" || "$target" == "mini" ) ]] || fail "invalid pending route target"
             [[ "$(mode_from_order)" == "$target" ]] || fail "pending target no longer matches service order"

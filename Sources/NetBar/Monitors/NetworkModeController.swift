@@ -1092,7 +1092,7 @@ final class NetworkModeController: ObservableObject {
         workQueue.async { [weak self] in
             guard let self else { return }
             let status = self.routeSafetyController.status()
-            guard status?.protocolVersion == 4 else {
+            guard status?.protocolVersion == 5 else {
                 DispatchQueue.main.async {
                     self.isRepairingDNS = false
                     self.errorMessage = "请先安装或更新自动切换组件"
@@ -1141,6 +1141,77 @@ final class NetworkModeController: ObservableObject {
                 } else {
                     self.errorMessage = transactionResult.succeeded
                         ? "自动 DNS 未在时限内恢复网络，已还原原配置"
+                        : "DNS 事务无法完整恢复，需要手动检查网络设置"
+                    self.requiresManualRecovery = !transactionResult.succeeded
+                }
+            }
+        }
+    }
+
+    func removeLegacyMiniDNS() {
+        guard !isSwitching, !isProvisioning, !isRepairingDNS else { return }
+        guard DistributionFlavor.current.supportsNetworkModeSwitch else {
+            errorMessage = "App Store Lite 不支持 DNS 清理"
+            return
+        }
+        guard dnsPathFacts?.hasLegacyMiniResolver == true else {
+            errorMessage = "当前 Wi-Fi DNS 不包含旧 Mac mini 地址"
+            return
+        }
+        isRepairingDNS = true
+        errorMessage = nil
+
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            let status = self.routeSafetyController.status()
+            guard status?.protocolVersion == 5,
+                  status?.wifiDNSLegacyMiniResolverPresent == true else {
+                DispatchQueue.main.async {
+                    self.isRepairingDNS = false
+                    self.errorMessage = "请先安装或更新自动切换组件"
+                }
+                return
+            }
+            let start = self.routeSafetyController.removeLegacyMiniDNS()
+            guard start.succeeded else {
+                DispatchQueue.main.async {
+                    self.isRepairingDNS = false
+                    self.errorMessage = start.combinedMessage.isEmpty ? "旧 Mini DNS 清理未开始" : start.combinedMessage
+                }
+                return
+            }
+
+            let interface = status?.wifiDevice.isEmpty == false ? (status?.wifiDevice ?? "en0") : "en0"
+            var verified: ConnectivityProbeResult?
+            for attempt in 0..<6 {
+                let probe = self.connectivityProber.probe(interfaceName: interface)
+                self.publishConnectivityFacts(probe)
+                if !probe.dnsPath.hasLegacyMiniResolver,
+                   probe.dnsPath.effectiveDNSReady,
+                   probe.routedInternetReady {
+                    verified = probe
+                    break
+                }
+                if attempt < 5 { self.sleeper(2) }
+            }
+            let transactionResult = verified == nil
+                ? self.routeSafetyController.rollback()
+                : self.routeSafetyController.commit()
+            let succeeded = verified != nil && transactionResult.succeeded
+            self.eventLogger.record(
+                event: "wifi_legacy_mini_dns_cleanup",
+                detail: "\(verified == nil ? "rollback" : "commit"): \(transactionResult.succeeded ? "success" : "failed")",
+                candidateSSID: nil
+            )
+            DispatchQueue.main.async {
+                self.isRepairingDNS = false
+                if succeeded {
+                    self.policyMessage = "已清理旧 Mini DNS，保留其余手动 DNS"
+                    self.errorMessage = nil
+                    self.onNetworkChanged()
+                } else {
+                    self.errorMessage = transactionResult.succeeded
+                        ? "清理后网络未通过验证，已还原原 DNS"
                         : "DNS 事务无法完整恢复，需要手动检查网络设置"
                     self.requiresManualRecovery = !transactionResult.succeeded
                 }

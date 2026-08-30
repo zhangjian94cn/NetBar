@@ -131,6 +131,21 @@ final class PopoverPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.dnsText, "待检测")
     }
 
+    func testHealthyDNSWithLegacyMiniResolverStaysOnlineButBadgesMonitoring() {
+        let presentation = PopoverStatusPresentation(
+            proofLevel: .activeVerified,
+            effectiveMode: .localWiFi,
+            overlay: overlay(health: .ready, dataPlaneReady: true, mode: .tunFull),
+            dnsFacts: dns(dependency: .independent, ready: true, hasLegacyMiniResolver: true),
+            primaryReason: nil
+        )
+
+        XCTAssertEqual(presentation.connectivity, .online)
+        XCTAssertEqual(presentation.dnsText, "正常 · 含旧 Mini DNS")
+        XCTAssertTrue(presentation.needsAttention(.monitoring))
+        XCTAssertFalse(presentation.needsAttention(.outlet))
+    }
+
     // MARK: - Outlet presentation
 
     func testUnsampledOutletFactsAreUnknownRatherThanWarnings() {
@@ -195,13 +210,18 @@ final class PopoverPresentationTests: XCTestCase {
         )
     }
 
-    private func dns(dependency: DNSResolverDependency, ready: Bool) -> DNSPathFacts {
+    private func dns(
+        dependency: DNSResolverDependency,
+        ready: Bool,
+        hasLegacyMiniResolver: Bool = false
+    ) -> DNSPathFacts {
         DNSPathFacts(
             serviceName: "Wi-Fi",
             interfaceName: "en0",
             configurationSource: .automatic,
             dependency: dependency,
             resolverCount: 1,
+            hasLegacyMiniResolver: hasLegacyMiniResolver,
             systemResolutionReady: ready,
             generation: 1,
             observedAt: Date()

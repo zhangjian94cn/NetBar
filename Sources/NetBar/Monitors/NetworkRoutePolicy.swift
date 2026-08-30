@@ -23,14 +23,46 @@ struct RouteSafetyHelperStatus: Codable, Equatable {
     let pendingTarget: String
     let wifiDNSMode: String?
     let wifiDNSMiniDependent: Bool?
+    let wifiDNSLegacyMiniResolverPresent: Bool?
     let managementAddressReady: Bool?
     let bridgeUsesDHCP: Bool?
+
+    init(
+        protocolVersion: Int,
+        mode: String,
+        wifiService: String,
+        wifiDevice: String,
+        miniService: String,
+        pendingTransaction: Bool,
+        pendingKind: String?,
+        pendingTarget: String,
+        wifiDNSMode: String?,
+        wifiDNSMiniDependent: Bool?,
+        wifiDNSLegacyMiniResolverPresent: Bool? = nil,
+        managementAddressReady: Bool?,
+        bridgeUsesDHCP: Bool?
+    ) {
+        self.protocolVersion = protocolVersion
+        self.mode = mode
+        self.wifiService = wifiService
+        self.wifiDevice = wifiDevice
+        self.miniService = miniService
+        self.pendingTransaction = pendingTransaction
+        self.pendingKind = pendingKind
+        self.pendingTarget = pendingTarget
+        self.wifiDNSMode = wifiDNSMode
+        self.wifiDNSMiniDependent = wifiDNSMiniDependent
+        self.wifiDNSLegacyMiniResolverPresent = wifiDNSLegacyMiniResolverPresent
+        self.managementAddressReady = managementAddressReady
+        self.bridgeUsesDHCP = bridgeUsesDHCP
+    }
 }
 
 protocol RouteSafetyControlling {
     func status() -> RouteSafetyHelperStatus?
     func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult
     func repairWiFiDNS() -> NetworkModeCommandResult
+    func removeLegacyMiniDNS() -> NetworkModeCommandResult
     func ensureManagementAlias() -> NetworkModeCommandResult
     func commit() -> NetworkModeCommandResult
     func rollback() -> NetworkModeCommandResult
@@ -38,6 +70,10 @@ protocol RouteSafetyControlling {
 }
 
 extension RouteSafetyControlling {
+    func removeLegacyMiniDNS() -> NetworkModeCommandResult {
+        .init(exitCode: 1, standardOutput: "", standardError: "旧 Mini DNS 清理不可用")
+    }
+
     func ensureManagementAlias() -> NetworkModeCommandResult {
         .init(exitCode: 1, standardOutput: "", standardError: "管理别名 Helper 不可用")
     }
@@ -51,6 +87,9 @@ final class LiveRouteSafetyController: RouteSafetyControlling {
     }
     func repairWiFiDNS() -> NetworkModeCommandResult {
         .init(exitCode: 1, standardOutput: "", standardError: "App Store Lite 不支持 DNS 修复")
+    }
+    func removeLegacyMiniDNS() -> NetworkModeCommandResult {
+        .init(exitCode: 1, standardOutput: "", standardError: "App Store Lite 不支持 DNS 清理")
     }
     func ensureManagementAlias() -> NetworkModeCommandResult {
         .init(exitCode: 1, standardOutput: "", standardError: "App Store Lite 不支持管理别名恢复")
@@ -84,7 +123,7 @@ final class LiveRouteSafetyController: RouteSafetyControlling {
         guard result.succeeded,
               let data = result.standardOutput.data(using: .utf8),
               let status = try? JSONDecoder().decode(RouteSafetyHelperStatus.self, from: data),
-              status.protocolVersion == 4 else {
+              status.protocolVersion == 5 else {
             return nil
         }
         return status
@@ -95,6 +134,8 @@ final class LiveRouteSafetyController: RouteSafetyControlling {
     }
 
     func repairWiFiDNS() -> NetworkModeCommandResult { runHelper("repair-wifi-dns") }
+
+    func removeLegacyMiniDNS() -> NetworkModeCommandResult { runHelper("remove-legacy-mini-dns") }
 
     func ensureManagementAlias() -> NetworkModeCommandResult { runHelper("ensure-management-alias") }
 
