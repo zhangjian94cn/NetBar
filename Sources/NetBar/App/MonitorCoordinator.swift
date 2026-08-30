@@ -12,6 +12,7 @@ class MonitorCoordinator {
     let appIconResolver = AppIconResolver()
     let trafficStore = TrafficStore()
     let vpsTrafficMonitor = VPSTrafficMonitor()
+    let companyVPNDiagnosticMonitor = CompanyVPNDiagnosticMonitor()
     private let egressIdentityRefreshScheduler = DebouncedRefreshScheduler(delay: 3)
     lazy var clashOverlayModeController = ClashOverlayModeController()
     /// `nil` unless the shadow run is explicitly enabled; the controller guards
@@ -34,6 +35,9 @@ class MonitorCoordinator {
         if DistributionFlavor.current.supportsProcessTraffic {
             monitors.insert(processTrafficMonitor, at: 2)
             monitors.insert(trafficStore, at: 4)
+        }
+        if DistributionFlavor.current == .directFull {
+            monitors.append(companyVPNDiagnosticMonitor)
         }
         return monitors
     }

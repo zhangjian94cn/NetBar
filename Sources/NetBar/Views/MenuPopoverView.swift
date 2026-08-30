@@ -185,6 +185,7 @@ struct MenuPopoverView: View {
                 vpsTrafficMonitor: vpsTrafficMonitor,
                 statusPresentation: statusPresentation,
                 dnsFacts: networkModeController.dnsPathFacts,
+                companyVPNMonitor: coordinator.companyVPNDiagnosticMonitor,
                 appConfig: appConfig
             )
         }
@@ -287,6 +288,7 @@ struct MenuPopoverView: View {
         case .monitoring:
             egressIPMonitor.refresh(force: true)
             vpsTrafficMonitor.refresh()
+            coordinator.companyVPNDiagnosticMonitor.refresh()
         }
     }
 
@@ -426,12 +428,17 @@ private struct MonitoringTabView: View {
     @ObservedObject var vpsTrafficMonitor: VPSTrafficMonitor
     let statusPresentation: PopoverStatusPresentation
     let dnsFacts: DNSPathFacts?
+    @ObservedObject var companyVPNMonitor: CompanyVPNDiagnosticMonitor
     @ObservedObject var appConfig: AppConfig
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: PopoverVisualStyle.blockSpacing) {
                 networkFacts
+
+                if DistributionFlavor.current == .directFull {
+                    companyVPNSection
+                }
 
                 if appConfig.ipCheckEnabled {
                     EgressIPCard(monitor: egressIPMonitor)
@@ -444,6 +451,71 @@ private struct MonitoringTabView: View {
             .padding(.horizontal, PopoverVisualStyle.contentInset)
             .padding(.vertical, PopoverVisualStyle.Spacing.sm)
         }
+    }
+
+    private var companyVPNSection: some View {
+        let snapshot = companyVPNMonitor.snapshot
+        let state: PopoverFactState
+        switch snapshot.health {
+        case .ready: state = .ok
+        case .degraded: state = .warning
+        case .unavailable: state = .fault
+        case .unknown: state = .unknown
+        }
+        return VStack(alignment: .leading, spacing: PopoverVisualStyle.Spacing.sm) {
+            HStack {
+                Image(systemName: "building.2")
+                    .foregroundColor(PopoverVisualStyle.secondaryText)
+                Text("公司 VPN")
+                    .font(PopoverVisualStyle.Typography.section)
+                Spacer()
+                PopoverStatusDot(state: state)
+                Text(snapshot.health == .ready ? "正常" : snapshot.health == .unknown ? "待检测" : "需关注")
+                    .font(PopoverVisualStyle.Typography.captionStrong)
+            }
+
+            HStack(spacing: PopoverVisualStyle.Spacing.md) {
+                PopoverFactTile(
+                    title: "aTrust / 企业路由",
+                    value: snapshot.aTrustRunning ? "客户端运行" : "未检测到",
+                    detail: snapshot.protectedRouteInterface,
+                    state: snapshot.aTrustRunning ? .ok : .unknown
+                )
+                PopoverFactTile(
+                    title: "OAVPN 入口",
+                    value: snapshot.portalStatus,
+                    detail: snapshot.portalEndpoint,
+                    state: state
+                )
+            }
+
+            Text(snapshot.baselineStatus)
+                .font(PopoverVisualStyle.Typography.caption)
+                .foregroundColor(PopoverVisualStyle.secondaryText)
+                .lineLimit(2)
+
+            if let message = companyVPNMonitor.errorMessage {
+                Text(message)
+                    .font(PopoverVisualStyle.Typography.caption)
+                    .foregroundColor(PopoverVisualStyle.warning)
+            }
+
+            HStack {
+                Button(companyVPNMonitor.isRunningOwnerDiagnostic ? "正在诊断…" : "运行公司 VPN 诊断") {
+                    companyVPNMonitor.runOwnerDiagnostic()
+                }
+                .buttonStyle(.link)
+                .disabled(companyVPNMonitor.isRunningOwnerDiagnostic)
+                Spacer()
+                if let observedAt = snapshot.observedAt {
+                    Text(observedAt, style: .relative)
+                        .font(PopoverVisualStyle.Typography.caption)
+                        .foregroundColor(PopoverVisualStyle.tertiaryText)
+                }
+            }
+        }
+        .padding(PopoverVisualStyle.cardPadding)
+        .popoverSurface()
     }
 
     private var networkFacts: some View {
