@@ -2,6 +2,7 @@ __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRout
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper prefer-wifi
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper prefer-mini
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper ensure-management-alias
+__USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper remove-legacy-mini-dns
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper repair-wifi-dns
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper commit
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper rollback

@@ -144,6 +144,16 @@ struct NetworkModeCard: View {
 
     @ViewBuilder
     private var criticalActions: some View {
+        if controller.dnsPathFacts?.hasLegacyMiniResolver == true {
+            PopoverActionButton(
+                title: "清理旧 Mini DNS",
+                icon: "trash.slash",
+                isDisabled: controller.isRepairingDNS || controller.snapshot?.effectiveMode != .localWiFi
+            ) {
+                controller.removeLegacyMiniDNS()
+            }
+        }
+
         if controller.dnsPathFacts?.dependency == .miniDependent {
             PopoverActionButton(
                 title: "恢复 Wi-Fi 自动 DNS",

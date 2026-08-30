@@ -122,13 +122,17 @@ struct PopoverStatusPresentation: Equatable {
         case nil: clashText = "待检测"
         }
 
+        let baseDNSText: String
         switch dnsFacts?.dependency {
-        case .independent: dnsText = "正常"
-        case .overlayOnly: dnsText = "TUN 接管"
-        case .miniDependent: dnsText = "依赖 Mini"
-        case .unreachable: dnsText = "不可用"
-        case .unknown, nil: dnsText = "待检测"
+        case .independent: baseDNSText = "正常"
+        case .overlayOnly: baseDNSText = "TUN 接管"
+        case .miniDependent: baseDNSText = "依赖 Mini"
+        case .unreachable: baseDNSText = "不可用"
+        case .unknown, nil: baseDNSText = "待检测"
         }
+        dnsText = dnsFacts?.hasLegacyMiniResolver == true && dnsFacts?.effectiveDNSReady == true
+            ? "正常 · 含旧 Mini DNS"
+            : baseDNSText
 
         self.primaryReason = primaryReason?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
 
@@ -143,11 +147,15 @@ struct PopoverStatusPresentation: Equatable {
         case .ready, .switching:
             clashNeedsAttention = false
         }
-        switch dnsFacts?.dependency {
-        case .miniDependent, .unreachable:
+        if dnsFacts?.hasLegacyMiniResolver == true {
             monitoringNeedsAttention = true
-        case .independent, .overlayOnly, .unknown, nil:
-            monitoringNeedsAttention = false
+        } else {
+            switch dnsFacts?.dependency {
+            case .miniDependent, .unreachable:
+                monitoringNeedsAttention = true
+            case .independent, .overlayOnly, .unknown, nil:
+                monitoringNeedsAttention = false
+            }
         }
     }
 
@@ -275,7 +283,11 @@ struct NetworkOutletPresentation: Equatable {
             : "待验证"
         managementState = helperStatus == nil ? .unknown : (managementReady ? .ok : .warning)
 
-        dnsValue = dnsFacts?.dependency.displayName ?? "待检测"
+        if dnsFacts?.hasLegacyMiniResolver == true, dnsFacts?.effectiveDNSReady == true {
+            dnsValue = "DNS 可用 · 含旧 Mini 地址"
+        } else {
+            dnsValue = dnsFacts?.dependency.displayName ?? "待检测"
+        }
         if let dnsFacts {
             let healthy = dnsFacts.systemResolutionReady &&
                 dnsFacts.dependency != .miniDependent &&

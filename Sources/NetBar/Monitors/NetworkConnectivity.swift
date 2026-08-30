@@ -35,9 +35,36 @@ struct DNSPathFacts: Equatable {
     let configurationSource: DNSConfigurationSource
     let dependency: DNSResolverDependency
     let resolverCount: Int
+    let hasLegacyMiniResolver: Bool
     let systemResolutionReady: Bool
     let generation: UInt64
     let observedAt: Date
+
+    init(
+        serviceName: String?,
+        interfaceName: String,
+        configurationSource: DNSConfigurationSource,
+        dependency: DNSResolverDependency,
+        resolverCount: Int,
+        hasLegacyMiniResolver: Bool = false,
+        systemResolutionReady: Bool,
+        generation: UInt64,
+        observedAt: Date
+    ) {
+        self.serviceName = serviceName
+        self.interfaceName = interfaceName
+        self.configurationSource = configurationSource
+        self.dependency = dependency
+        self.resolverCount = resolverCount
+        self.hasLegacyMiniResolver = hasLegacyMiniResolver
+        self.systemResolutionReady = systemResolutionReady
+        self.generation = generation
+        self.observedAt = observedAt
+    }
+
+    var effectiveDNSReady: Bool {
+        systemResolutionReady && dependency != .unreachable && dependency != .unknown
+    }
 
     static func unknown(interfaceName: String) -> DNSPathFacts {
         .init(
@@ -46,6 +73,7 @@ struct DNSPathFacts: Equatable {
             configurationSource: .unknown,
             dependency: .unknown,
             resolverCount: 0,
+            hasLegacyMiniResolver: false,
             systemResolutionReady: false,
             generation: 0,
             observedAt: .distantPast
@@ -536,17 +564,19 @@ final class LiveConnectivityProber: ConnectivityProbing {
         } else {
             source = .unknown
         }
+        let hasLegacyMiniResolver = interfaceName != "bridge0" && resolvers.contains(legacyMiniDNSAddress)
+        let nonLegacyResolvers = resolvers.filter { $0 != legacyMiniDNSAddress }
         let dependency: DNSResolverDependency
-        if interfaceName != "bridge0", resolvers.contains(legacyMiniDNSAddress) {
-            dependency = .miniDependent
-        } else if source == .loopback {
+        if source == .loopback {
             dependency = resolutionReady ? .overlayOnly : .unreachable
         } else if !resolutionReady {
             dependency = .unreachable
+        } else if hasLegacyMiniResolver && nonLegacyResolvers.isEmpty {
+            dependency = .miniDependent
         } else if resolvers.isEmpty {
             dependency = .unknown
         } else {
-            let routeInterfaces = resolvers.compactMap { resolver -> String? in
+            let routeInterfaces = (nonLegacyResolvers.isEmpty ? resolvers : nonLegacyResolvers).compactMap { resolver -> String? in
                 let route = runner.run(executable: "/sbin/route", arguments: ["-n", "get", resolver])
                 return route.succeeded
                     ? LiveNetworkModeSystemProvider.parseRouteInterface(route.standardOutput)
@@ -566,6 +596,7 @@ final class LiveConnectivityProber: ConnectivityProbing {
             configurationSource: source,
             dependency: dependency,
             resolverCount: resolvers.count,
+            hasLegacyMiniResolver: hasLegacyMiniResolver,
             systemResolutionReady: resolutionReady,
             generation: 0,
             observedAt: Date()

@@ -230,6 +230,21 @@ final class NetworkConnectivityTests: XCTestCase {
         XCTAssertTrue(result.hasLocalNetwork)
     }
 
+    func testHealthyPublicResolversKeepDNSIndependentWhenLegacyMiniResolverIsLast() {
+        let runner = ConnectivityCommandRunner()
+        runner.dnsServers = "223.5.5.5\n119.29.29.29\n192.168.2.1\n"
+        runner.systemResolutionReady = true
+        runner.curlStatuses = Array(repeating: "204", count: 12)
+        let result = LiveConnectivityProber(
+            runner: runner,
+            mihomo: ConnectivityMihomo(controller: false, proxyReady: false)
+        ).probe(interfaceName: "en0")
+
+        XCTAssertEqual(result.dnsPath.dependency, .independent)
+        XCTAssertTrue(result.dnsPath.hasLegacyMiniResolver)
+        XCTAssertTrue(result.dnsPath.effectiveDNSReady)
+    }
+
     func testZCodeAnonymousFourHundredSeriesIsTransportSuccess() {
         XCTAssertTrue(LiveConnectivityProber.isAcceptableAnonymousApplicationStatus(404))
         XCTAssertFalse(LiveConnectivityProber.isAcceptableAnonymousApplicationStatus(503))
@@ -304,6 +319,8 @@ private final class ConnectivityMihomo: MihomoRouteRecovering {
 private final class ConnectivityCommandRunner: NetworkModeCommandRunning {
     var curlStatuses: [String] = []
     var calls: [(String, [String])] = []
+    var dnsServers = "There aren't any DNS Servers set on Wi-Fi."
+    var systemResolutionReady = false
 
     func run(executable: String, arguments: [String]) -> NetworkModeCommandResult {
         calls.append((executable, arguments))
@@ -314,6 +331,22 @@ private final class ConnectivityCommandRunner: NetworkModeCommandRunning {
             return .init(exitCode: 0, standardOutput: "gateway: 10.0.0.1\ninterface: en0\n", standardError: "")
         case "/sbin/route":
             return .init(exitCode: 0, standardOutput: "interface: en0\n", standardError: "")
+        case "/usr/sbin/networksetup" where arguments == ["-listnetworkserviceorder"]:
+            return .init(
+                exitCode: 0,
+                standardOutput: "(1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n",
+                standardError: ""
+            )
+        case "/usr/sbin/networksetup" where arguments.first == "-getdnsservers":
+            return .init(exitCode: 0, standardOutput: dnsServers, standardError: "")
+        case "/usr/sbin/scutil":
+            return .init(exitCode: 0, standardOutput: "", standardError: "")
+        case "/usr/bin/dscacheutil":
+            return .init(
+                exitCode: systemResolutionReady ? 0 : 1,
+                standardOutput: systemResolutionReady ? "ip_address: 17.253.144.10\n" : "",
+                standardError: ""
+            )
         case "/usr/bin/curl":
             let status = curlStatuses.isEmpty ? "000" : curlStatuses.removeFirst()
             return .init(exitCode: status == "000" ? 1 : 0, standardOutput: status, standardError: "")
