@@ -131,7 +131,7 @@ Direct Full 使用固定高度菜单弹窗。顶部状态条持续显示在线�
 - **出口**：Mac mini/Wi-Fi 偏好、雷雳链路、Apple 共享出口、端到端验证、候选和高级诊断。
 - **Clash**：用户手动选择系统代理或 TUN 全局，并查看持久配置、Runtime 和应用兼容性诊断。
 - **应用**：总上下行速度、实时活跃应用和累计流量排行。
-- **监控**：公网出口 IP、Wi-Fi/局域网/DNS 事实及 VPS 流量。
+- **监控**：公网出口 IP、Wi-Fi/局域网/DNS 事实、公司 VPN 只读诊断及 VPS 流量。
 
 面板宽度保持 380pt，Direct Full 高度固定为 540pt；页面内容在自己的视口内滚动，切换 Tab 不会改变弹窗位置或高度。顶部刷新按钮刷新当前页面及全局状态所需的基础事实。App Store Lite 只展示监控页并隐藏单项 Tab Bar。
 
@@ -159,6 +159,8 @@ Guardian 的 `ready` 现在必须同时满足 `en0` 载波、预期地址与路�
 Wi-Fi 先验证载波、IPv4 和网关；能绑定实际 Wi-Fi 设备直连 HTTPS 时采用 make-before-break。部分公司网络会阻断绕过代理的 HTTPS，因此公网 ICMP 和单次直连失败都不是 readiness 的决定性证据。Mini 切换前组合固定 Peer、Guardian、forwarding 与绑定 `bridge0` 的 TCP/TLS 事实，切换后再以实际物理路由、系统 HTTPS 和 Clash HTTPS 确认可用。每当实际物理出口在 `bridge0` 与 Wi-Fi 之间变化，NetBar 都会通过 Mihomo Unix Socket 调用一次 `DELETE /connections`，关闭旧 underlay 上的运行中连接，再等待并验证新连接；同一出口的重复检查不会重复清理。网络出口状态机不退出、重启、重载 Clash，也不会开关 TUN。
 
 DNS 是端到端互联网证明的一部分，但不是固定雷雳管理链路的成立条件。Wi-Fi 同时配置健康公共 DNS 与旧 Mini 地址 `192.168.2.1` 时，NetBar 显示“DNS 当前可用 · 含旧 Mini DNS”，不会误报为完全依赖 Mini。用户可点击“清理旧 Mini DNS”，Route Safety Helper v5 只删除该精确地址并保留其余手动 resolver；“恢复 Wi-Fi 自动 DNS”仍是另一个明确操作。两者都备份原值、验证 DNS 与数据面后提交，失败完整回滚，普通插拔和出口切换不会自动触发。`114.114.114.114`、公司 DNS及其他手动 DNS只诊断，不自动修改。
+
+“监控”页的公司 VPN 分组只读取 `dual-vpn-config` 产生的脱敏 artifact，并展示 aTrust 进程、企业路由、OAVPN 公网入口和共存基线漂移。点击“运行公司 VPN 诊断”调用该 Skill 的只读命令；NetBar 不登录腾讯云、不保存 SSH 凭据，也不修改 aTrust、OAVPN hosts、Clash DNS、VPN 路由或公司 DNS。单个 OAVPN/ZCode 端点故障不驱动物理出口切换；只有 Mini 下游端到端出口失败才按原状态机回退 Wi-Fi。
 
 “应用诊断”分别显示系统 HTTPS、显式 Clash、代理不感知/TUN 和 ZCode 后台链路。ZCode 请求不包含 token、Cookie 或账号信息，匿名响应 2xx–4xx 即表示传输可达；ZCode 服务本身的故障不会触发 Mac mini/Wi-Fi 切换。
 
