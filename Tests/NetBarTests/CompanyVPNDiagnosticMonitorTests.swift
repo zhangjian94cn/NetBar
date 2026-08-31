@@ -60,4 +60,54 @@ final class CompanyVPNDiagnosticMonitorTests: XCTestCase {
         XCTAssertFalse(source.contains("ssh"))
         XCTAssertTrue(source.contains("diagnose-oavpn-endpoint"))
     }
+
+    func testReadsOverlayTransitionArtifactAndOffersOnlyExplicitOwnerRecovery() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("netbar-company-overlay-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let overlay = root.appendingPathComponent(
+            "zhangjian-skills/dual-vpn-config/overlay-transition-diagnostic.json"
+        )
+        try FileManager.default.createDirectory(
+            at: overlay.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("""
+        {
+          "schema_version": "1.0",
+          "observed_at_utc": "2026-08-31T06:00:00Z",
+          "classification": {
+            "status": "degraded",
+            "mode": "direct",
+            "reason": "staleFakeIPWithoutTunRoute",
+            "recovery_available": true,
+            "should_change_underlay": false
+          },
+          "secret_redaction": true
+        }
+        """.utf8).write(to: overlay)
+
+        let monitor = CompanyVPNDiagnosticMonitor(environment: ["XDG_STATE_HOME": root.path])
+        let snapshot = monitor.collectSnapshot()
+
+        XCTAssertEqual(snapshot.overlayMode, "直连兜底")
+        XCTAssertEqual(snapshot.overlayReason, "Fake-IP 未随 TUN 关闭而收敛")
+        XCTAssertTrue(snapshot.recoveryAvailable)
+        XCTAssertNotEqual(snapshot.health, .ready)
+    }
+
+    func testRecoveryUsesFixedOwnerCommandWithoutShellOrAutomaticInvocation() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/NetBar/Monitors/CompanyVPNDiagnosticMonitor.swift"))
+
+        XCTAssertTrue(source.contains("recover-coexistence"))
+        XCTAssertFalse(source.contains("/bin/sh"))
+        XCTAssertFalse(source.contains("-c\""))
+        XCTAssertFalse(source.contains("Timer.scheduledTimer") && source.contains("recoverCoexistence()"))
+        XCTAssertTrue(source.contains("withTimeInterval: 10"))
+        XCTAssertTrue(source.contains("inspectExternalOverlayTransition()"))
+    }
 }

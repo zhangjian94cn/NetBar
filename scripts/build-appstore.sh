@@ -32,6 +32,11 @@ if strings "$BIN_DIR/NetBar" | grep -Eq 'OverlayTransactions|Mihomo 拒绝切换
     exit 1
 fi
 
+if strings "$BIN_DIR/NetBar" | grep -Fq 'recover-coexistence'; then
+    echo "App Store Lite binary must not contain company VPN coexistence recovery" >&2
+    exit 1
+fi
+
 if [[ -n "${NETBAR_APPSTORE_IDENTITY:-}" ]]; then
     echo "Signing with App Store identity..."
     codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign "$NETBAR_APPSTORE_IDENTITY" "$APP_DIR"

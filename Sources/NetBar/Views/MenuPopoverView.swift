@@ -494,6 +494,17 @@ private struct MonitoringTabView: View {
                 .foregroundColor(PopoverVisualStyle.secondaryText)
                 .lineLimit(2)
 
+            HStack(spacing: PopoverVisualStyle.Spacing.xs) {
+                Text(snapshot.overlayMode)
+                    .font(PopoverVisualStyle.Typography.captionStrong)
+                if let reason = snapshot.overlayReason {
+                    Text("· \(reason)")
+                        .font(PopoverVisualStyle.Typography.caption)
+                        .foregroundColor(PopoverVisualStyle.warning)
+                        .lineLimit(2)
+                }
+            }
+
             if let message = companyVPNMonitor.errorMessage {
                 Text(message)
                     .font(PopoverVisualStyle.Typography.caption)
@@ -506,6 +517,18 @@ private struct MonitoringTabView: View {
                 }
                 .buttonStyle(.link)
                 .disabled(companyVPNMonitor.isRunningOwnerDiagnostic)
+                #if !APP_STORE
+                if snapshot.recoveryAvailable {
+                    Button(companyVPNMonitor.isRecoveringCoexistence ? "正在恢复…" : "恢复公司 VPN + 外网共存") {
+                        companyVPNMonitor.requestCoexistenceRecovery()
+                    }
+                    .buttonStyle(.link)
+                    .disabled(
+                        companyVPNMonitor.isRecoveringCoexistence ||
+                        companyVPNMonitor.isRunningOwnerDiagnostic
+                    )
+                }
+                #endif
                 Spacer()
                 if let observedAt = snapshot.observedAt {
                     Text(observedAt, style: .relative)
