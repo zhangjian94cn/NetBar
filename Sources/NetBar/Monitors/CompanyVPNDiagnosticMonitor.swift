@@ -1,4 +1,5 @@
 import Foundation
+import SystemConfiguration
 
 struct CompanyVPNDiagnosticSnapshot: Equatable {
     enum Health: String, Equatable {
@@ -14,6 +15,9 @@ struct CompanyVPNDiagnosticSnapshot: Equatable {
     let portalStatus: String
     let portalEndpoint: String?
     let baselineStatus: String
+    let overlayMode: String
+    let overlayReason: String?
+    let recoveryAvailable: Bool
     let recommendation: String?
     let observedAt: Date?
 
@@ -24,6 +28,9 @@ struct CompanyVPNDiagnosticSnapshot: Equatable {
         portalStatus: "待检测",
         portalEndpoint: nil,
         baselineStatus: "待检测",
+        overlayMode: "待检测",
+        overlayReason: nil,
+        recoveryAvailable: false,
         recommendation: nil,
         observedAt: nil
     )
@@ -35,12 +42,15 @@ struct CompanyVPNDiagnosticSnapshot: Equatable {
 final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
     @Published private(set) var snapshot: CompanyVPNDiagnosticSnapshot = .unknown
     @Published private(set) var isRunningOwnerDiagnostic = false
+    @Published private(set) var isRecoveringCoexistence = false
     @Published private(set) var errorMessage: String?
 
     private let fileManager: FileManager
     private let environment: [String: String]
     private let queue = DispatchQueue(label: "com.zjah.NetBar.company-vpn-diagnostic", qos: .utility)
     private var timer: Timer?
+    private var lastObservedDoubleOff: Bool?
+    private var isRunningOverlayDiagnostic = false
 
     init(
         fileManager: FileManager = .default,
@@ -53,8 +63,10 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
     func start() {
         guard DistributionFlavor.current == .directFull else { return }
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        inspectExternalOverlayTransition()
+        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             self?.refresh()
+            self?.inspectExternalOverlayTransition()
         }
         if let timer { RunLoop.main.add(timer, forMode: .common) }
     }
@@ -77,7 +89,9 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
     }
 
     func runOwnerDiagnostic() {
-        guard DistributionFlavor.current == .directFull, !isRunningOwnerDiagnostic else { return }
+        guard DistributionFlavor.current == .directFull,
+              !isRunningOwnerDiagnostic,
+              !isRunningOverlayDiagnostic else { return }
         let cliPath = environment["NETBAR_DUAL_VPN_CLI_PATH"] ??
             "/Users/zjah/Documents/code/zhangjian-skills/skills/my/infra/local-dev-config/dual-vpn-config/scripts/dual-vpn-cli.mjs"
         guard fileManager.isReadableFile(atPath: cliPath) else {
@@ -86,21 +100,111 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
         }
         isRunningOwnerDiagnostic = true
         errorMessage = nil
-        let outputPath = endpointArtifactURL.path
+        let endpointOutputPath = endpointArtifactURL.path
+        let overlayOutputPath = overlayArtifactURL.path
         queue.async { [weak self] in
             guard let self else { return }
-            let result = Self.run(
+            let endpointResult = Self.run(
                 executable: "/usr/bin/env",
-                arguments: ["node", cliPath, "diagnose-oavpn-endpoint", "--json-out", outputPath]
+                arguments: ["node", cliPath, "diagnose-oavpn-endpoint", "--json-out", endpointOutputPath]
+            )
+            let overlayResult = Self.run(
+                executable: "/usr/bin/env",
+                arguments: ["node", cliPath, "diagnose-overlay-transition", "--json-out", overlayOutputPath]
             )
             let next = self.collectSnapshot()
             DispatchQueue.main.async {
                 self.isRunningOwnerDiagnostic = false
                 self.snapshot = next
-                self.errorMessage = result == 0 ? nil : "公司 VPN 诊断未完成，请查看 dual-vpn-config 输出"
+                self.errorMessage = endpointResult == 0 && overlayResult == 0
+                    ? nil
+                    : "公司 VPN 诊断未完成，请查看 dual-vpn-config 输出"
             }
         }
     }
+
+    private func inspectExternalOverlayTransition() {
+        guard DistributionFlavor.current == .directFull else { return }
+        let proxyEnabled: Bool
+        if let settings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] {
+            let keys = [
+                kCFNetworkProxiesHTTPEnable as String,
+                kCFNetworkProxiesHTTPSEnable as String,
+                kCFNetworkProxiesSOCKSEnable as String,
+            ]
+            proxyEnabled = keys.contains { key in
+                (settings[key] as? NSNumber)?.boolValue == true
+            }
+        } else {
+            proxyEnabled = false
+        }
+        guard let runtime = MihomoClient.runtimeConfiguration() else { return }
+        let doubleOff = !proxyEnabled && !runtime.tunEnabled
+        guard lastObservedDoubleOff != doubleOff else { return }
+        lastObservedDoubleOff = doubleOff
+        guard doubleOff, !isRunningOwnerDiagnostic, !isRunningOverlayDiagnostic else { return }
+        isRunningOverlayDiagnostic = true
+        let cliPath = environment["NETBAR_DUAL_VPN_CLI_PATH"] ??
+            "/Users/zjah/Documents/code/zhangjian-skills/skills/my/infra/local-dev-config/dual-vpn-config/scripts/dual-vpn-cli.mjs"
+        guard fileManager.isReadableFile(atPath: cliPath) else {
+            isRunningOverlayDiagnostic = false
+            return
+        }
+        let outputPath = overlayArtifactURL.path
+        queue.async { [weak self] in
+            guard let self else { return }
+            let result = Self.run(
+                executable: "/usr/bin/env",
+                arguments: ["node", cliPath, "diagnose-overlay-transition", "--json-out", outputPath]
+            )
+            let next = self.collectSnapshot()
+            DispatchQueue.main.async {
+                self.isRunningOverlayDiagnostic = false
+                self.snapshot = next
+                if result != 0 {
+                    self.errorMessage = "外部模式变化诊断未完成"
+                }
+            }
+        }
+    }
+
+    #if !APP_STORE
+    func requestCoexistenceRecovery() {
+        guard DistributionFlavor.current == .directFull,
+              !isRecoveringCoexistence,
+              !isRunningOwnerDiagnostic else { return }
+        let cliPath = environment["NETBAR_DUAL_VPN_CLI_PATH"] ??
+            "/Users/zjah/Documents/code/zhangjian-skills/skills/my/infra/local-dev-config/dual-vpn-config/scripts/dual-vpn-cli.mjs"
+        guard fileManager.isReadableFile(atPath: cliPath) else {
+            errorMessage = "未找到 dual-vpn-config 恢复入口"
+            return
+        }
+        isRecoveringCoexistence = true
+        errorMessage = nil
+        let artifactDirectory = overlayArtifactURL.deletingLastPathComponent().path
+        let backupDirectory = overlayArtifactURL.deletingLastPathComponent()
+            .appendingPathComponent("transactions", isDirectory: true).path
+        queue.async { [weak self] in
+            guard let self else { return }
+            let result = Self.run(
+                executable: "/usr/bin/env",
+                arguments: [
+                    "node", cliPath, "recover-coexistence",
+                    "--artifacts-dir", artifactDirectory,
+                    "--backup-dir", backupDirectory,
+                ]
+            )
+            let next = self.collectSnapshot()
+            DispatchQueue.main.async {
+                self.isRecoveringCoexistence = false
+                self.snapshot = next
+                self.errorMessage = result == 0
+                    ? nil
+                    : "共存模式恢复未提交，已尝试回滚；请查看诊断结果"
+            }
+        }
+    }
+    #endif
 
     func collectSnapshot() -> CompanyVPNDiagnosticSnapshot {
         let processOutput = Self.commandOutput(executable: "/bin/ps", arguments: ["-axo", "comm="])
@@ -118,6 +222,11 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
 
         let endpoint = readJSON(endpointArtifactURL)
         let baseline = readJSON(baselineArtifactURL)
+        let overlay = readJSON(overlayArtifactURL)
+        let overlayClassification = overlay?["classification"] as? [String: Any] ?? overlay
+        let overlayModeValue = overlayClassification?["mode"] as? String ?? "unknown"
+        let overlayReasonValue = overlayClassification?["reason"] as? String
+        let recoveryAvailable = overlayClassification?["recovery_available"] as? Bool ?? false
         let portalState = endpoint?["status"] as? String ?? "unknown"
         let endpointIPs = endpoint?["verified_endpoint_ips"] as? [String] ?? []
         let endpointIP = endpointIPs.first
@@ -139,9 +248,9 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
         let protectedRouteReady = routeInterface?.hasPrefix("utun") == true
         let portalReady = portalState == "healthy" || portalState == "vantage_divergence"
         let health: CompanyVPNDiagnosticSnapshot.Health
-        if aTrustRunning && protectedRouteReady && portalReady && baselineHealthy {
+        if aTrustRunning && protectedRouteReady && portalReady && baselineHealthy && overlayReasonValue == nil {
             health = .ready
-        } else if aTrustRunning || portalReady {
+        } else if aTrustRunning || portalReady || overlayReasonValue != nil {
             health = .degraded
         } else if endpoint != nil || baseline != nil {
             health = .unavailable
@@ -149,7 +258,8 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
             health = .unknown
         }
 
-        let observedAt = (endpoint?["observed_at_utc"] as? String).flatMap(Self.isoDate)
+        let observedAt = ((overlay?["observed_at_utc"] as? String) ??
+            (endpoint?["observed_at_utc"] as? String)).flatMap(Self.isoDate)
         return CompanyVPNDiagnosticSnapshot(
             health: health,
             aTrustRunning: aTrustRunning,
@@ -157,6 +267,9 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
             portalStatus: Self.portalText(portalState),
             portalEndpoint: endpointIP,
             baselineStatus: baselineStatus,
+            overlayMode: Self.overlayModeText(overlayModeValue),
+            overlayReason: Self.overlayReasonText(overlayReasonValue),
+            recoveryAvailable: recoveryAvailable,
             recommendation: endpoint?["recommendation"] as? String,
             observedAt: observedAt
         )
@@ -182,6 +295,12 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
         )
     }
 
+    private var overlayArtifactURL: URL {
+        stateRootURL.appendingPathComponent(
+            "zhangjian-skills/dual-vpn-config/overlay-transition-diagnostic.json"
+        )
+    }
+
     private func readJSON(_ url: URL) -> [String: Any]? {
         guard let data = try? Data(contentsOf: url),
               let object = try? JSONSerialization.jsonObject(with: data),
@@ -196,6 +315,31 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
         case "override_unhealthy": return "临时节点不可用"
         case "unavailable": return "入口不可用"
         default: return "待检测"
+        }
+    }
+
+    private static func overlayModeText(_ mode: String) -> String {
+        switch mode {
+        case "coexistence": return "公司 VPN + 外网共存"
+        case "tun_only": return "仅 TUN"
+        case "system_proxy": return "仅系统代理"
+        case "direct": return "直连兜底"
+        default: return "待检测"
+        }
+    }
+
+    private static func overlayReasonText(_ reason: String?) -> String? {
+        switch reason {
+        case "physicalUnderlayUnavailable": return "物理网络不可用"
+        case "dnsResolverUnavailable": return "公共 DNS 不可用"
+        case "staleFakeIPWithoutTunRoute": return "Fake-IP 未随 TUN 关闭而收敛"
+        case "tunRouteResidual": return "TUN 已关闭但虚拟路由仍残留"
+        case "applicationResolverCacheStale": return "应用连接缓存未刷新"
+        case "proxyNodeUnavailable": return "代理节点不可用"
+        case "companyBypassUnavailable": return "公司流量绕过规则不可用"
+        case "proxyRequiredDestination": return "部分目标需要代理"
+        case .some(let value): return value
+        case .none: return nil
         }
     }
 

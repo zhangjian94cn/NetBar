@@ -160,7 +160,9 @@ Wi-Fi 先验证载波、IPv4 和网关；能绑定实际 Wi-Fi 设备直连 HTTP
 
 DNS 是端到端互联网证明的一部分，但不是固定雷雳管理链路的成立条件。Wi-Fi 同时配置健康公共 DNS 与旧 Mini 地址 `192.168.2.1` 时，NetBar 显示“DNS 当前可用 · 含旧 Mini DNS”，不会误报为完全依赖 Mini。用户可点击“清理旧 Mini DNS”，Route Safety Helper v5 只删除该精确地址并保留其余手动 resolver；“恢复 Wi-Fi 自动 DNS”仍是另一个明确操作。两者都备份原值、验证 DNS 与数据面后提交，失败完整回滚，普通插拔和出口切换不会自动触发。`114.114.114.114`、公司 DNS及其他手动 DNS只诊断，不自动修改。
 
-“监控”页的公司 VPN 分组只读取 `dual-vpn-config` 产生的脱敏 artifact，并展示 aTrust 进程、企业路由、OAVPN 公网入口和共存基线漂移。点击“运行公司 VPN 诊断”调用该 Skill 的只读命令；NetBar 不登录腾讯云、不保存 SSH 凭据，也不修改 aTrust、OAVPN hosts、Clash DNS、VPN 路由或公司 DNS。单个 OAVPN/ZCode 端点故障不驱动物理出口切换；只有 Mini 下游端到端出口失败才按原状态机回退 Wi-Fi。
+“监控”页的公司 VPN 分组只读取 `dual-vpn-config` 产生的脱敏 artifact，并展示 aTrust 进程、企业路由、OAVPN 公网入口、系统代理/TUN/Fake-IP 一致性和共存基线漂移。点击“运行公司 VPN 诊断”会依次运行 OAVPN 入口与 overlay 过渡的只读命令；NetBar 不登录腾讯云、不保存 SSH 凭据，也不修改 aTrust、OAVPN hosts、Clash DNS、VPN 路由或公司 DNS。单个 OAVPN/ZCode、代理节点、浏览器缓存或 Fake-IP 收敛故障不驱动物理出口切换；只有 Mini 下游端到端出口失败才按原状态机回退 Wi-Fi。
+
+如果用户在 Clash Verge 外部手动同时关闭系统代理与 TUN，NetBar 不会后台覆盖该选择。它每 10 秒只读检查一次开关事实，仅在进入双关闭时运行一次完整过渡诊断；确认失败后显示具体层级，并在 Direct Full 提供“恢复公司 VPN + 外网共存”。该按钮只用固定参数调用 `dual-vpn-config recover-coexistence`，由配置所有者完成 checksummed 备份、Mihomo reload、数据面验证和回滚。App Store Lite 不包含该写入口。
 
 “应用诊断”分别显示系统 HTTPS、显式 Clash、代理不感知/TUN 和 ZCode 后台链路。ZCode 请求不包含 token、Cookie 或账号信息，匿名响应 2xx–4xx 即表示传输可达；ZCode 服务本身的故障不会触发 Mac mini/Wi-Fi 切换。
 

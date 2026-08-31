@@ -33,6 +33,8 @@
 
 采用方案 3。`网络出口` Tab 只管理 Mini/Wi-Fi 偏好、链路事实、候选、服务顺序和故障转移；`Clash 模式` Tab 只提供用户触发的 `系统代理` 与 `TUN 全局`。NetBar 不因断线、插线、VPN 变化或自动回退而改变 TUN。
 
+2026-08-31 补充：公司 VPN 诊断属于只读 overlay 展示，不进入 underlay reducer。NetBar 可读取 `dual-vpn-config diagnose-overlay-transition` 的脱敏 artifact；发现用户在 Clash Verge 外部手动双关闭后，只展示 Fake-IP、残留路由、浏览器缓存、代理节点或物理层原因，不自动恢复。用户点击“恢复公司 VPN + 外网共存”时，NetBar 仅以固定参数数组委托 `recover-coexistence`，写入、验证和回滚仍由 `dual-vpn-config` 独占。相关展示实现见 [CompanyVPNDiagnosticMonitor.swift](../Sources/NetBar/Monitors/CompanyVPNDiagnosticMonitor.swift)。
+
 Clash 模式事务严格只修改顶层唯一 `enable_tun_mode` 标量，并通过 Mihomo Unix Socket PATCH 对应 runtime TUN。事务先保存 SHA-256 备份和原权限，再依次验证 runtime、持久值、指向当前 mixed-port 的 loopback 系统代理、显式代理 HTTPS 与系统 HTTPS；失败按相反顺序恢复。`TUN 全局` 额外要求 `ipv6=false` 以及 aTrust、LAN、Tailscale、WireGuard 共存排除基线。其他 Clash 字段仍由 `dual-vpn-config` 独占。
 
 Route Safety Helper 在本决策中升级为协议 v2。`prefer-*` 写入完整原服务顺序和 pending target；NetBar 完成实际路由及数据面验证后必须调用 `commit`，失败调用 `rollback`。启动时发现 pending 事务会重新验证后提交或恢复。v1 只留下备份、没有 pending target 的状态在一次性安装时视作已提交遗留并清理；v2 pending 事务绝不由安装器删除。其后续 v3 DNS 窄权限与回滚边界见 [端到端 DNS ADR](2026-08-28-end-to-end-dns-overlay-failover-adr.md)。
