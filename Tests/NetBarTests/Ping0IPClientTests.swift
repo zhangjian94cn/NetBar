@@ -105,7 +105,7 @@ final class Ping0IPClientTests: XCTestCase {
         XCTAssertEqual(info.locationDisplay, "美国 / 华盛顿州 / 西雅图")
         XCTAssertEqual(info.asn, "AS201106")
         XCTAssertEqual(info.org, "Spartan Host Ltd")
-        XCTAssertEqual(info.riskLabel, "纯净度: 风险值 10")
+        XCTAssertEqual(info.riskLabel, "风控值 10 · 极度纯净")
     }
 
     func testHTTPStatusError() async {

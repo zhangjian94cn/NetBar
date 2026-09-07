@@ -12,7 +12,7 @@ final class EgressIPMonitor: ObservableObject, MonitorProtocol {
 
     init(
         config: AppConfig = .shared,
-        client: IPIntelligenceClient = Ping0IPClient(),
+        client: IPIntelligenceClient = EgressIPClientRouter(),
         minimumCacheTTL: TimeInterval = 300
     ) {
         self.config = config

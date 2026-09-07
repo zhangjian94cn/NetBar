@@ -19,6 +19,39 @@ enum IPVersion: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// ping0 官方风控六档（边界口径见 https://ping0.cc/ip/faq，区间左闭右开：
+/// 15 归「纯净」档，与页面 title "0-15 极度纯净 / 15-25 纯净" 一致）。
+enum RiskTier: Equatable, Sendable, CaseIterable {
+    case extremelyPure
+    case pure
+    case neutral
+    case slightRisk
+    case moderateRisk
+    case extremeRisk
+
+    init?(risk: Int) {
+        switch risk {
+        case ..<15: self = .extremelyPure
+        case 15..<25: self = .pure
+        case 25..<40: self = .neutral
+        case 40..<50: self = .slightRisk
+        case 50..<70: self = .moderateRisk
+        default: self = .extremeRisk
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .extremelyPure: return "极度纯净"
+        case .pure: return "纯净"
+        case .neutral: return "中性"
+        case .slightRisk: return "轻微风险"
+        case .moderateRisk: return "稍高风险"
+        case .extremeRisk: return "极度风险"
+        }
+    }
+}
+
 struct EgressIPInfo: Equatable, Sendable {
     let ip: String
     let ipVersion: IPVersion
@@ -34,12 +67,26 @@ struct EgressIPInfo: Equatable, Sendable {
     let isNative: Bool?
     let asnType: String?
     let orgType: String?
+    /// 网页链路的「IP 类型」原文（如 "家庭宽带 IP" / "IDC机房IP"）；付费接口链路为 nil。
+    var ipTypeText: String? = nil
+    /// 网页链路的「共享人数」区间原文（如 "1 - 10 (极好)"）；中国大陆 IP 该行缺失，为 nil。
+    var sharedUsersText: String? = nil
+    /// 网页链路的「大模型检测」结论原文（如 "家庭宽带的概率为 52%"）；未出结论为 nil。
+    var aiDetectionText: String? = nil
+    /// 网页链路的风控值原始百分比展示（如 "8%"）；付费接口链路为 nil。
+    var riskPercentText: String? = nil
     let source: String
     let fetchedAt: Date
 
+    var riskTier: RiskTier? {
+        ipRisk.flatMap { RiskTier(risk: $0) }
+    }
+
     var riskLabel: String {
         guard let ipRisk else { return "基础归属地" }
-        return "纯净度: 风险值 \(ipRisk)"
+        let value = riskPercentText ?? "\(ipRisk)"
+        guard let riskTier else { return "风控值 \(value)" }
+        return "风控值 \(value) · \(riskTier.displayName)"
     }
 
     var locationDisplay: String? {
@@ -69,6 +116,7 @@ enum EgressIPError: LocalizedError, Equatable {
     case httpStatus(Int)
     case invalidGeoResponse
     case invalidJSONResponse
+    case webpageNotReady
     case timeout
     case networkUnavailable
     case unknown(String)
@@ -85,6 +133,8 @@ enum EgressIPError: LocalizedError, Equatable {
             return "ping0 基础信息响应格式不兼容"
         case .invalidJSONResponse:
             return "ping0 纯净度响应不是有效 JSON"
+        case .webpageNotReady:
+            return "ping0 页面未就绪（可能触发了人工验证，稍后重试）"
         case .timeout:
             return "出口 IP 检测超时"
         case .networkUnavailable:

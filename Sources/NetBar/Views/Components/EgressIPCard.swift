@@ -1,5 +1,16 @@
 import SwiftUI
 
+extension RiskTier {
+    /// 六档 → PopoverKit 三档业务色（档位文字补足六档语义，不新增第六种颜色）。
+    var tint: Color {
+        switch self {
+        case .extremelyPure, .pure: return PopoverVisualStyle.healthy
+        case .neutral, .slightRisk: return PopoverVisualStyle.warning
+        case .moderateRisk, .extremeRisk: return PopoverVisualStyle.fault
+        }
+    }
+}
+
 struct EgressIPCard: View {
     @ObservedObject var monitor: EgressIPMonitor
 
@@ -62,11 +73,22 @@ struct EgressIPCard: View {
                 if let org = info.org, !org.isEmpty {
                     PopoverFactRow(title: "组织", value: org, compact: true)
                 }
+                if let sharedUsers = info.sharedUsersText {
+                    PopoverFactRow(title: "共享人数", value: sharedUsers, compact: true)
+                }
+                if let aiDetection = info.aiDetectionText {
+                    PopoverFactRow(title: "大模型检测", value: aiDetection, compact: true)
+                }
             }
 
-            if info.isIDC != nil || info.isNative != nil || info.orgType != nil {
+            if info.ipTypeText != nil || info.isIDC != nil || info.isNative != nil || info.orgType != nil {
                 HStack(spacing: PopoverVisualStyle.Spacing.xs + 2) {
-                    if let isIDC = info.isIDC {
+                    if let ipType = info.ipTypeText {
+                        PopoverBadge(
+                            text: ipType,
+                            color: ipType.contains("IDC") ? PopoverVisualStyle.warning : PopoverVisualStyle.healthy
+                        )
+                    } else if let isIDC = info.isIDC {
                         PopoverBadge(
                             text: isIDC ? "IDC" : "非 IDC",
                             color: isIDC ? PopoverVisualStyle.warning : PopoverVisualStyle.healthy
@@ -84,17 +106,25 @@ struct EgressIPCard: View {
                 }
             }
 
-            Text("地理位置来自 IP 数据库，可能与真实物理位置不一致。来源 \(info.source)")
-                .font(PopoverVisualStyle.Typography.caption)
-                .foregroundColor(PopoverVisualStyle.tertiaryText)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("地理位置来自 IP 数据库，可能与真实物理位置不一致。来源 \(info.source)")
+                    .font(PopoverVisualStyle.Typography.caption)
+                    .foregroundColor(PopoverVisualStyle.tertiaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let reportURL = fullReportURL(info.ip) {
+                    Link("在 ping0.cc 查看完整报告", destination: reportURL)
+                        .font(PopoverVisualStyle.Typography.caption)
+                }
+            }
         }
     }
 
     private func riskColor(_ info: EgressIPInfo) -> Color {
-        guard let risk = info.ipRisk else { return PopoverVisualStyle.secondaryText }
-        if risk <= 25 { return PopoverVisualStyle.healthy }
-        if risk <= 50 { return PopoverVisualStyle.warning }
-        return PopoverVisualStyle.fault
+        info.riskTier?.tint ?? PopoverVisualStyle.secondaryText
+    }
+
+    private func fullReportURL(_ ip: String) -> URL? {
+        URL(string: "https://ping0.cc/ip/\(ip)")
     }
 }
