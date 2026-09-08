@@ -746,6 +746,44 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
     }
 
+    // 现场回归：打开 popover 会触发 refresh()，而本地快照按设计不查共享。
+    // 直接发布它会把策略轮询的结论抹掉，卡片间断闪成「共享状态未知 / 受限在线」。
+    func testRefreshDoesNotEraseTheQualifiedGatewayVerdict() throws {
+        let currentTime = Date(timeIntervalSince1970: 9_000)
+        let provider = SplitQualificationProvider(
+            local: policySnapshot(interface: "bridge0", gateway: .unknown),
+            qualified: policySnapshot(interface: "bridge0", gateway: .ready)
+        )
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: RecordingRouteSafetyController(),
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            now: { currentTime },
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(
+            waitUntil { controller.snapshot?.gatewayState == .ready },
+            "策略轮询应先发布已资格化的快照"
+        )
+
+        let readsBeforeRefresh = provider.localReadCount
+        controller.refresh()
+        XCTAssertTrue(
+            waitUntil { provider.localReadCount > readsBeforeRefresh },
+            "refresh 应真的重新读取本地事实"
+        )
+        XCTAssertTrue(
+            waitUntil { controller.snapshot?.gatewayState == .ready },
+            "refresh 只带本地事实，不能把共享判定退回未知：gateway=\(String(describing: controller.snapshot?.gatewayState))"
+        )
+    }
+
     // 现场回归：一轮资格检查实测约 10 秒，若把连续性写死成 10 秒，
     // 稳定窗口每轮清零，Mini healthy 也永远切不回去。
     func testSlowQualificationRoundsStillAccumulateStability() throws {
@@ -1522,6 +1560,31 @@ private final class PolicyRouteSafetyController: RouteSafetyControlling {
     func openInstaller() -> NetworkModeCommandResult {
         .init(exitCode: 0, standardOutput: "", standardError: "")
     }
+}
+
+private final class SplitQualificationProvider: NetworkModeSystemProviding {
+    private let local: NetworkModeSnapshot
+    private let qualified: NetworkModeSnapshot
+    var helperStatus: MacMiniHelperStatus?
+
+    init(local: NetworkModeSnapshot, qualified: NetworkModeSnapshot) {
+        self.local = local
+        self.qualified = qualified
+    }
+
+    private let lock = NSLock()
+    private(set) var localReadCount = 0
+    func readLocalSnapshot() throws -> NetworkModeSnapshot {
+        lock.lock(); localReadCount += 1; lock.unlock()
+        return local
+    }
+    func qualifySnapshot(_ local: NetworkModeSnapshot) throws -> NetworkModeSnapshot { qualified }
+    func readSnapshot() throws -> NetworkModeSnapshot { qualified }
+    func setServiceOrder(_ serviceNames: [String]) -> NetworkModeCommandResult {
+        .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func readMacMiniHelperStatus() -> MacMiniHelperStatus? { helperStatus }
+    func reportMacMiniEgressFailure() -> Bool { true }
 }
 
 private final class SequencedPolicyProvider: NetworkModeSystemProviding {

@@ -1117,7 +1117,20 @@ final class NetworkModeController: ObservableObject {
                 guard !context.isStopped else { return }
                 switch result {
                 case .success(let (snapshot, helperStatus)):
-                    self.snapshot = snapshot
+                    // `readLocalSnapshot` deliberately skips qualification, so its
+                    // `gatewayState` is always `.unknown` — publishing that verbatim erases
+                    // the policy round's verdict and makes the card flash
+                    // "共享状态未知 / 受限在线" every time the popover opens.  Carry the last
+                    // qualified verdict forward while the link facts still match it.
+                    var merged = snapshot
+                    if merged.gatewayState == .unknown,
+                       let previous = self.snapshot,
+                       previous.gatewayState != .unknown,
+                       previous.linkState == merged.linkState,
+                       previous.effectiveMode == merged.effectiveMode {
+                        merged.gatewayState = previous.gatewayState
+                    }
+                    self.snapshot = merged
                     self.miniHelperStatus = helperStatus
                     if !self.requiresManualRecovery {
                         self.errorMessage = nil
