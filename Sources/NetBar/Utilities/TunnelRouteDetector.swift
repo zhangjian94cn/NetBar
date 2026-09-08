@@ -1,3 +1,4 @@
+import NetworkExecution
 import Darwin
 import Foundation
 
@@ -99,29 +100,8 @@ enum TunnelRouteDetector {
     }
 
     private static func fetchIPv4Routes() -> [IPv4Route] {
-        let process = Process()
-        let pipe = Pipe()
-
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
-        process.arguments = ["-rn", "-f", "inet"]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-        } catch {
-            return []
-        }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0,
-              let output = String(data: data, encoding: .utf8) else {
-            return []
-        }
-
-        return parseIPv4Routes(output)
+        let result = BoundedCommand.run("/usr/sbin/netstat", ["-rn", "-f", "inet"])
+        return result.exitCode == 0 ? parseIPv4Routes(result.stdout) : []
     }
 
     private static func activeVPNInterfaces() -> [String] {

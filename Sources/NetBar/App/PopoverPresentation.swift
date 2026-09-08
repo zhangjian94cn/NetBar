@@ -249,12 +249,21 @@ struct NetworkOutletPresentation: Equatable {
 
         addressText = Self.addressText(local: snapshot?.bridgeIPv4, mini: snapshot?.miniGateway)
 
-        linkValue = snapshot?.linkState.displayName ?? "待检测"
-        linkDetail = snapshot?.bridgeIPv4
+        linkValue = snapshot?.physicalLinkActive.map { $0 ? "设备已连接" : "雷雳未连接" }
+            ?? snapshot?.linkState.displayName ?? "待检测"
+        linkDetail = snapshot?.physicalLinkActive == true && snapshot?.linkState == .miniUnreachable
+            ? "管理通道不可达" : snapshot?.bridgeIPv4
         linkStateDot = snapshot.map { $0.linkState == .connected ? .ok : .warning } ?? .unknown
 
-        sharingValue = snapshot?.gatewayState.displayName ?? "待检测"
-        sharingDetail = snapshot?.miniGateway
+        if let helperStatus, !helperStatus.sharingIntentEnabled {
+            sharingValue = "互联网共享未开启"
+        } else if snapshot?.gatewayState == .unknown {
+            sharingValue = "共享状态未知"
+        } else {
+            sharingValue = snapshot?.gatewayState.displayName ?? "待检测"
+        }
+        sharingDetail = helperStatus?.sharingIntentEnabled == false
+            ? "Mac mini：系统设置 → 通用 → 共享" : snapshot?.miniGateway
         sharingStateDot = snapshot.map { $0.gatewayState == .ready ? .ok : .warning } ?? .unknown
 
         switch proofLevel {

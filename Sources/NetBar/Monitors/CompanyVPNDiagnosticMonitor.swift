@@ -1,4 +1,5 @@
 import Foundation
+import NetworkExecution
 import SystemConfiguration
 
 struct CompanyVPNDiagnosticSnapshot: Equatable {
@@ -49,6 +50,8 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
     private let environment: [String: String]
     private let queue = DispatchQueue(label: "com.zjah.NetBar.company-vpn-diagnostic", qos: .utility)
     private var timer: Timer?
+    private var refreshInFlight = false
+    private var inspectionInFlight = false
     private var lastObservedDoubleOff: Bool?
     private var isRunningOverlayDiagnostic = false
 
@@ -78,10 +81,13 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
 
     func refresh() {
         guard DistributionFlavor.current == .directFull else { return }
+        guard !refreshInFlight else { return }
+        refreshInFlight = true
         queue.async { [weak self] in
             guard let self else { return }
             let snapshot = self.collectSnapshot()
             DispatchQueue.main.async {
+                self.refreshInFlight = false
                 self.snapshot = snapshot
                 self.errorMessage = nil
             }
@@ -138,8 +144,21 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
         } else {
             proxyEnabled = false
         }
-        guard let runtime = MihomoClient.runtimeConfiguration() else { return }
-        let doubleOff = !proxyEnabled && !runtime.tunEnabled
+        guard !inspectionInFlight else { return }
+        inspectionInFlight = true
+        queue.async { [weak self] in
+            let runtime = MihomoClient.runtimeConfiguration()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.inspectionInFlight = false
+                guard let runtime else { return }
+                self.acceptOverlayObservation(proxyEnabled: proxyEnabled, tunEnabled: runtime.tunEnabled)
+            }
+        }
+    }
+
+    private func acceptOverlayObservation(proxyEnabled: Bool, tunEnabled: Bool) {
+        let doubleOff = !proxyEnabled && !tunEnabled
         guard lastObservedDoubleOff != doubleOff else { return }
         lastObservedDoubleOff = doubleOff
         guard doubleOff, !isRunningOwnerDiagnostic, !isRunningOverlayDiagnostic else { return }
@@ -347,35 +366,18 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
         ISO8601DateFormatter().date(from: value)
     }
 
+    /// Local fact gathering: same 2s budget as the rest of the read path, and the process
+    /// group is always reaped even when the command stalls.
     private static func commandOutput(executable: String, arguments: [String]) -> String {
-        let pipe = Pipe()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            return String(data: data, encoding: .utf8) ?? ""
-        } catch {
-            return ""
-        }
+        BoundedCommand.run(executable, arguments, timeout: 2).stdout
     }
 
+    /// The Node diagnostics are long by nature; the budget only has to be finite so a hung
+    /// CLI cannot own this queue forever.  Detached from any probe deadline on purpose —
+    /// these are explicit, user-visible operations, not part of a recovery round.
     private static func run(executable: String, arguments: [String]) -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus
-        } catch {
-            return 1
+        ProbeContext.withValue(nil) {
+            BoundedCommand.run(executable, arguments, timeout: 120).exitCode
         }
     }
 }

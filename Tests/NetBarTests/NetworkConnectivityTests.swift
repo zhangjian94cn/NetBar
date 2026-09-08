@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import NetBar
+import NetworkExecution
 
 final class NetworkConnectivityTests: XCTestCase {
     func testCandidatePoolKeepsSavedVisibleNetworksButOnlyPinnedCandidateIsUsable() throws {
@@ -149,7 +150,7 @@ final class NetworkConnectivityTests: XCTestCase {
 
     func testConnectivityProbeRejectsCaptiveRedirectAndAcceptsOneExactTarget() {
         let runner = ConnectivityCommandRunner()
-        runner.curlStatuses = ["302", "204", "302", "204"]
+        runner.targetStatuses = ["https://www.apple.com/library/test/success.html": "302", "https://cp.cloudflare.com/generate_204": "204"]
         let prober = LiveConnectivityProber(runner: runner, mihomo: ConnectivityMihomo(controller: false, proxyReady: false))
 
         let result = prober.probe(interfaceName: "en0")
@@ -300,6 +301,35 @@ final class NetworkConnectivityTests: XCTestCase {
         }
         return predicate()
     }
+
+    // 关键路径上唯一的无界原语：任何忽略共享预算的调用都不能挂死整个恢复循环。
+    func testProbeGivesUpOnAJobThatIgnoresTheSharedBudget() {
+        let prober = LiveConnectivityProber(
+            runner: StallingCommandRunner(stalling: "/usr/bin/curl", delay: 20),
+            mihomo: ConnectivityMihomo(controller: false, proxyReady: false),
+            probeBudget: 0.5
+        )
+        let started = Date()
+        let result = prober.probe(interfaceName: "en0")
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertLessThan(elapsed, 5, "探测必须在预算内退出，实际耗时 \(elapsed)s")
+        XCTAssertFalse(result.directHTTPSReachable)
+    }
+}
+private final class StallingCommandRunner: NetworkModeCommandRunning {
+    private let stalledExecutable: String
+    private let delay: TimeInterval
+    init(stalling executable: String, delay: TimeInterval) {
+        self.stalledExecutable = executable
+        self.delay = delay
+    }
+    func run(executable: String, arguments: [String]) -> NetworkModeCommandResult {
+        if executable == stalledExecutable { Thread.sleep(forTimeInterval: delay) }
+        return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func runPrivilegedNetworkServiceOrder(_ serviceNames: [String]) -> NetworkModeCommandResult {
+        .init(exitCode: -1, standardOutput: "", standardError: "")
+    }
 }
 
 private final class ConnectivityMihomo: MihomoRouteRecovering {
@@ -317,12 +347,15 @@ private final class ConnectivityMihomo: MihomoRouteRecovering {
 }
 
 private final class ConnectivityCommandRunner: NetworkModeCommandRunning {
+    private let lock = NSLock()
+    var targetStatuses: [String: String] = [:]
     var curlStatuses: [String] = []
     var calls: [(String, [String])] = []
     var dnsServers = "There aren't any DNS Servers set on Wi-Fi."
     var systemResolutionReady = false
 
     func run(executable: String, arguments: [String]) -> NetworkModeCommandResult {
+        lock.lock(); defer { lock.unlock() }
         calls.append((executable, arguments))
         switch executable {
         case "/sbin/ifconfig":
@@ -348,7 +381,7 @@ private final class ConnectivityCommandRunner: NetworkModeCommandRunning {
                 standardError: ""
             )
         case "/usr/bin/curl":
-            let status = curlStatuses.isEmpty ? "000" : curlStatuses.removeFirst()
+            let status = targetStatuses[arguments.last ?? ""] ?? (curlStatuses.isEmpty ? "000" : curlStatuses.removeFirst())
             return .init(exitCode: status == "000" ? 1 : 0, standardOutput: status, standardError: "")
         default:
             return .init(exitCode: 1, standardOutput: "", standardError: "unexpected command")

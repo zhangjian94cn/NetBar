@@ -33,6 +33,18 @@ case "$1" in
     *) fail "unsupported command" ;;
 esac
 
+# Serializes writers even when a timed-out client disconnects while a privileged child is
+# still running. Kernel locks are released on helper exit; no stale mkdir lock can wedge
+# recovery. `status` stays lock-free: reconciliation after a timed-out write must be able
+# to read the pending transaction while that write is still finishing.
+if [[ "$ACTION" != "status" ]]; then
+    "$MKDIR" -p "$STATE_DIR"
+    "$CHMOD" 700 "$STATE_DIR"
+    [[ -f "$STATE_DIR/execution.lock" ]] || : > "$STATE_DIR/execution.lock"
+    zmodload zsh/system || fail "cannot load helper lock support"
+    zsystem flock -t 0 -f NETBAR_LOCK_FD "$STATE_DIR/execution.lock" || fail "helper busy; reconcile after current command exits"
+fi
+
 service_rows() {
     "$NETWORKSETUP" -listnetworkserviceorder | "$AWK" '
         /^\([0-9]+\) / {

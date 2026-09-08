@@ -1,3 +1,4 @@
+import NetworkExecution
 import Foundation
 
 /// Mihomo (Clash) 代理核心连接信息 API 客户端
@@ -59,6 +60,20 @@ enum MihomoClient {
     }
 
     static func runtimeConfiguration() -> RuntimeConfiguration? {
+        // Reuse a successful read within the round, but never cache a failure: this is a
+        // 2s read of a local socket, and a transient miss right after a route write would
+        // otherwise mark the controller unavailable for the rest of the recovery.
+        if let context = ProbeContext.current {
+            if let cached: RuntimeConfiguration = context.memoized("mihomo-config") { nil } {
+                return cached
+            }
+            let fresh = fetchRuntimeConfiguration()
+            if let fresh { context.store("mihomo-config", fresh) }
+            return fresh
+        }
+        return fetchRuntimeConfiguration()
+    }
+    private static func fetchRuntimeConfiguration() -> RuntimeConfiguration? {
         guard let data = fetchControllerData(path: "/configs", timeout: "2"),
               let response = try? JSONDecoder().decode(RuntimeConfigurationResponse.self, from: data) else {
             return nil
@@ -175,24 +190,8 @@ enum MihomoClient {
     }
 
     private static func runCurlCommand(arguments: [String]) -> (exitCode: Int32, output: String) {
-        let process = Process()
-        let pipe = Pipe()
-
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        process.arguments = arguments
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-        } catch {
-            return (-1, "")
-        }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+        let result = BoundedCommand.run("/usr/bin/curl", arguments, timeout: 4)
+        return (result.exitCode, result.stdout)
     }
 
     // MARK: - Parsing

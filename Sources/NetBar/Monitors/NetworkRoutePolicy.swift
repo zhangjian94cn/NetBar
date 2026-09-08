@@ -1,3 +1,4 @@
+import NetworkExecution
 import Foundation
 
 enum NetworkRoutePreference: String, Codable, Equatable {
@@ -157,10 +158,11 @@ final class LiveRouteSafetyController: RouteSafetyControlling {
     }
 
     private func runHelper(_ action: String) -> NetworkModeCommandResult {
-        runner.run(
+        let cleanup = action == "commit" || action == "rollback"
+        return ProbeContext.withValue(cleanup ? nil : ProbeContext.current) { runner.run(
             executable: "/usr/bin/sudo",
             arguments: ["-n", Self.helperPath, action]
-        )
+        ) }
     }
 }
 #endif

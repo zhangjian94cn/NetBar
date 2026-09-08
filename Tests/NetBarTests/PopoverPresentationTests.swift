@@ -171,6 +171,114 @@ final class PopoverPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.outletText, "待确认")
     }
 
+    // FR-007: 共享关闭要说清楚，读不到状态时不能推断成关闭。
+    func testSharingOffIsNamedExplicitlyWhileUnreadableStaysUnknown() {
+        let off = NetworkOutletPresentation(
+            snapshot: outletSnapshot(linkState: .miniUnreachable, gatewayState: .unknown),
+            helperStatus: helperStatus(sharingIntentEnabled: false),
+            proofLevel: .unavailable,
+            failoverPhase: .temporaryWiFi,
+            routePreference: .miniPreferred,
+            requiresManualRecovery: false,
+            dnsFacts: nil,
+            applicationFacts: nil
+        )
+        XCTAssertEqual(off.sharingValue, "互联网共享未开启")
+        XCTAssertEqual(off.sharingDetail, "Mac mini：系统设置 → 通用 → 共享")
+
+        let unreadable = NetworkOutletPresentation(
+            snapshot: outletSnapshot(linkState: .miniUnreachable, gatewayState: .unknown),
+            helperStatus: nil,
+            proofLevel: .unavailable,
+            failoverPhase: .temporaryWiFi,
+            routePreference: .miniPreferred,
+            requiresManualRecovery: false,
+            dnsFacts: nil,
+            applicationFacts: nil
+        )
+        XCTAssertEqual(unreadable.sharingValue, "共享状态未知")
+        XCTAssertNotEqual(unreadable.sharingValue, off.sharingValue)
+    }
+
+    // US3: 雷雳插着但管理通道断了，不能笼统报"不可用"。
+    func testConnectedCableIsReportedSeparatelyFromManagementReachability() {
+        let presentation = NetworkOutletPresentation(
+            snapshot: outletSnapshot(linkState: .miniUnreachable, gatewayState: .unknown),
+            helperStatus: nil,
+            proofLevel: .unavailable,
+            failoverPhase: .temporaryWiFi,
+            routePreference: .miniPreferred,
+            requiresManualRecovery: false,
+            dnsFacts: nil,
+            applicationFacts: nil
+        )
+        XCTAssertEqual(presentation.linkValue, "设备已连接")
+        XCTAssertEqual(presentation.linkDetail, "管理通道不可达")
+
+        let unplugged = NetworkOutletPresentation(
+            snapshot: outletSnapshot(linkState: .disconnected, gatewayState: .unknown, physicalLinkActive: false),
+            helperStatus: nil,
+            proofLevel: .unavailable,
+            failoverPhase: .temporaryWiFi,
+            routePreference: .miniPreferred,
+            requiresManualRecovery: false,
+            dnsFacts: nil,
+            applicationFacts: nil
+        )
+        XCTAssertEqual(unplugged.linkValue, "雷雳未连接")
+    }
+
+    private func outletSnapshot(
+        linkState: ThunderboltLinkState,
+        gatewayState: MacMiniGatewayState,
+        physicalLinkActive: Bool = true
+    ) -> NetworkModeSnapshot {
+        NetworkModeSnapshot(
+            services: [
+                NetworkServiceEntry(name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0", isDisabled: false),
+                NetworkServiceEntry(
+                    name: "Thunderbolt Bridge",
+                    hardwarePort: "Thunderbolt Bridge",
+                    device: "bridge0",
+                    isDisabled: false
+                )
+            ],
+            wifiServiceName: "Wi-Fi",
+            wifiDevice: "en0",
+            thunderboltServiceName: "Thunderbolt Bridge",
+            thunderboltDevice: "bridge0",
+            bridgeIPv4: nil,
+            miniGateway: nil,
+            physicalDefaultInterface: "en0",
+            linkState: linkState,
+            gatewayState: gatewayState,
+            physicalLinkActive: physicalLinkActive
+        )
+    }
+
+    private func helperStatus(sharingIntentEnabled: Bool) -> MacMiniHelperStatus {
+        MacMiniHelperStatus(
+            protocolVersion: 5,
+            configured: false,
+            serviceIPv4: nil,
+            gatewayIPv4: nil,
+            managementIPv4: "10.254.254.1",
+            managementPeerIPv4: "10.254.254.2",
+            bridgeUsesDHCP: true,
+            sharingIntentEnabled: sharingIntentEnabled,
+            hotspotAPConfigured: false,
+            upstreamDevice: "en0",
+            upstreamActive: true,
+            sharingConfigured: false,
+            sharingProcessRunning: false,
+            forwardingEnabled: false,
+            guardianObservedAt: ISO8601DateFormatter().string(from: Date()),
+            guardianGeneration: 1,
+            evidenceConflict: false,
+            guardian: nil
+        )
+    }
+
     func testAddressTextOmitsUnknownHalvesInsteadOfPrintingDashes() {
         XCTAssertEqual(NetworkOutletPresentation.addressText(local: nil, mini: nil), "")
         XCTAssertEqual(NetworkOutletPresentation.addressText(local: "10.254.254.2", mini: nil), "本机 10.254.254.2")

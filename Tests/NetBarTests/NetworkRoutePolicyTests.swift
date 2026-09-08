@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import NetBar
+import NetworkExecution
 
 final class NetworkRoutePolicyTests: XCTestCase {
     func testPreferenceDefaultsToMiniAndManualWiFiSelectionPersists() throws {
@@ -315,7 +316,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { routeSafety.appliedModes == [.localWiFi] })
     }
 
-    func testControllerUsesThreeRapidHTTPSFailuresBeforeFallback() {
+    func testControllerUsesBoundedHTTPSConfirmationBeforeFallback() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable),
             policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable),
@@ -728,7 +729,13 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 })
         XCTAssertTrue(routeSafety.appliedModes.isEmpty)
 
-        currentTime = currentTime.addingTimeInterval(31)
+        provider.repeatCurrentSnapshot(times: 5)
+        for tick in 1...5 {
+            currentTime = currentTime.addingTimeInterval(5)
+            controller.runPolicyCheckNow()
+            XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 - tick * 5 })
+        }
+        currentTime = currentTime.addingTimeInterval(6)
         controller.runPolicyCheckNow()
 
         XCTAssertTrue(
@@ -738,6 +745,228 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { mihomo.closeCount == 1 })
         XCTAssertEqual(controller.lastClashAction, "物理出口已变化，Mihomo 连接已自动刷新")
         XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
+    }
+
+    // 现场回归：apply() 引发的网络变化会 supersede 掉正在执行切换的那一轮，
+    // 于是收敛等待、Clash 读取、数据面探测全被当场取消，切换被判失败并回滚。
+    func testTrialSwitchSurvivesBeingSupersededByItsOwnRouteChange() throws {
+        var currentTime = Date(timeIntervalSince1970: 10_000)
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "bridge0", gateway: .ready)
+        ])
+        provider.helperStatus = readyHelperStatus(observedAt: currentTime.addingTimeInterval(31))
+        let routeSafety = SelfCancellingRouteSafetyController()
+        routeSafety.contextToCancel = { [weak provider] in provider?.lastLocalReadContext }
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: CancellationAwareProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            now: { currentTime },
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 })
+        provider.repeatCurrentSnapshot(times: 5)
+        for tick in 1...5 {
+            currentTime = currentTime.addingTimeInterval(5)
+            controller.runPolicyCheckNow()
+            XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 - tick * 5 })
+        }
+        currentTime = currentTime.addingTimeInterval(6)
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(
+            waitUntil { routeSafety.commitCount == 1 },
+            "本轮被自己引发的网络变化取消后，事务仍必须走完并提交：modes=\(routeSafety.appliedModes) message=\(controller.policyMessage ?? "nil")"
+        )
+        XCTAssertEqual(routeSafety.rollbackCount, 0)
+        XCTAssertEqual(routeSafety.appliedModes, [.macMiniGateway])
+    }
+
+    // 现场回归：打开 popover 会触发 refresh()，而本地快照按设计不查共享。
+    // 直接发布它会把策略轮询的结论抹掉，卡片间断闪成「共享状态未知 / 受限在线」。
+    func testRefreshDoesNotEraseTheQualifiedGatewayVerdict() throws {
+        let currentTime = Date(timeIntervalSince1970: 9_000)
+        let provider = SplitQualificationProvider(
+            local: policySnapshot(interface: "bridge0", gateway: .unknown),
+            qualified: policySnapshot(interface: "bridge0", gateway: .ready)
+        )
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: RecordingRouteSafetyController(),
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            now: { currentTime },
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(
+            waitUntil { controller.snapshot?.gatewayState == .ready },
+            "策略轮询应先发布已资格化的快照"
+        )
+
+        let readsBeforeRefresh = provider.localReadCount
+        controller.refresh()
+        XCTAssertTrue(
+            waitUntil { provider.localReadCount > readsBeforeRefresh },
+            "refresh 应真的重新读取本地事实"
+        )
+        XCTAssertTrue(
+            waitUntil { controller.snapshot?.gatewayState == .ready },
+            "refresh 只带本地事实，不能把共享判定退回未知：gateway=\(String(describing: controller.snapshot?.gatewayState))"
+        )
+    }
+
+    // 现场回归：一轮资格检查实测约 10 秒，若把连续性写死成 10 秒，
+    // 稳定窗口每轮清零，Mini healthy 也永远切不回去。
+    func testSlowQualificationRoundsStillAccumulateStability() throws {
+        var currentTime = Date(timeIntervalSince1970: 6_000)
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "bridge0", gateway: .ready)
+        ])
+        provider.helperStatus = readyHelperStatus(observedAt: currentTime.addingTimeInterval(40))
+        let routeSafety = RecordingRouteSafetyController()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            now: { currentTime },
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 })
+
+        // 12 秒一轮，共 3 轮到 36 秒：既满足 30 秒时长，也满足最少采样数。
+        // 补足 en0 快照，使试切后的验证读恰好落在 bridge0。
+        provider.repeatCurrentSnapshot(times: 2)
+        for tick in 1...2 {
+            currentTime = currentTime.addingTimeInterval(12)
+            controller.runPolicyCheckNow()
+            XCTAssertTrue(
+                waitUntil { controller.stabilizationRemaining == 30 - tick * 12 },
+                "慢轮次不应清零稳定窗口：remaining=\(String(describing: controller.stabilizationRemaining))"
+            )
+        }
+        currentTime = currentTime.addingTimeInterval(12)
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(
+            waitUntil { routeSafety.appliedModes == [.macMiniGateway] },
+            "modes=\(routeSafety.appliedModes) message=\(controller.policyMessage ?? "nil")"
+        )
+        XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
+    }
+
+    // 现场回归：切换动作本身会让 Clash 控制端口短暂重载，
+    // 紧接着的那一次探测必然不 ready；只探一次就等于每次试切都判失败。
+    func testTrialSwitchWaitsForTheDataPlaneToConverge() throws {
+        var currentTime = Date(timeIntervalSince1970: 8_000)
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "bridge0", gateway: .ready)
+        ])
+        provider.helperStatus = readyHelperStatus(observedAt: currentTime.addingTimeInterval(31))
+        let routeSafety = RecordingRouteSafetyController()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: SequencedConnectivityProber(results: [
+                Self.probe(interface: "bridge0", ready: true),
+                Self.probe(interface: "bridge0", ready: true),
+                Self.probe(interface: "bridge0", ready: true),
+                Self.probe(interface: "bridge0", ready: true),
+                Self.probe(interface: "bridge0", ready: true),
+                Self.probe(interface: "bridge0", ready: true),
+                Self.probe(interface: "bridge0", ready: true),
+                // 切换刚落地：控制端口重载中，这一次判定为不可用
+                Self.probe(interface: "bridge0", ready: false),
+                // 收敛之后
+                Self.probe(interface: "bridge0", ready: true)
+            ]),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            now: { currentTime },
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 })
+        provider.repeatCurrentSnapshot(times: 5)
+        for tick in 1...5 {
+            currentTime = currentTime.addingTimeInterval(5)
+            controller.runPolicyCheckNow()
+            XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 - tick * 5 })
+        }
+        currentTime = currentTime.addingTimeInterval(6)
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(
+            waitUntil { routeSafety.appliedModes == [.macMiniGateway] },
+            "收敛窗口内应确认成功并保持 Mini：modes=\(routeSafety.appliedModes) message=\(controller.policyMessage ?? "nil")"
+        )
+        XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
+        XCTAssertEqual(routeSafety.rollbackCount, 0, "不能因为切换瞬间的一次探测失败就回滚")
+    }
+
+    // 采样真的停过（休眠/卡死）时，两个远隔的样本不能凑成 30 秒。
+    func testSamplesFarApartDoNotAddUpToAStableWindow() throws {
+        var currentTime = Date(timeIntervalSince1970: 7_000)
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "bridge0", gateway: .ready)
+        ])
+        provider.helperStatus = readyHelperStatus(observedAt: currentTime.addingTimeInterval(40))
+        let routeSafety = RecordingRouteSafetyController()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            now: { currentTime },
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 })
+
+        provider.repeatCurrentSnapshot(times: 2)
+        currentTime = currentTime.addingTimeInterval(40)
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 })
+
+        currentTime = currentTime.addingTimeInterval(40)
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 })
+        XCTAssertEqual(
+            routeSafety.appliedModes,
+            [],
+            "采样中断过就不能算连续稳定：message=\(controller.policyMessage ?? "nil")"
+        )
     }
 
     func testManagedNetworkSwitchesToMiniUsingGuardianAndRoutedDataPlane() {
@@ -767,7 +996,13 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 })
         XCTAssertTrue(routeSafety.appliedModes.isEmpty)
 
-        currentTime = currentTime.addingTimeInterval(31)
+        provider.repeatCurrentSnapshot(times: 5)
+        for tick in 1...5 {
+            currentTime = currentTime.addingTimeInterval(5)
+            controller.runPolicyCheckNow()
+            XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 - tick * 5 })
+        }
+        currentTime = currentTime.addingTimeInterval(6)
         controller.runPolicyCheckNow()
 
         XCTAssertTrue(waitUntil { routeSafety.appliedModes == [.macMiniGateway] })
@@ -806,7 +1041,13 @@ final class NetworkRoutePolicyTests: XCTestCase {
 
         controller.runPolicyCheckNow()
         XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 })
-        currentTime = currentTime.addingTimeInterval(31)
+        provider.repeatCurrentSnapshot(times: 5)
+        for tick in 1...5 {
+            currentTime = currentTime.addingTimeInterval(5)
+            controller.runPolicyCheckNow()
+            XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 - tick * 5 })
+        }
+        currentTime = currentTime.addingTimeInterval(6)
         controller.runPolicyCheckNow()
 
         XCTAssertTrue(
@@ -818,13 +1059,18 @@ final class NetworkRoutePolicyTests: XCTestCase {
 
         currentTime = currentTime.addingTimeInterval(10)
         controller.runPolicyCheckNow()
+        // The published state lands on the main queue; assert after it drains,
+        // otherwise the stale fallback countdown from the failed return is read.
+        XCTAssertTrue(
+            waitUntil { controller.stabilizationRemaining == 30 },
+            "remaining=\(String(describing: controller.stabilizationRemaining)) message=\(controller.policyMessage ?? "nil") reads=\(provider.readCount)"
+        )
         XCTAssertTrue(waitUntil { provider.readCount >= 6 })
         XCTAssertEqual(
             routeSafety.appliedModes,
             [.macMiniGateway, .localWiFi],
             "首次试切失败后必须重新累计 30 秒健康窗口，不能立即再次切换"
         )
-        XCTAssertEqual(controller.stabilizationRemaining, 30)
     }
 
     func testHelperV5DecodesRawFactsAndClassifiesSpecificFailure() throws {
@@ -1360,6 +1606,89 @@ private final class PolicyRouteSafetyController: RouteSafetyControlling {
     }
 }
 
+/// 忠实建模真实执行层：context 一旦被取消，命令就返回失败，探测因此不 ready。
+private final class CancellationAwareProber: ConnectivityProbing {
+    func probe(interfaceName: String) -> ConnectivityProbeResult {
+        NetworkRoutePolicyTests.probe(
+            interface: interfaceName,
+            ready: ProbeContext.current?.isCancelled != true
+        )
+    }
+    func probeLocal(interfaceName: String) -> ConnectivityProbeResult { probe(interfaceName: interfaceName) }
+}
+
+/// apply() 触发的网络变化会让上层 supersede 掉当前轮次，这里直接模拟那次取消。
+private final class SelfCancellingRouteSafetyController: RouteSafetyControlling {
+    private let lock = NSLock()
+    private var modes: [NetworkRouteMode] = []
+    private var commits = 0
+    private var rollbacks = 0
+    var contextToCancel: (() -> ProbeContext?)?
+
+    var appliedModes: [NetworkRouteMode] { lock.lock(); defer { lock.unlock() }; return modes }
+    var commitCount: Int { lock.lock(); defer { lock.unlock() }; return commits }
+    var rollbackCount: Int { lock.lock(); defer { lock.unlock() }; return rollbacks }
+
+    func status() -> RouteSafetyHelperStatus? {
+        .init(
+            protocolVersion: 5,
+            mode: "wifi",
+            wifiService: "Wi-Fi",
+            wifiDevice: "en0",
+            miniService: "Thunderbolt Bridge",
+            pendingTransaction: false,
+            pendingKind: nil,
+            pendingTarget: "",
+            wifiDNSMode: "automatic",
+            wifiDNSMiniDependent: false,
+            managementAddressReady: true,
+            bridgeUsesDHCP: true
+        )
+    }
+    func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult {
+        lock.lock(); modes.append(mode); lock.unlock()
+        contextToCancel?()?.cancel()
+        return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func ensureManagementAlias() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
+    func removeLegacyMiniDNS() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
+    func repairWiFiDNS() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
+    func commit() -> NetworkModeCommandResult {
+        lock.lock(); commits += 1; lock.unlock()
+        return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func rollback() -> NetworkModeCommandResult {
+        lock.lock(); rollbacks += 1; lock.unlock()
+        return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func openInstaller() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
+}
+
+private final class SplitQualificationProvider: NetworkModeSystemProviding {
+    private let local: NetworkModeSnapshot
+    private let qualified: NetworkModeSnapshot
+    var helperStatus: MacMiniHelperStatus?
+
+    init(local: NetworkModeSnapshot, qualified: NetworkModeSnapshot) {
+        self.local = local
+        self.qualified = qualified
+    }
+
+    private let lock = NSLock()
+    private(set) var localReadCount = 0
+    func readLocalSnapshot() throws -> NetworkModeSnapshot {
+        lock.lock(); localReadCount += 1; lock.unlock()
+        return local
+    }
+    func qualifySnapshot(_ local: NetworkModeSnapshot) throws -> NetworkModeSnapshot { qualified }
+    func readSnapshot() throws -> NetworkModeSnapshot { qualified }
+    func setServiceOrder(_ serviceNames: [String]) -> NetworkModeCommandResult {
+        .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func readMacMiniHelperStatus() -> MacMiniHelperStatus? { helperStatus }
+    func reportMacMiniEgressFailure() -> Bool { true }
+}
+
 private final class SequencedPolicyProvider: NetworkModeSystemProviding {
     private let lock = NSLock()
     private var snapshots: [NetworkModeSnapshot]
@@ -1370,6 +1699,19 @@ private final class SequencedPolicyProvider: NetworkModeSystemProviding {
 
     init(snapshots: [NetworkModeSnapshot]) {
         self.snapshots = snapshots
+    }
+
+    func repeatCurrentSnapshot(times: Int) {
+        lock.lock(); defer { lock.unlock() }
+        guard let current = snapshots.first else { return }
+        snapshots.insert(contentsOf: Array(repeating: current, count: times), at: 0)
+    }
+
+    private(set) var lastLocalReadContext: ProbeContext?
+
+    func readLocalSnapshot() throws -> NetworkModeSnapshot {
+        lock.lock(); lastLocalReadContext = ProbeContext.current; lock.unlock()
+        return try readSnapshot()
     }
 
     func readSnapshot() throws -> NetworkModeSnapshot {

@@ -10,6 +10,13 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
         XCTAssertFalse(MiniGuardianRecoveryPlanner.appleDHCPEnabled(from: NSNumber(value: 2)))
     }
 
+    func testManagementRecoveryDoesNotDependOnUpstreamOrSharing() {
+        XCTAssertEqual(decide(carrierActive: false, managementAddressReady: false), .reapplyManagementAlias)
+        XCTAssertEqual(decide(sharingConfigured: false, managementAddressReady: false), .reapplyManagementAlias)
+        XCTAssertEqual(decide(sharingIntentEnabled: false, managementAddressReady: false), .reapplyManagementAlias)
+        XCTAssertEqual(decide(dhcpServerEnabled: false, managementAddressReady: false), .reapplyManagementAlias)
+    }
+
     func testCarrierDownOnlyWaitsForCarrier() {
         XCTAssertEqual(decide(carrierActive: false), .carrierDown)
     }
