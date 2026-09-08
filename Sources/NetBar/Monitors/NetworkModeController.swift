@@ -1655,53 +1655,61 @@ final class NetworkModeController: ObservableObject {
         }
         eventLogger.record(event: "mini_trial_switch", detail: "stable \(Int(elapsed))s over \(miniQualifyingSamples) samples", candidateSSID: nil)
 
-        let result = routeSafetyController.apply(.macMiniGateway)
-        // The service order is written synchronously, the physical default interface is not.
-        // Judging `verifies` at t+0 records a spurious failure (and two of those trip the
-        // 600s flap breaker) for a switch that converges a second later.
-        let verified = result.succeeded ? awaitRouteConvergence(to: .macMiniGateway, budget: 8) : nil
-        let rebindResult = verified.map {
-            rebindMihomoUnderlayIfNeeded(snapshot: $0, previousHint: current.effectiveMode, at: checkDate)
-        }
-        let finalMiniProbe = verified.map {
-            verifyDataPlane(
-                interfaceName: $0.thunderboltDevice ?? "bridge0",
-                afterRebind: rebindResult == .succeeded,
-                convergenceBudget: 8
-            )
-        }
-        // Each of these can veto the switch, and the popover only ever shows the outcome.
-        // Record which one did, or the next failure costs another live bisect.
-        let verifiesTarget = verified?.verifies(.macMiniGateway) == true
-        let dataPlaneReady = finalMiniProbe?.routedInternetReady == true
-        let committed = verifiesTarget && dataPlaneReady
-            ? routeSafetyController.commit().succeeded
-            : false
-        if !committed {
-            eventLogger.record(
-                event: "mini_trial_switch_failed",
-                detail: "applied=\(result.succeeded) verifies=\(verifiesTarget) dataPlane=\(dataPlaneReady) committed=\(committed) effective=\(verified?.effectiveMode.map(String.init(describing:)) ?? "-") intended=\(verified?.intendedMode.map(String.init(describing:)) ?? "-") rebind=\(rebindResult.map(String.init(describing:)) ?? "-")",
-                candidateSSID: nil
-            )
-        }
-        if let verified, committed {
-            policyState.markMiniActive()
-            policyState.recordAutomaticReturn(at: checkDate)
-            persistPolicyState()
-            publishPolicy(snapshot: verified, message: "已自动切回 Mac mini", remaining: nil, helperAvailable: true, activeCandidate: "Mac mini")
-            Log.network.info("Mac mini 上游稳定 30 秒，已自动切回雷雳出口")
-            eventLogger.record(event: "automatic_return_to_mini", detail: "30-second stability and full data plane verified", candidateSSID: nil)
-            DispatchQueue.main.async { [weak self] in self?.onNetworkChanged() }
-        } else {
-            if result.succeeded { _ = routeSafetyController.rollback() }
-            policyState.recordFailedAutomaticReturn(at: checkDate)
-            persistPolicyState()
-            let restored = fallbackToVerifiedWiFi(at: checkDate, reason: "自动切回验证失败", automatic: true)
-            if !restored {
-                let refreshed = (try? provider.readSnapshot()) ?? current
-                publishPolicy(snapshot: refreshed, message: "自动切回失败，且没有可验证的 Wi-Fi 候选", remaining: nil, helperAvailable: true, isError: true)
+        // The route write itself makes macOS post a network change, which re-enters
+        // performPolicyCheck(force:) and supersedes — i.e. cancels — the very round doing
+        // the write.  Everything after apply() then aborts: convergence returns at once,
+        // the Clash controller read reports "unavailable", the data-plane probe never runs,
+        // and a switch that was working gets rolled back.  Run the transaction on its own
+        // uncancellable budget so it always reaches commit or rollback.
+        ProbeContext.withValue(ProbeContext(timeout: 20)) {
+            let result = routeSafetyController.apply(.macMiniGateway)
+            // The service order is written synchronously, the physical default interface is not.
+            // Judging `verifies` at t+0 records a spurious failure (and two of those trip the
+            // 600s flap breaker) for a switch that converges a second later.
+            let verified = result.succeeded ? awaitRouteConvergence(to: .macMiniGateway, budget: 8) : nil
+            let rebindResult = verified.map {
+                rebindMihomoUnderlayIfNeeded(snapshot: $0, previousHint: current.effectiveMode, at: checkDate)
             }
-            Log.network.error("自动切回 Mac mini 失败，Wi-Fi 恢复=\(restored)")
+            let finalMiniProbe = verified.map {
+                verifyDataPlane(
+                    interfaceName: $0.thunderboltDevice ?? "bridge0",
+                    afterRebind: rebindResult == .succeeded,
+                    convergenceBudget: 8
+                )
+            }
+            // Each of these can veto the switch, and the popover only ever shows the outcome.
+            // Record which one did, or the next failure costs another live bisect.
+            let verifiesTarget = verified?.verifies(.macMiniGateway) == true
+            let dataPlaneReady = finalMiniProbe?.routedInternetReady == true
+            let committed = verifiesTarget && dataPlaneReady
+                ? routeSafetyController.commit().succeeded
+                : false
+            if !committed {
+                eventLogger.record(
+                    event: "mini_trial_switch_failed",
+                    detail: "applied=\(result.succeeded) verifies=\(verifiesTarget) dataPlane=\(dataPlaneReady) committed=\(committed) effective=\(verified?.effectiveMode.map(String.init(describing:)) ?? "-") intended=\(verified?.intendedMode.map(String.init(describing:)) ?? "-") rebind=\(rebindResult.map(String.init(describing:)) ?? "-")",
+                    candidateSSID: nil
+                )
+            }
+            if let verified, committed {
+                policyState.markMiniActive()
+                policyState.recordAutomaticReturn(at: checkDate)
+                persistPolicyState()
+                publishPolicy(snapshot: verified, message: "已自动切回 Mac mini", remaining: nil, helperAvailable: true, activeCandidate: "Mac mini")
+                Log.network.info("Mac mini 上游稳定 30 秒，已自动切回雷雳出口")
+                eventLogger.record(event: "automatic_return_to_mini", detail: "30-second stability and full data plane verified", candidateSSID: nil)
+                DispatchQueue.main.async { [weak self] in self?.onNetworkChanged() }
+            } else {
+                if result.succeeded { _ = routeSafetyController.rollback() }
+                policyState.recordFailedAutomaticReturn(at: checkDate)
+                persistPolicyState()
+                let restored = fallbackToVerifiedWiFi(at: checkDate, reason: "自动切回验证失败", automatic: true)
+                if !restored {
+                    let refreshed = (try? provider.readSnapshot()) ?? current
+                    publishPolicy(snapshot: refreshed, message: "自动切回失败，且没有可验证的 Wi-Fi 候选", remaining: nil, helperAvailable: true, isError: true)
+                }
+                Log.network.error("自动切回 Mac mini 失败，Wi-Fi 恢复=\(restored)")
+            }
         }
     }
 

@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import NetBar
+import NetworkExecution
 
 final class NetworkRoutePolicyTests: XCTestCase {
     func testPreferenceDefaultsToMiniAndManualWiFiSelectionPersists() throws {
@@ -744,6 +745,49 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { mihomo.closeCount == 1 })
         XCTAssertEqual(controller.lastClashAction, "物理出口已变化，Mihomo 连接已自动刷新")
         XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
+    }
+
+    // 现场回归：apply() 引发的网络变化会 supersede 掉正在执行切换的那一轮，
+    // 于是收敛等待、Clash 读取、数据面探测全被当场取消，切换被判失败并回滚。
+    func testTrialSwitchSurvivesBeingSupersededByItsOwnRouteChange() throws {
+        var currentTime = Date(timeIntervalSince1970: 10_000)
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "bridge0", gateway: .ready)
+        ])
+        provider.helperStatus = readyHelperStatus(observedAt: currentTime.addingTimeInterval(31))
+        let routeSafety = SelfCancellingRouteSafetyController()
+        routeSafety.contextToCancel = { [weak provider] in provider?.lastLocalReadContext }
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: CancellationAwareProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            now: { currentTime },
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 })
+        provider.repeatCurrentSnapshot(times: 5)
+        for tick in 1...5 {
+            currentTime = currentTime.addingTimeInterval(5)
+            controller.runPolicyCheckNow()
+            XCTAssertTrue(waitUntil { controller.stabilizationRemaining == 30 - tick * 5 })
+        }
+        currentTime = currentTime.addingTimeInterval(6)
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(
+            waitUntil { routeSafety.commitCount == 1 },
+            "本轮被自己引发的网络变化取消后，事务仍必须走完并提交：modes=\(routeSafety.appliedModes) message=\(controller.policyMessage ?? "nil")"
+        )
+        XCTAssertEqual(routeSafety.rollbackCount, 0)
+        XCTAssertEqual(routeSafety.appliedModes, [.macMiniGateway])
     }
 
     // 现场回归：打开 popover 会触发 refresh()，而本地快照按设计不查共享。
@@ -1562,6 +1606,64 @@ private final class PolicyRouteSafetyController: RouteSafetyControlling {
     }
 }
 
+/// 忠实建模真实执行层：context 一旦被取消，命令就返回失败，探测因此不 ready。
+private final class CancellationAwareProber: ConnectivityProbing {
+    func probe(interfaceName: String) -> ConnectivityProbeResult {
+        NetworkRoutePolicyTests.probe(
+            interface: interfaceName,
+            ready: ProbeContext.current?.isCancelled != true
+        )
+    }
+    func probeLocal(interfaceName: String) -> ConnectivityProbeResult { probe(interfaceName: interfaceName) }
+}
+
+/// apply() 触发的网络变化会让上层 supersede 掉当前轮次，这里直接模拟那次取消。
+private final class SelfCancellingRouteSafetyController: RouteSafetyControlling {
+    private let lock = NSLock()
+    private var modes: [NetworkRouteMode] = []
+    private var commits = 0
+    private var rollbacks = 0
+    var contextToCancel: (() -> ProbeContext?)?
+
+    var appliedModes: [NetworkRouteMode] { lock.lock(); defer { lock.unlock() }; return modes }
+    var commitCount: Int { lock.lock(); defer { lock.unlock() }; return commits }
+    var rollbackCount: Int { lock.lock(); defer { lock.unlock() }; return rollbacks }
+
+    func status() -> RouteSafetyHelperStatus? {
+        .init(
+            protocolVersion: 5,
+            mode: "wifi",
+            wifiService: "Wi-Fi",
+            wifiDevice: "en0",
+            miniService: "Thunderbolt Bridge",
+            pendingTransaction: false,
+            pendingKind: nil,
+            pendingTarget: "",
+            wifiDNSMode: "automatic",
+            wifiDNSMiniDependent: false,
+            managementAddressReady: true,
+            bridgeUsesDHCP: true
+        )
+    }
+    func apply(_ mode: NetworkRouteMode) -> NetworkModeCommandResult {
+        lock.lock(); modes.append(mode); lock.unlock()
+        contextToCancel?()?.cancel()
+        return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func ensureManagementAlias() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
+    func removeLegacyMiniDNS() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
+    func repairWiFiDNS() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
+    func commit() -> NetworkModeCommandResult {
+        lock.lock(); commits += 1; lock.unlock()
+        return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func rollback() -> NetworkModeCommandResult {
+        lock.lock(); rollbacks += 1; lock.unlock()
+        return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func openInstaller() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
+}
+
 private final class SplitQualificationProvider: NetworkModeSystemProviding {
     private let local: NetworkModeSnapshot
     private let qualified: NetworkModeSnapshot
@@ -1603,6 +1705,13 @@ private final class SequencedPolicyProvider: NetworkModeSystemProviding {
         lock.lock(); defer { lock.unlock() }
         guard let current = snapshots.first else { return }
         snapshots.insert(contentsOf: Array(repeating: current, count: times), at: 0)
+    }
+
+    private(set) var lastLocalReadContext: ProbeContext?
+
+    func readLocalSnapshot() throws -> NetworkModeSnapshot {
+        lock.lock(); lastLocalReadContext = ProbeContext.current; lock.unlock()
+        return try readSnapshot()
     }
 
     func readSnapshot() throws -> NetworkModeSnapshot {
