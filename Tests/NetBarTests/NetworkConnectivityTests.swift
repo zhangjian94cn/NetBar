@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import NetBar
+import NetworkExecution
 
 final class NetworkConnectivityTests: XCTestCase {
     func testCandidatePoolKeepsSavedVisibleNetworksButOnlyPinnedCandidateIsUsable() throws {
@@ -299,6 +300,35 @@ final class NetworkConnectivityTests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.01))
         }
         return predicate()
+    }
+
+    // 关键路径上唯一的无界原语：任何忽略共享预算的调用都不能挂死整个恢复循环。
+    func testProbeGivesUpOnAJobThatIgnoresTheSharedBudget() {
+        let prober = LiveConnectivityProber(
+            runner: StallingCommandRunner(stalling: "/usr/bin/curl", delay: 20),
+            mihomo: ConnectivityMihomo(controller: false, proxyReady: false),
+            probeBudget: 0.5
+        )
+        let started = Date()
+        let result = prober.probe(interfaceName: "en0")
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertLessThan(elapsed, 5, "探测必须在预算内退出，实际耗时 \(elapsed)s")
+        XCTAssertFalse(result.directHTTPSReachable)
+    }
+}
+private final class StallingCommandRunner: NetworkModeCommandRunning {
+    private let stalledExecutable: String
+    private let delay: TimeInterval
+    init(stalling executable: String, delay: TimeInterval) {
+        self.stalledExecutable = executable
+        self.delay = delay
+    }
+    func run(executable: String, arguments: [String]) -> NetworkModeCommandResult {
+        if executable == stalledExecutable { Thread.sleep(forTimeInterval: delay) }
+        return .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+    func runPrivilegedNetworkServiceOrder(_ serviceNames: [String]) -> NetworkModeCommandResult {
+        .init(exitCode: -1, standardOutput: "", standardError: "")
     }
 }
 

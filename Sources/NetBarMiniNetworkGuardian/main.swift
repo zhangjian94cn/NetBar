@@ -441,7 +441,10 @@ private final class MiniNetworkGuardian {
         if let pid = NativeSharingProcessIdentity.pid(fromLaunchctlPrint: service.output) {
             let terminated = runner.run("/bin/kill", ["-TERM", String(pid)])
             guard terminated.succeeded else { return terminated }
+            // Bounded already, but it used to ignore the evaluation's shared deadline:
+            // a slow launchctl here could push the whole cycle past its budget.
             for _ in 0..<20 {
+                guard ProbeContext.current?.isStopped != true else { break }
                 Thread.sleep(forTimeInterval: 0.25)
                 service = runner.run("/bin/launchctl", ["print", "system/com.apple.NetworkSharing"])
                 if service.succeeded,

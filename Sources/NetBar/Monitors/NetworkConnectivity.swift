@@ -464,6 +464,8 @@ private final class ParallelProbeValues: @unchecked Sendable {
     var direct = false, controller = false, clash = false, system = false, unaware = false
     var dns: DNSPathFacts?
     func update(_ body: (ParallelProbeValues) -> Void) { lock.lock(); defer { lock.unlock() }; body(self) }
+    /// Reading must be locked too: once the fan-in can time out, late jobs are still writing.
+    func read<T>(_ body: (ParallelProbeValues) -> T) -> T { lock.lock(); defer { lock.unlock() }; return body(self) }
 }
 
 final class LiveConnectivityProber: ConnectivityProbing {
@@ -475,12 +477,16 @@ final class LiveConnectivityProber: ConnectivityProbing {
     ]
     private let legacyMiniDNSAddress = "192.168.2.1"
 
+    private let probeBudget: TimeInterval
+
     init(
         runner: NetworkModeCommandRunning = DefaultNetworkModeCommandRunner(),
-        mihomo: MihomoRouteRecovering = LiveMihomoRouteRecovery()
+        mihomo: MihomoRouteRecovering = LiveMihomoRouteRecovery(),
+        probeBudget: TimeInterval = 8
     ) {
         self.runner = runner
         self.mihomo = mihomo
+        self.probeBudget = probeBudget
     }
 
     func probeLocal(interfaceName: String) -> ConnectivityProbeResult {
@@ -516,7 +522,7 @@ final class LiveConnectivityProber: ConnectivityProbing {
 
     func probe(interfaceName: String) -> ConnectivityProbeResult {
         let parent = ProbeContext.current
-        let context = ProbeContext(generation: parent?.generation ?? 0, timeout: 8, parent: parent)
+        let context = ProbeContext(generation: parent?.generation ?? 0, timeout: probeBudget, parent: parent)
         return ProbeContext.withValue(context) {
             let local = probeLocal(interfaceName: interfaceName)
             let values = ParallelProbeValues()
@@ -554,16 +560,28 @@ final class LiveConnectivityProber: ConnectivityProbing {
                     group.leave()
                 }
             }
-            group.wait()
-            // Application-specific diagnostics are on-demand, never a route prerequisite.
-            let app = ApplicationPathFacts(systemProxyAwareHTTPSReady: values.system,
-                explicitClashHTTPSReady: values.clash, proxyUnawareHTTPSReady: values.unaware,
-                zcodeDiagnosticReady: false, zcodeHTTPStatus: nil)
-            return ConnectivityProbeResult(interfaceName: interfaceName, carrierActive: local.carrierActive,
-                ipv4Address: local.ipv4Address, gateway: local.gateway, directHTTPSReachable: values.direct,
-                clashControllerReachable: values.controller, clashHTTPSReachable: values.clash,
-                systemHTTPSReachable: values.system, physicalDefaultInterface: local.physicalDefaultInterface,
-                dnsPath: values.dns, applicationPath: app)
+            // Every job here is bounded by `context`, but this wait was the one unbounded
+            // primitive guarding the whole recovery loop: a single call that ignored the
+            // budget would wedge the controller for good.  Give up on the stragglers and
+            // report what was actually gathered.
+            if group.wait(timeout: .now() + context.remaining + 0.5) == .timedOut {
+                NetworkEventLogger.shared.record(
+                    event: "probe_group_timeout",
+                    detail: "iface=\(interfaceName) budget=\(Int(probeBudget))s",
+                    candidateSSID: nil
+                )
+            }
+            return values.read { collected in
+                // Application-specific diagnostics are on-demand, never a route prerequisite.
+                let app = ApplicationPathFacts(systemProxyAwareHTTPSReady: collected.system,
+                    explicitClashHTTPSReady: collected.clash, proxyUnawareHTTPSReady: collected.unaware,
+                    zcodeDiagnosticReady: false, zcodeHTTPStatus: nil)
+                return ConnectivityProbeResult(interfaceName: interfaceName, carrierActive: local.carrierActive,
+                    ipv4Address: local.ipv4Address, gateway: local.gateway, directHTTPSReachable: collected.direct,
+                    clashControllerReachable: collected.controller, clashHTTPSReachable: collected.clash,
+                    systemHTTPSReachable: collected.system, physicalDefaultInterface: local.physicalDefaultInterface,
+                    dnsPath: collected.dns, applicationPath: app)
+            }
         }
     }
 

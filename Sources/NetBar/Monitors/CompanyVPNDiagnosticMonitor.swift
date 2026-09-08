@@ -1,4 +1,5 @@
 import Foundation
+import NetworkExecution
 import SystemConfiguration
 
 struct CompanyVPNDiagnosticSnapshot: Equatable {
@@ -365,35 +366,18 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
         ISO8601DateFormatter().date(from: value)
     }
 
+    /// Local fact gathering: same 2s budget as the rest of the read path, and the process
+    /// group is always reaped even when the command stalls.
     private static func commandOutput(executable: String, arguments: [String]) -> String {
-        let pipe = Pipe()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            return String(data: data, encoding: .utf8) ?? ""
-        } catch {
-            return ""
-        }
+        BoundedCommand.run(executable, arguments, timeout: 2).stdout
     }
 
+    /// The Node diagnostics are long by nature; the budget only has to be finite so a hung
+    /// CLI cannot own this queue forever.  Detached from any probe deadline on purpose —
+    /// these are explicit, user-visible operations, not part of a recovery round.
     private static func run(executable: String, arguments: [String]) -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus
-        } catch {
-            return 1
+        ProbeContext.withValue(nil) {
+            BoundedCommand.run(executable, arguments, timeout: 120).exitCode
         }
     }
 }
