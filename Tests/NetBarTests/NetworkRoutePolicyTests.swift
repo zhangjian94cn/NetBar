@@ -157,6 +157,54 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { controller.connectivityProofLevel == .degradedActive })
     }
 
+    func testAuditWiFiFallbackWaitsForDelayedPhysicalRoute() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "bridge0", gateway: .carrierDown, intendedMode: .localWiFi),
+            policySnapshot(interface: "en0", gateway: .carrierDown)
+        ])
+        let routeSafety = RecordingRouteSafetyController()
+        let degraded = ConnectivityProbeResult(
+            interfaceName: "en0",
+            carrierActive: true,
+            ipv4Address: "192.168.0.2",
+            gateway: "192.168.0.1",
+            directHTTPSReachable: false,
+            clashControllerReachable: true,
+            clashHTTPSReachable: false,
+            systemHTTPSReachable: false,
+            physicalDefaultInterface: "en0",
+            dnsPath: DNSPathFacts(
+                serviceName: "Wi-Fi",
+                interfaceName: "en0",
+                configurationSource: .manual,
+                dependency: .miniDependent,
+                resolverCount: 1,
+                systemResolutionReady: false,
+                generation: 1,
+                observedAt: Date()
+            )
+        )
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber { _ in degraded },
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
+        XCTAssertEqual(routeSafety.appliedModes, [.localWiFi])
+        XCTAssertEqual(routeSafety.rollbackCount, 0, "不得回滚到已经确认失效的 Mini 路径")
+        XCTAssertTrue(waitUntil { controller.connectivityProofLevel == .degradedActive })
+    }
+
     func testWiFiMiniDependentDNSRepairCommitsOnlyAfterAutomaticDNSAndDataPlaneVerify() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "en0", gateway: .carrierDown, intendedMode: .localWiFi)
@@ -745,6 +793,35 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { mihomo.closeCount == 1 })
         XCTAssertEqual(controller.lastClashAction, "物理出口已变化，Mihomo 连接已自动刷新")
         XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
+    }
+
+    // 审核 R2：两轮软失败确认必须各自取证。共用同一 evidence root 时，第二轮会命中
+    // boundDirectEgressReady 缓存下来的 false，"两轮确认"退化成一次采样。
+    func testSoftFailureConfirmationRoundsDoNotShareAnEvidenceScope() throws {
+        let currentTime = Date(timeIntervalSince1970: 11_000)
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .boundEgressUnavailable)
+        ])
+        let prober = ScopeRecordingProber()
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: RecordingRouteSafetyController(),
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: prober,
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            now: { currentTime },
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { prober.scopes(for: "bridge0").count >= 2 })
+        let scopes = prober.scopes(for: "bridge0")
+        XCTAssertFalse(
+            scopes[0] === scopes[1],
+            "两轮确认复用了同一 evidence root，第二轮只会读到第一轮缓存的结论"
+        )
     }
 
     // 现场回归：apply() 引发的网络变化会 supersede 掉正在执行切换的那一轮，
@@ -1603,6 +1680,29 @@ private final class PolicyRouteSafetyController: RouteSafetyControlling {
     func rollback() -> NetworkModeCommandResult { .init(exitCode: 0, standardOutput: "", standardError: "") }
     func openInstaller() -> NetworkModeCommandResult {
         .init(exitCode: 0, standardOutput: "", standardError: "")
+    }
+}
+
+/// 记录每次探测所处的 evidence root，用来验证"两轮确认"确实各自取证。
+private final class ScopeRecordingProber: ConnectivityProbing {
+    private let lock = NSLock()
+    // 必须持有 context 本身：一旦释放，下一个 context 可能落在同一地址，
+    // 用 ObjectIdentifier 比较会误判成"同一个 scope"。
+    private var recorded: [(String, ProbeContext)] = []
+
+    func scopes(for interfaceName: String) -> [ProbeContext] {
+        lock.lock(); defer { lock.unlock() }
+        return recorded.filter { $0.0 == interfaceName }.map(\.1)
+    }
+
+    func probe(interfaceName: String) -> ConnectivityProbeResult {
+        if let root = ProbeContext.current?.root {
+            lock.lock(); recorded.append((interfaceName, root)); lock.unlock()
+        }
+        return NetworkRoutePolicyTests.probe(interface: interfaceName, ready: false)
+    }
+    func probeLocal(interfaceName: String) -> ConnectivityProbeResult {
+        NetworkRoutePolicyTests.probe(interface: interfaceName, ready: true)
     }
 }
 

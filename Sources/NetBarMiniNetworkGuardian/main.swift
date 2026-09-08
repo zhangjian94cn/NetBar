@@ -192,6 +192,7 @@ private final class MiniNetworkGuardian {
         let now = Date()
         status.observedAt = iso8601.string(from: now)
         status.generation &+= 1
+        maintainManagementAliasFirst()
         let carrier = interfaceIsActive()
         let addressReady = interfaceHasExpectedAddress()
         let routeReady = scopedDefaultRouteIsExpected()
@@ -540,6 +541,20 @@ private final class MiniNetworkGuardian {
               let object = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
         else { return false }
         return MiniGuardianRecoveryPlanner.appleDHCPEnabled(from: object["dhcp_enabled"])
+    }
+
+    /// Reordering the planner was not enough: the *execution* stage still sat behind the
+    /// upstream, sharing and hotspot observations, so a persistently slow probe could time the
+    /// cycle out before the alias was ever written — exactly the state that leaves the link
+    /// unmanageable.  These checks are cheap local reads and carry the same identity, DHCP and
+    /// address-conflict protection as the state machine's own repair step.
+    private func maintainManagementAliasFirst() {
+        guard !managementAliasIsReady(), bridgeServiceUsesDHCP(), managementAliasCanBeRestored() else { return }
+        let result = runner.run("/sbin/ifconfig", [
+            "bridge0", "alias", profile.managementMiniAddress,
+            "netmask", profile.managementSubnetMask
+        ])
+        log.info("管理别名先行维护 succeeded=\(result.succeeded, privacy: .public)")
     }
 
     private func managementAliasCanBeRestored() -> Bool {

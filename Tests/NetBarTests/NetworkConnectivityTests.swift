@@ -315,6 +315,26 @@ final class NetworkConnectivityTests: XCTestCase {
         XCTAssertLessThan(elapsed, 5, "探测必须在预算内退出，实际耗时 \(elapsed)s")
         XCTAssertFalse(result.directHTTPSReachable)
     }
+
+    // 审核 S1：关联命令返回后 SSID 还要几秒才可见；原实现空转 12 次、微秒内否掉候选，
+    // 文案却声称等了 12 秒。
+    func testAssociationWaitsOnARealClockBeforeRejectingACandidate() {
+        var slept: [TimeInterval] = []
+        let controller = LiveWiFiCandidateController(
+            runner: StallingCommandRunner(stalling: "", delay: 0),
+            sleeper: { slept.append($0) }
+        )
+        let context = ProbeContext(timeout: 1.2)
+        let result = ProbeContext.withValue(context) {
+            controller.associate(ssid: "\u{2028}no-such-ssid")
+        }
+        guard case .failed(let message) = result else {
+            return XCTFail("未关联的 SSID 应当失败，实际=\(result)")
+        }
+        XCTAssertFalse(slept.isEmpty, "必须真的等待，不能空转")
+        XCTAssertTrue(slept.allSatisfy { $0 > 0 })
+        XCTAssertFalse(message.contains("12 秒"), "文案不能谎报等待时长：\(message)")
+    }
 }
 private final class StallingCommandRunner: NetworkModeCommandRunning {
     private let stalledExecutable: String
