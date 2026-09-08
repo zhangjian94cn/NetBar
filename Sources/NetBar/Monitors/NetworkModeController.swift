@@ -1643,7 +1643,10 @@ final class NetworkModeController: ObservableObject {
         eventLogger.record(event: "mini_trial_switch", detail: "stable \(Int(elapsed))s over \(miniQualifyingSamples) samples", candidateSSID: nil)
 
         let result = routeSafetyController.apply(.macMiniGateway)
-        let verified = result.succeeded ? (try? provider.readSnapshot()) : nil
+        // The service order is written synchronously, the physical default interface is not.
+        // Judging `verifies` at t+0 records a spurious failure (and two of those trip the
+        // 600s flap breaker) for a switch that converges a second later.
+        let verified = result.succeeded ? awaitRouteConvergence(to: .macMiniGateway, budget: 8) : nil
         let rebindResult = verified.map {
             rebindMihomoUnderlayIfNeeded(snapshot: $0, previousHint: current.effectiveMode, at: checkDate)
         }
@@ -1654,10 +1657,21 @@ final class NetworkModeController: ObservableObject {
                 convergenceBudget: 8
             )
         }
-        if let verified,
-           verified.verifies(.macMiniGateway),
-           finalMiniProbe?.routedInternetReady == true,
-           routeSafetyController.commit().succeeded {
+        // Each of these can veto the switch, and the popover only ever shows the outcome.
+        // Record which one did, or the next failure costs another live bisect.
+        let verifiesTarget = verified?.verifies(.macMiniGateway) == true
+        let dataPlaneReady = finalMiniProbe?.routedInternetReady == true
+        let committed = verifiesTarget && dataPlaneReady
+            ? routeSafetyController.commit().succeeded
+            : false
+        if !committed {
+            eventLogger.record(
+                event: "mini_trial_switch_failed",
+                detail: "applied=\(result.succeeded) verifies=\(verifiesTarget) dataPlane=\(dataPlaneReady) committed=\(committed) effective=\(verified?.effectiveMode.map(String.init(describing:)) ?? "-") intended=\(verified?.intendedMode.map(String.init(describing:)) ?? "-") rebind=\(rebindResult.map(String.init(describing:)) ?? "-")",
+                candidateSSID: nil
+            )
+        }
+        if let verified, committed {
             policyState.markMiniActive()
             policyState.recordAutomaticReturn(at: checkDate)
             persistPolicyState()
@@ -2063,6 +2077,44 @@ final class NetworkModeController: ObservableObject {
         pendingMihomoTransition = nil
         lastMihomoRebindAttemptAt = nil
         return .succeeded
+    }
+
+    /// Waits, within a bounded and cancellable window, for the written route to become the
+    /// effective one.  Polls the cheap local snapshot and only qualifies once it matches.
+    private func awaitRouteConvergence(to target: NetworkRouteMode, budget: TimeInterval) -> NetworkModeSnapshot? {
+        let context = ProbeContext.current
+        let deadline = ProbeContext.monotonicNow + min(budget, context?.remaining ?? budget)
+        // Only the local facts settle here; `gatewayState` needs qualification, and
+        // `readLocalSnapshot` always reports it as unknown — so convergence is judged on
+        // intended == effective alone.  The attempt cap keeps this bounded even when the
+        // injected sleeper does not actually wait.
+        let maximumAttempts = max(1, Int(budget.rounded()))
+        var attempts = 0
+        while true {
+            if let local = try? provider.readLocalSnapshot(),
+               local.intendedMode == target,
+               local.effectiveMode == target {
+                if attempts > 0 {
+                    eventLogger.record(
+                        event: "route_convergence",
+                        detail: "target=\(target) attempts=\(attempts)",
+                        candidateSSID: nil
+                    )
+                }
+                return (try? provider.qualifySnapshot(local)) ?? local
+            }
+            guard attempts < maximumAttempts,
+                  ProbeContext.monotonicNow < deadline,
+                  context?.isStopped != true else { break }
+            sleeper(1)
+            attempts += 1
+        }
+        eventLogger.record(
+            event: "route_convergence",
+            detail: "target=\(target) attempts=\(attempts) result=timedOut",
+            candidateSSID: nil
+        )
+        return try? provider.readSnapshot()
     }
 
     /// A route write makes the overlay reconfigure: for about a second afterwards the Clash
