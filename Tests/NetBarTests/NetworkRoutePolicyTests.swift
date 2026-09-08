@@ -157,6 +157,54 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { controller.connectivityProofLevel == .degradedActive })
     }
 
+    func testAuditWiFiFallbackWaitsForDelayedPhysicalRoute() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "bridge0", gateway: .carrierDown),
+            policySnapshot(interface: "bridge0", gateway: .carrierDown, intendedMode: .localWiFi),
+            policySnapshot(interface: "en0", gateway: .carrierDown)
+        ])
+        let routeSafety = RecordingRouteSafetyController()
+        let degraded = ConnectivityProbeResult(
+            interfaceName: "en0",
+            carrierActive: true,
+            ipv4Address: "192.168.0.2",
+            gateway: "192.168.0.1",
+            directHTTPSReachable: false,
+            clashControllerReachable: true,
+            clashHTTPSReachable: false,
+            systemHTTPSReachable: false,
+            physicalDefaultInterface: "en0",
+            dnsPath: DNSPathFacts(
+                serviceName: "Wi-Fi",
+                interfaceName: "en0",
+                configurationSource: .manual,
+                dependency: .miniDependent,
+                resolverCount: 1,
+                systemResolutionReady: false,
+                generation: 1,
+                observedAt: Date()
+            )
+        )
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: routeSafety,
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber { _ in degraded },
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.runPolicyCheckNow()
+
+        XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
+        XCTAssertEqual(routeSafety.appliedModes, [.localWiFi])
+        XCTAssertEqual(routeSafety.rollbackCount, 0, "不得回滚到已经确认失效的 Mini 路径")
+        XCTAssertTrue(waitUntil { controller.connectivityProofLevel == .degradedActive })
+    }
+
     func testWiFiMiniDependentDNSRepairCommitsOnlyAfterAutomaticDNSAndDataPlaneVerify() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "en0", gateway: .carrierDown, intendedMode: .localWiFi)

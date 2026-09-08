@@ -1877,7 +1877,10 @@ final class NetworkModeController: ObservableObject {
         for candidate in candidates {
             let parent = ProbeContext.current
             guard parent?.isStopped != true else { return false }
-            let candidateContext = ProbeContext(generation: parent?.generation ?? 0, timeout: 15, parent: parent)
+            // Detached on purpose: the rescue writes the route, macOS posts a change, and the
+            // parent round is superseded — abandoning a half-written rescue is worse than
+            // finishing it.  15 seconds is the candidate budget from FR-005, now real.
+            let candidateContext = ProbeContext(generation: parent?.generation ?? 0, timeout: 15)
             ProbeContext.install(candidateContext)
             defer { ProbeContext.install(parent) }
             let wifiInterface = candidate.interfaceName.isEmpty ? "en0" : candidate.interfaceName
@@ -1930,12 +1933,25 @@ final class NetworkModeController: ObservableObject {
                 }
             }
 
-            guard let refreshed = (try? provider.readLocalSnapshot()) ?? current,
+            // Same asymmetry the Mini trial switch already fixed: the service order is written
+            // synchronously, the physical default interface is not.  Judging at t+0 rolled the
+            // rescue back — and when the source is already known dead, rolling back restores a
+            // route that provably does not work.
+            let converged = routeTransactionStarted
+                ? awaitRouteConvergence(to: .localWiFi, budget: 8, qualify: false)
+                : ((try? provider.readLocalSnapshot()) ?? current)
+            guard let refreshed = converged ?? current,
                   refreshed.effectiveMode == .localWiFi,
                   refreshed.intendedMode == .localWiFi else {
-                if routeTransactionStarted { _ = routeSafetyController.rollback() }
+                if routeTransactionStarted, !keepRouteWhenSourceUnavailable {
+                    _ = routeSafetyController.rollback()
+                }
                 fallbackFailureMessage = "Wi-Fi 服务顺序已修改，但默认物理出口验证失败"
-                eventLogger.record(event: "wifi_route_verification_failed", detail: reason, candidateSSID: candidate.displayName)
+                eventLogger.record(
+                    event: "wifi_route_verification_failed",
+                    detail: "\(reason) rolledBack=\(routeTransactionStarted && !keepRouteWhenSourceUnavailable)",
+                    candidateSSID: candidate.displayName
+                )
                 continue
             }
 
@@ -2102,7 +2118,11 @@ final class NetworkModeController: ObservableObject {
 
     /// Waits, within a bounded and cancellable window, for the written route to become the
     /// effective one.  Polls the cheap local snapshot and only qualifies once it matches.
-    private func awaitRouteConvergence(to target: NetworkRouteMode, budget: TimeInterval) -> NetworkModeSnapshot? {
+    private func awaitRouteConvergence(
+        to target: NetworkRouteMode,
+        budget: TimeInterval,
+        qualify: Bool = true
+    ) -> NetworkModeSnapshot? {
         let context = ProbeContext.current
         let deadline = ProbeContext.monotonicNow + min(budget, context?.remaining ?? budget)
         // Only the local facts settle here; `gatewayState` needs qualification, and
@@ -2122,7 +2142,7 @@ final class NetworkModeController: ObservableObject {
                         candidateSSID: nil
                     )
                 }
-                return (try? provider.qualifySnapshot(local)) ?? local
+                return qualify ? ((try? provider.qualifySnapshot(local)) ?? local) : local
             }
             guard attempts < maximumAttempts,
                   ProbeContext.monotonicNow < deadline,
@@ -2135,7 +2155,7 @@ final class NetworkModeController: ObservableObject {
             detail: "target=\(target) attempts=\(attempts) result=timedOut",
             candidateSSID: nil
         )
-        return try? provider.readSnapshot()
+        return qualify ? (try? provider.readSnapshot()) : (try? provider.readLocalSnapshot())
     }
 
     /// A route write makes the overlay reconfigure: for about a second afterwards the Clash
