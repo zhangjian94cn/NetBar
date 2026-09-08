@@ -76,6 +76,7 @@ class ProxyDetector: ObservableObject, MonitorProtocol {
     private var pathMonitor: NWPathMonitor?
     private let monitorQueue = DispatchQueue(label: "com.netbar.proxy-monitor")
     private var timer: Timer?
+    private var checkInFlight = false
 
     init() {}
 
@@ -117,6 +118,16 @@ class ProxyDetector: ObservableObject, MonitorProtocol {
 
     /// 综合检查代理/VPN 状态
     func checkProxySettings() {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in self?.checkProxySettings() }
+            return
+        }
+        guard !checkInFlight else { return }
+        checkInFlight = true
+        monitorQueue.async { [weak self] in self?.collectProxySettings() }
+    }
+
+    private func collectProxySettings() {
         var detectedSystemProxies: [String] = []
         var detailInfo: [String] = []
 
@@ -168,6 +179,7 @@ class ProxyDetector: ObservableObject, MonitorProtocol {
 
         // --- 更新状态 ---
         DispatchQueue.main.async {
+            self.checkInFlight = false
             self.details = detailInfo
 
             if detectedSystemProxies.isEmpty && tunnelRoutes.isEmpty {

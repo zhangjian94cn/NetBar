@@ -149,7 +149,7 @@ final class NetworkConnectivityTests: XCTestCase {
 
     func testConnectivityProbeRejectsCaptiveRedirectAndAcceptsOneExactTarget() {
         let runner = ConnectivityCommandRunner()
-        runner.curlStatuses = ["302", "204", "302", "204"]
+        runner.targetStatuses = ["https://www.apple.com/library/test/success.html": "302", "https://cp.cloudflare.com/generate_204": "204"]
         let prober = LiveConnectivityProber(runner: runner, mihomo: ConnectivityMihomo(controller: false, proxyReady: false))
 
         let result = prober.probe(interfaceName: "en0")
@@ -317,12 +317,15 @@ private final class ConnectivityMihomo: MihomoRouteRecovering {
 }
 
 private final class ConnectivityCommandRunner: NetworkModeCommandRunning {
+    private let lock = NSLock()
+    var targetStatuses: [String: String] = [:]
     var curlStatuses: [String] = []
     var calls: [(String, [String])] = []
     var dnsServers = "There aren't any DNS Servers set on Wi-Fi."
     var systemResolutionReady = false
 
     func run(executable: String, arguments: [String]) -> NetworkModeCommandResult {
+        lock.lock(); defer { lock.unlock() }
         calls.append((executable, arguments))
         switch executable {
         case "/sbin/ifconfig":
@@ -348,7 +351,7 @@ private final class ConnectivityCommandRunner: NetworkModeCommandRunning {
                 standardError: ""
             )
         case "/usr/bin/curl":
-            let status = curlStatuses.isEmpty ? "000" : curlStatuses.removeFirst()
+            let status = targetStatuses[arguments.last ?? ""] ?? (curlStatuses.isEmpty ? "000" : curlStatuses.removeFirst())
             return .init(exitCode: status == "000" ? 1 : 0, standardOutput: status, standardError: "")
         default:
             return .init(exitCode: 1, standardOutput: "", standardError: "unexpected command")

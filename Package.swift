@@ -11,8 +11,10 @@ let package = Package(
         .executable(name: "NetBarMiniNetworkGuardian", targets: ["NetBarMiniNetworkGuardian"]),
     ],
     targets: [
+        .target(name: "NetworkExecution", path: "Sources/NetworkExecution"),
         .executableTarget(
             name: "NetBar",
+            dependencies: ["NetworkExecution"],
             path: "Sources/NetBar",
             resources: [
                 .copy("Resources/MiniLinkHelper"),
@@ -27,7 +29,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "NetBarMiniNetworkGuardian",
-            dependencies: ["NetBarMiniNetworkGuardianSupport"],
+            dependencies: ["NetBarMiniNetworkGuardianSupport", "NetworkExecution"],
             path: "Sources/NetBarMiniNetworkGuardian",
             linkerSettings: [
                 .unsafeFlags(["-framework", "SystemConfiguration"]),
@@ -39,7 +41,7 @@ let package = Package(
         ),
         .testTarget(
             name: "NetBarTests",
-            dependencies: ["NetBar", "NetBarMiniNetworkGuardianSupport"],
+            dependencies: ["NetBar", "NetBarMiniNetworkGuardianSupport", "NetworkExecution"],
             path: "Tests/NetBarTests"
         )
     ]

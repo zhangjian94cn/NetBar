@@ -171,10 +171,10 @@ struct MacMiniHelperStatus: Codable, Equatable {
     }
 
     var gatewayState: MacMiniGatewayState {
-        if !upstreamActive { return .carrierDown }
-        if !configured { return .managementLinkRecovering }
-        if !sharingConfigured { return .configurationDrift }
         if !sharingIntentEnabled { return .sharingManualPending }
+        if !configured { return .managementLinkRecovering }
+        if !upstreamActive { return .carrierDown }
+        if !sharingConfigured { return .configurationDrift }
         if dhcpServerEnabled == false || guardian?.dhcpServerEnabled == false { return .sharingManualPending }
         if evidenceConflict { return .remoteEvidenceConflict }
         if guardian?.state == .sharingManualPending { return .sharingManualPending }

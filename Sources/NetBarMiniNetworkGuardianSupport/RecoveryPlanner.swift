@@ -131,6 +131,12 @@ public enum MiniGuardianRecoveryPlanner {
     }
 
     public static func decide(_ input: MiniGuardianRecoveryInput) -> MiniGuardianRecoveryDecision {
+        guard input.bridgeUsesDHCP else {
+            return .configurationDrift("Thunderbolt Bridge must use DHCP; fixed IPv4 conflicts with Internet Sharing")
+        }
+        guard input.managementAddressReady else {
+            return input.pendingRepairVerification ? .repairFailed : .reapplyManagementAlias
+        }
         guard input.carrierActive else { return .carrierDown }
         guard input.preferencesMatch else {
             return .configurationDrift("en0 manual configuration differs from NetBar profile")
@@ -140,12 +146,7 @@ public enum MiniGuardianRecoveryPlanner {
         }
         guard input.sharingIntentEnabled else { return .sharingManualPending }
         guard input.dhcpServerEnabled else { return .sharingManualPending }
-        guard input.bridgeUsesDHCP else {
-            return .configurationDrift("Thunderbolt Bridge must use DHCP; fixed IPv4 conflicts with Internet Sharing")
-        }
-        guard input.managementAddressReady else {
-            return input.pendingRepairVerification ? .repairFailed : .reapplyManagementAlias
-        }
+
 
         if input.downstreamEgressFailureReported {
             if let remaining = input.retryRemaining, remaining > 0 {

@@ -1,3 +1,4 @@
+import NetworkExecution
 import Foundation
 import NetBarMiniNetworkGuardianSupport
 import os
@@ -62,24 +63,10 @@ private struct CommandResult {
 
 private final class CommandRunner {
     func run(_ executable: String, _ arguments: [String]) -> CommandResult {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do {
-            try process.run()
-        } catch {
-            return CommandResult(status: -1, output: error.localizedDescription)
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return CommandResult(
-            status: process.terminationStatus,
-            output: String(data: data, encoding: .utf8) ?? ""
-        )
+        let result = BoundedCommand.run(executable, arguments, timeout: executable.hasSuffix("curl") ? 4 : 2)
+        return CommandResult(status: result.exitCode, output: result.stdout + result.stderr)
     }
+
 }
 
 private final class MiniNetworkGuardian {
@@ -198,6 +185,10 @@ private final class MiniNetworkGuardian {
     }
 
     private func evaluate() {
+        ProbeContext.withValue(ProbeContext(timeout: 12)) { evaluateFacts() }
+    }
+
+    private func evaluateFacts() {
         let now = Date()
         status.observedAt = iso8601.string(from: now)
         status.generation &+= 1
@@ -220,6 +211,11 @@ private final class MiniNetworkGuardian {
         let downstreamRecoveryRequested = freshDownstreamFailure && carrier && addressReady && routeReady &&
             sharingConfigured && sharingRunning && forwardingEnabled && reachable
 
+        guard ProbeContext.current?.isStopped != true else {
+            transition(to: .recoveryBackoff, error: "observation timed out; retaining previous facts")
+            scheduleEvaluation(after: 5)
+            return
+        }
         status.carrierActive = carrier
         status.addressReady = addressReady
         status.routeReady = routeReady
@@ -300,6 +296,11 @@ private final class MiniNetworkGuardian {
             scheduleEvaluation(after: 15)
 
         case .reapplyManagementAlias:
+            guard managementAliasCanBeRestored() else {
+                transition(to: .configurationDrift, error: "management subnet conflicts or bridge identity unavailable")
+                scheduleEvaluation(after: 15)
+                return
+            }
             let result = runner.run("/sbin/ifconfig", [
                 "bridge0", "alias", profile.managementMiniAddress,
                 "netmask", profile.managementSubnetMask
@@ -536,6 +537,19 @@ private final class MiniNetworkGuardian {
               let object = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
         else { return false }
         return MiniGuardianRecoveryPlanner.appleDHCPEnabled(from: object["dhcp_enabled"])
+    }
+
+    private func managementAliasCanBeRestored() -> Bool {
+        let result = runner.run("/sbin/ifconfig", ["-a"])
+        guard result.succeeded else { return false }
+        var device = ""
+        var knownBridge = false
+        for line in result.output.components(separatedBy: .newlines) {
+            if !line.hasPrefix("\t"), let name = line.split(separator: ":").first { device = String(name) }
+            if device == "bridge0", line.contains("member:") { knownBridge = true }
+            if device != "bridge0", line.contains("inet 10.254.254.") { return false }
+        }
+        return knownBridge
     }
 
     private func managementAliasIsReady() -> Bool {

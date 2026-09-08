@@ -1,3 +1,4 @@
+import NetworkExecution
 import CoreLocation
 import CoreWLAN
 import CryptoKit
@@ -433,6 +434,7 @@ final class WiFiCandidatePreferenceStore {
 
 protocol ConnectivityProbing {
     func probe(interfaceName: String) -> ConnectivityProbeResult
+    func probeLocal(interfaceName: String) -> ConnectivityProbeResult
 }
 
 protocol MihomoRouteRecovering {
@@ -453,6 +455,17 @@ final class LiveMihomoRouteRecovery: MihomoRouteRecovering {
     }
 }
 
+extension ConnectivityProbing {
+    func probeLocal(interfaceName: String) -> ConnectivityProbeResult { probe(interfaceName: interfaceName) }
+}
+
+private final class ParallelProbeValues: @unchecked Sendable {
+    let lock = NSLock()
+    var direct = false, controller = false, clash = false, system = false, unaware = false
+    var dns: DNSPathFacts?
+    func update(_ body: (ParallelProbeValues) -> Void) { lock.lock(); defer { lock.unlock() }; body(self) }
+}
+
 final class LiveConnectivityProber: ConnectivityProbing {
     private let runner: NetworkModeCommandRunning
     private let mihomo: MihomoRouteRecovering
@@ -470,7 +483,7 @@ final class LiveConnectivityProber: ConnectivityProbing {
         self.mihomo = mihomo
     }
 
-    func probe(interfaceName: String) -> ConnectivityProbeResult {
+    func probeLocal(interfaceName: String) -> ConnectivityProbeResult {
         let interfaceResult = runner.run(executable: "/sbin/ifconfig", arguments: [interfaceName])
         let carrier = interfaceResult.succeeded && LiveNetworkModeSystemProvider.parseInterfaceActive(interfaceResult.standardOutput)
         let ipv4 = interfaceResult.succeeded
@@ -495,42 +508,67 @@ final class LiveConnectivityProber: ConnectivityProbing {
             }
         }
 
-        let directReady = carrier && ipv4 != nil && gateway != nil && directTargets.contains { target in
-            httpProbe(target: target, arguments: ["--interface", interfaceName, "--noproxy", "*"])
-        }
-        let controllerReady = mihomo.isControllerAvailable()
-        let clashReady = controllerReady && mihomo.probeHTTPS()
-        let systemReady = directTargets.contains { httpProbe(target: $0, arguments: []) }
-        let proxyUnawareReady = directTargets.contains {
-            httpProbe(target: $0, arguments: ["--noproxy", "*"])
-        }
-        let dnsPath = inspectDNS(interfaceName: interfaceName)
-        let zcode = httpStatus(
-            target: "https://zcode.z.ai/api/v1/oauth/token",
-            arguments: ["--noproxy", "*"]
-        )
-        let zcodeReady = zcode.map(Self.isAcceptableAnonymousApplicationStatus) ?? false
-        let applicationPath = ApplicationPathFacts(
-            systemProxyAwareHTTPSReady: systemReady,
-            explicitClashHTTPSReady: clashReady,
-            proxyUnawareHTTPSReady: proxyUnawareReady,
-            zcodeDiagnosticReady: zcodeReady,
-            zcodeHTTPStatus: zcode
-        )
+        return ConnectivityProbeResult(interfaceName: interfaceName, carrierActive: carrier,
+            ipv4Address: ipv4, gateway: gateway, directHTTPSReachable: false,
+            clashControllerReachable: false, clashHTTPSReachable: false,
+            systemHTTPSReachable: false, physicalDefaultInterface: physical)
+    }
 
-        return ConnectivityProbeResult(
-            interfaceName: interfaceName,
-            carrierActive: carrier,
-            ipv4Address: ipv4,
-            gateway: gateway,
-            directHTTPSReachable: directReady,
-            clashControllerReachable: controllerReady,
-            clashHTTPSReachable: clashReady,
-            systemHTTPSReachable: systemReady,
-            physicalDefaultInterface: physical,
-            dnsPath: dnsPath,
-            applicationPath: applicationPath
-        )
+    func probe(interfaceName: String) -> ConnectivityProbeResult {
+        let parent = ProbeContext.current
+        let context = ProbeContext(generation: parent?.generation ?? 0, timeout: 8, parent: parent)
+        return ProbeContext.withValue(context) {
+            let local = probeLocal(interfaceName: interfaceName)
+            let values = ParallelProbeValues()
+            let group = DispatchGroup()
+            let jobs: [() -> Void] = [
+                {
+                    // Same verdict as the snapshot's bound-egress check; share it per round
+                    // instead of paying the full curl budget twice for one question.
+                    let ready = local.hasLocalNetwork && LiveNetworkModeSystemProvider.boundDirectEgressReady(
+                        device: interfaceName,
+                        physicalDefaultInterface: local.physicalDefaultInterface,
+                        targets: self.directTargets
+                    ) { self.httpProbe(target: $0, arguments: ["--interface", interfaceName, "--noproxy", "*"]) }
+                    values.update { $0.direct = ready }
+                },
+                {
+                    let controller = self.mihomo.isControllerAvailable()
+                    let ready = controller && self.mihomo.probeHTTPS()
+                    values.update { $0.controller = controller; $0.clash = ready }
+                },
+                {
+                    let system = self.directTargets.contains { self.httpProbe(target: $0, arguments: []) }
+                    let unaware = self.directTargets.contains { self.httpProbe(target: $0, arguments: ["--noproxy", "*"]) }
+                    values.update { $0.system = system; $0.unaware = unaware }
+                },
+                {
+                    let dns = self.inspectDNS(interfaceName: interfaceName)
+                    values.update { $0.dns = dns }
+                }
+            ]
+            for job in jobs {
+                group.enter()
+                DispatchQueue.global(qos: .utility).async {
+                    ProbeContext.withValue(context) { job() }
+                    group.leave()
+                }
+            }
+            group.wait()
+            // Application-specific diagnostics are on-demand, never a route prerequisite.
+            let app = ApplicationPathFacts(systemProxyAwareHTTPSReady: values.system,
+                explicitClashHTTPSReady: values.clash, proxyUnawareHTTPSReady: values.unaware,
+                zcodeDiagnosticReady: false, zcodeHTTPStatus: nil)
+            return ConnectivityProbeResult(interfaceName: interfaceName, carrierActive: local.carrierActive,
+                ipv4Address: local.ipv4Address, gateway: local.gateway, directHTTPSReachable: values.direct,
+                clashControllerReachable: values.controller, clashHTTPSReachable: values.clash,
+                systemHTTPSReachable: values.system, physicalDefaultInterface: local.physicalDefaultInterface,
+                dnsPath: values.dns, applicationPath: app)
+        }
+    }
+
+    func diagnoseZCode() -> Int? {
+        httpStatus(target: "https://zcode.z.ai/api/v1/oauth/token", arguments: ["--noproxy", "*"])
     }
 
     private func inspectDNS(interfaceName: String) -> DNSPathFacts {
@@ -684,7 +722,7 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
         var visibleSignals: [String: Int] = [:]
         var securedSSIDs = Set<String>()
         if locationAccess == .allowed,
-           let networks = try? interface.scanForNetworks(withName: nil) {
+           let networks = interface.cachedScanResults() {
             for network in networks {
                 guard let ssid = network.ssid, saved.contains(ssid) else { continue }
                 guard !network.supportsSecurity(.none) else { continue }
@@ -738,7 +776,7 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
             if client.interface()?.ssid() == ssid || currentSSIDFromIPConfig(interfaceName: interfaceName) == ssid {
                 return .connected
             }
-            Thread.sleep(forTimeInterval: 1)
+            if ProbeContext.current?.isStopped == true { return .failed("Wi-Fi 连接验证超时") }
         }
         return .failed("Wi-Fi 关联命令已执行，但未在 12 秒内完成连接")
         #endif
@@ -874,6 +912,7 @@ final class NetworkChangeObserver {
     private var store: SCDynamicStore?
     private var source: CFRunLoopSource?
     private var onChange: ((NetworkChangeEvent) -> Void)?
+    private var observedValues: [String: NSObject] = [:]
 
     func start(onChange: @escaping (NetworkChangeEvent) -> Void) {
         stop()
@@ -889,7 +928,12 @@ final class NetworkChangeObserver {
             guard let info else { return }
             let keys = changedKeys as? [String] ?? []
             let observer = Unmanaged<NetworkChangeObserver>.fromOpaque(info).takeUnretainedValue()
-            observer.onChange?(NetworkChangeEvent.classify(changedKeys: keys))
+            var changed = false
+            for key in keys {
+                let value = (SCDynamicStoreCopyValue(observer.store, key as CFString) as AnyObject?) as? NSObject ?? NSNull()
+                if observer.observedValues[key] != value { changed = true; observer.observedValues[key] = value }
+            }
+            if changed { observer.onChange?(NetworkChangeEvent.classify(changedKeys: keys)) }
         }
         guard let store = SCDynamicStoreCreate(nil, "com.zjah.NetBar.network-change" as CFString, callback, &context) else { return }
         SCDynamicStoreSetNotificationKeys(

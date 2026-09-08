@@ -1,3 +1,4 @@
+import NetworkExecution
 import Combine
 import Foundation
 
@@ -55,7 +56,9 @@ struct NetworkModeSnapshot: Equatable {
     let miniGateway: String?
     let physicalDefaultInterface: String?
     let linkState: ThunderboltLinkState
-    let gatewayState: MacMiniGatewayState
+    var gatewayState: MacMiniGatewayState
+    var physicalLinkActive: Bool? = nil
+    var observedAt: Date? = nil
 
     var serviceNames: [String] {
         services.map(\.name)
@@ -158,6 +161,8 @@ enum NetworkModeSystemError: LocalizedError {
 }
 
 protocol NetworkModeSystemProviding {
+    func readLocalSnapshot() throws -> NetworkModeSnapshot
+    func qualifySnapshot(_ local: NetworkModeSnapshot) throws -> NetworkModeSnapshot
     func readSnapshot() throws -> NetworkModeSnapshot
     func setServiceOrder(_ serviceNames: [String]) -> NetworkModeCommandResult
     func readMacMiniHelperStatus() -> MacMiniHelperStatus?
@@ -165,6 +170,8 @@ protocol NetworkModeSystemProviding {
 }
 
 extension NetworkModeSystemProviding {
+    func readLocalSnapshot() throws -> NetworkModeSnapshot { try readSnapshot() }
+    func qualifySnapshot(_ local: NetworkModeSnapshot) throws -> NetworkModeSnapshot { local }
     func readMacMiniHelperStatus() -> MacMiniHelperStatus? { nil }
     func reportMacMiniEgressFailure() -> Bool { false }
 }
@@ -218,34 +225,17 @@ extension NetworkModeCommandRunning {
 
 final class DefaultNetworkModeCommandRunner: NetworkModeCommandRunning {
     func run(executable: String, arguments: [String]) -> NetworkModeCommandResult {
-        let process = Process()
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            return NetworkModeCommandResult(
-                exitCode: -1,
-                standardOutput: "",
-                standardError: error.localizedDescription
-            )
+        let budget: TimeInterval
+        switch URL(fileURLWithPath: executable).lastPathComponent {
+        case "curl": budget = 4
+        case "ssh": budget = 6
+        case "sudo": budget = 5
+        case "osascript": budget = 120 // explicit, interactive operations only
+        default: budget = 2
         }
-
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        return NetworkModeCommandResult(
-            exitCode: process.terminationStatus,
-            standardOutput: String(data: stdoutData, encoding: .utf8) ?? "",
-            standardError: String(data: stderrData, encoding: .utf8) ?? ""
-        )
+        let result = BoundedCommand.run(executable, arguments, timeout: budget)
+        return .init(exitCode: result.exitCode, standardOutput: result.stdout,
+                     standardError: result.outcome == .exited ? result.stderr : "\(result.outcome.rawValue): \(result.stderr)")
     }
 
     func runPrivilegedNetworkServiceOrder(_ serviceNames: [String]) -> NetworkModeCommandResult {
@@ -363,7 +353,10 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
         self.profile = profile
     }
 
-    func readSnapshot() throws -> NetworkModeSnapshot {
+    func readLocalSnapshot() throws -> NetworkModeSnapshot { try collectSnapshot(qualify: false) }
+    func qualifySnapshot(_ local: NetworkModeSnapshot) throws -> NetworkModeSnapshot { try readSnapshot() }
+    func readSnapshot() throws -> NetworkModeSnapshot { try collectSnapshot(qualify: true) }
+    private func collectSnapshot(qualify: Bool) throws -> NetworkModeSnapshot {
         let orderResult = commandRunner.run(
             executable: "/usr/sbin/networksetup",
             arguments: ["-listnetworkserviceorder"]
@@ -434,7 +427,7 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
         }
 
         let miniReachable: Bool
-        if bridgeActive,
+        if qualify, bridgeActive,
            bridgeConfigurationUsesDHCP,
            bridgeAddresses.contains(profile.managementLocalAddress) {
             let pingResult = commandRunner.run(
@@ -458,32 +451,42 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
         } else if !bridgeConfigurationUsesDHCP ||
                     !bridgeAddresses.contains(profile.managementLocalAddress) {
             linkState = .addressNotProvisioned
-        } else if !miniReachable {
+        } else if qualify && !miniReachable {
             linkState = .miniUnreachable
         } else {
             linkState = .connected
         }
 
         let gatewayState: MacMiniGatewayState
-        if linkState != .connected {
+        if !qualify || linkState != .connected {
             gatewayState = .unknown
         } else if bridgeIPv4 == nil || gateway == nil || gateway == "none" || gateway == "0.0.0.0" {
-            gatewayState = .dhcpLeaseRecovering
+            gatewayState = readMacMiniHelperStatus().flatMap { !$0.sharingIntentEnabled ? .sharingManualPending : nil } ?? .dhcpLeaseRecovering
         } else {
-            let hasBoundEgress = profile.httpsProbeTargets.contains { target in
-                commandRunner.run(
+            // Take the cheap, decisive remote evidence first.  A managed upstream can reject
+            // every bound-direct probe, and those burn the whole round budget; reading the
+            // helper afterwards would then be killed by the parent deadline and report
+            // `remoteStatusUnavailable` for a Mini that is provably healthy.
+            let remoteStatus = readMacMiniHelperStatus()
+            let device = thunderboltService?.device ?? "bridge0"
+            let hasBoundEgress = Self.boundDirectEgressReady(
+                device: device,
+                physicalDefaultInterface: physicalDefaultInterface,
+                targets: profile.httpsProbeTargets
+            ) { target in
+                self.commandRunner.run(
                     executable: "/usr/bin/curl",
                     arguments: [
                         "-sS", "-o", "/dev/null", "-w", "%{http_code}",
                         "--connect-timeout", "2", "--max-time", "4", "--max-redirs", "0",
-                        "--interface", thunderboltService?.device ?? "bridge0",
+                        "--interface", device,
                         "--noproxy", "*", target
                     ]
                 ).isSuccessfulConnectivityHTTPResponse(for: target)
             }
             if hasBoundEgress {
                 gatewayState = .ready
-            } else if let remoteStatus = readMacMiniHelperStatus() {
+            } else if let remoteStatus {
                 let remoteState = remoteStatus.gatewayState
                 // A managed upstream may reject direct-bypass HTTPS even though
                 // the fixed link, forwarding and native sharing are locally
@@ -507,7 +510,9 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             miniGateway: gateway,
             physicalDefaultInterface: physicalDefaultInterface,
             linkState: linkState,
-            gatewayState: gatewayState
+            gatewayState: gatewayState,
+            physicalLinkActive: bridgeActive,
+            observedAt: Date()
         )
     }
 
@@ -522,7 +527,28 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
         return commandRunner.runPrivilegedNetworkServiceOrder(serviceNames)
     }
 
+    /// One bound-direct verdict per round (FR-003: same-generation evidence is reused).
+    /// The key carries the physical default interface, so a route write inside the round
+    /// asks a different question and re-probes instead of reusing a pre-switch answer.
+    static func boundDirectEgressReady(
+        device: String,
+        physicalDefaultInterface: String?,
+        targets: [String],
+        probe: (String) -> Bool
+    ) -> Bool {
+        guard let context = ProbeContext.current?.root else { return targets.contains(where: probe) }
+        return context.memoized("bound-direct:\(device)@\(physicalDefaultInterface ?? "-")") {
+            targets.contains(where: probe)
+        }
+    }
+
     func readMacMiniHelperStatus() -> MacMiniHelperStatus? {
+        if let context = ProbeContext.current {
+            return context.memoized("mini-helper-status") { fetchMacMiniHelperStatus() }
+        }
+        return fetchMacMiniHelperStatus()
+    }
+    private func fetchMacMiniHelperStatus() -> MacMiniHelperStatus? {
         #if APP_STORE
         return nil
         #else
@@ -542,6 +568,13 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
               let data = result.standardOutput.data(using: .utf8),
               let status = try? JSONDecoder().decode(MacMiniHelperStatus.self, from: data),
               status.protocolVersion == NetworkLinkProvisioner.miniHelperProtocolVersion else {
+            // Unreadable remote status downgrades the whole snapshot, so say why:
+            // a killed command, a refused login and a schema drift need different fixes.
+            NetworkEventLogger.shared.record(
+                event: "mini_status_read_failed",
+                detail: "exit=\(result.exitCode) out=\(result.standardOutput.count)B err=\(result.standardError.prefix(120))",
+                candidateSSID: nil
+            )
             return nil
         }
         return status
@@ -869,6 +902,17 @@ final class NetworkModeController: ObservableObject {
     private let now: () -> Date
     private let sleeper: (TimeInterval) -> Void
     private let workQueue = DispatchQueue(label: "com.zjah.NetBar.network-mode", qos: .utility)
+    private lazy var policyScheduler = LatestEvaluation(queue: workQueue)
+    private lazy var refreshScheduler = LatestEvaluation(queue: workQueue)
+    private lazy var wifiRefreshScheduler = LatestEvaluation(queue: DispatchQueue(label: "com.zjah.NetBar.wifi-refresh", qos: .utility))
+    private var retryStep = 0
+    private var lastMiniQualificationAt: Date?
+    private var miniQualifyingSamples = 0
+    /// A gap this large means sampling actually stopped (sleep, pause, a stuck round),
+    /// not that one qualification round was slow.  Sized to the stability window itself;
+    /// `minimumMiniQualifyingSamples` is what stops two far-apart samples from passing.
+    private static let miniQualificationGapTolerance: TimeInterval = 30
+    private static let minimumMiniQualifyingSamples = 3
     private let onNetworkChanged: () -> Void
     private var policyTimer: Timer?
     private var policyEventWorkItem: DispatchWorkItem?
@@ -953,8 +997,12 @@ final class NetworkModeController: ObservableObject {
 
     func startPolicyMonitoring() {
         guard DistributionFlavor.current.supportsNetworkModeSwitch else { return }
-        automationHelperAvailable = routeSafetyController.status() != nil
-        _ = routeSafetyController.ensureManagementAlias()
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            let available = self.routeSafetyController.status() != nil
+            _ = self.routeSafetyController.ensureManagementAlias()
+            DispatchQueue.main.async { self.automationHelperAvailable = available }
+        }
         reconcilePendingRouteTransaction()
         refresh()
         refreshWiFiCandidates()
@@ -970,7 +1018,7 @@ final class NetworkModeController: ObservableObject {
                 guard let self else { return }
                 if event == .physicalLink {
                     Log.network.info("收到物理链路变化事件，立即重新评估出口")
-                    self.workQueue.async { _ = self.routeSafetyController.ensureManagementAlias() }
+                    // Management maintenance is coalesced with the next policy evaluation.
                 }
                 let reaction = event.reaction(
                     preference: self.routePreference,
@@ -983,7 +1031,7 @@ final class NetworkModeController: ObservableObject {
             }
         }
         guard policyTimer == nil else { return }
-        let timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.performPolicyCheck()
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -992,6 +1040,9 @@ final class NetworkModeController: ObservableObject {
     }
 
     func stopPolicyMonitoring() {
+        policyScheduler.cancel()
+        refreshScheduler.cancel()
+        wifiRefreshScheduler.cancel()
         policyTimer?.invalidate()
         policyTimer = nil
         policyEventWorkItem?.cancel()
@@ -1010,7 +1061,7 @@ final class NetworkModeController: ObservableObject {
     }
 
     func refreshWiFiCandidates() {
-        workQueue.async { [weak self] in
+        wifiRefreshScheduler.submit(timeout: 5) { [weak self] context in
             guard let self else { return }
             var pinned = self.candidateStore.load()
             var wifi = self.wifiCandidateController.snapshot(pinnedSSIDs: pinned)
@@ -1023,6 +1074,7 @@ final class NetworkModeController: ObservableObject {
                 self.eventLogger.record(event: "wifi_whitelist_migrated", detail: "current saved Wi-Fi pinned", candidateSSID: current)
             }
             DispatchQueue.main.async {
+                guard !context.isCancelled else { return }
                 self.wifiCandidates = wifi.candidates
                 self.wifiLocationAccess = wifi.locationAccess
                 if let current = wifi.candidates.first(where: \.isCurrent) {
@@ -1056,12 +1108,13 @@ final class NetworkModeController: ObservableObject {
 
     func refresh() {
         guard !isSwitching, !isProvisioning else { return }
-        workQueue.async { [weak self] in
+        refreshScheduler.submit(timeout: 8) { [weak self] context in
             guard let self else { return }
             let result = Result {
-                (try self.provider.readSnapshot(), self.provider.readMacMiniHelperStatus())
+                (try self.provider.readLocalSnapshot(), self.provider.readMacMiniHelperStatus())
             }
             DispatchQueue.main.async {
+                guard !context.isStopped else { return }
                 switch result {
                 case .success(let (snapshot, helperStatus)):
                     self.snapshot = snapshot
@@ -1221,6 +1274,8 @@ final class NetworkModeController: ObservableObject {
 
     func switchMode(to target: NetworkRouteMode) {
         guard !isSwitching, !isProvisioning else { return }
+        policyScheduler.cancel()
+        refreshScheduler.cancel()
         isSwitching = true
         errorMessage = nil
         requiresManualRecovery = false
@@ -1341,30 +1396,44 @@ final class NetworkModeController: ObservableObject {
         let shadowConnectivityProof = connectivityProofLevel
         let shadowDNSPath = dnsPathFacts
         let shadowApplicationPath = applicationPathFacts
-        workQueue.async { [weak self] in
+        let queuedAt = ProbeContext.monotonicNow
+        policyScheduler.submit(timeout: 25, superseding: force) { [weak self] context in
             guard let self else { return }
             if force { self.nextWiFiFallbackAttemptAt = nil }
-            if self.policyCheckInFlight {
-                self.policyCheckPending = true
-                return
-            }
+
+            self.reconcilePendingRouteTransactionNow()
+            guard !context.isStopped else { return }
             let preference = self.currentPreference()
-            if preference == .miniPreferred,
-               !force,
-               !self.policyState.shouldRunSlowFallbackProbe(at: self.now()) {
-                return
+
+            let finished = DispatchSemaphore(value: 0)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + context.remaining) { [weak self] in
+                guard finished.wait(timeout: .now()) == .timedOut, !context.isCancelled else { return }
+                DispatchQueue.main.async {
+                    self?.policyMessage = "恢复检查已超时，正在核对当前出口"
+                }
             }
-            self.policyCheckInFlight = true
+            defer { finished.signal() }
+            let started = ProbeContext.monotonicNow
+            self.eventLogger.record(event: "recovery_stage", detail: "id=\(context.recoveryID) generation=\(context.generation) phase=begin queued_ms=\(Int((started - queuedAt) * 1000))", candidateSSID: nil)
             defer {
-                self.policyCheckInFlight = false
-                if self.policyCheckPending {
-                    self.policyCheckPending = false
+                let outcome = context.isCancelled ? "cancelled" : context.remaining == 0 ? "timedOut" : "finished"
+                self.eventLogger.record(event: "recovery_stage", detail: "id=\(context.recoveryID) phase=end result=\(outcome) elapsed_ms=\(Int((ProbeContext.monotonicNow - started) * 1000))", candidateSSID: nil)
+                if context.remaining == 0 && !context.isCancelled {
+                    self.policyState.readySince = nil
                     DispatchQueue.main.async { [weak self] in
-                        self?.performPolicyCheck()
+                        self?.policyMessage = "本轮验证超时，保持当前出口并等待重新检测"
+                        self?.isSwitching = false
                     }
                 }
             }
-            guard let current = try? self.provider.readSnapshot() else { return }
+            guard let local = try? self.provider.readLocalSnapshot(), !context.isStopped else { return }
+            let current: NetworkModeSnapshot
+            if local.linkState == .disconnected || local.linkState == .unavailable || local.linkState == .addressNotProvisioned {
+                current = local
+            } else {
+                current = (try? self.provider.qualifySnapshot(local)) ?? local
+            }
+            guard !context.isStopped else { return }
             let checkDate = self.now()
             if let policyShadow = self.policyShadow {
                 let observation = NetworkPolicyShadowObservation.make(
@@ -1384,6 +1453,7 @@ final class NetworkModeController: ObservableObject {
             self.policyState.clearExpiredCircuitBreaker(at: checkDate)
             self.persistPolicyState()
             let helperAvailable = self.routeSafetyController.status() != nil
+            if current.linkState == .addressNotProvisioned { _ = self.routeSafetyController.ensureManagementAlias() }
             let guardianAvailable = self.knownMiniGuardianAvailable
             DispatchQueue.main.async { [weak self] in
                 self?.miniGuardianAvailable = guardianAvailable
@@ -1413,6 +1483,13 @@ final class NetworkModeController: ObservableObject {
                 }
             }
 
+            // The facts the decision was made on.  Deduplication keeps this to one record
+            // per distinct state, so a stuck policy says what it is looking at.
+            self.eventLogger.record(
+                event: "policy_snapshot",
+                detail: "link=\(current.linkState) gateway=\(current.gatewayState) effective=\(current.effectiveMode.map(String.init(describing:)) ?? "-") helper=\(helperAvailable)",
+                candidateSSID: nil
+            )
             if current.linkState == .connected, current.gatewayState == .ready {
                 self.handleHealthySnapshot(current, at: checkDate, helperAvailable: helperAvailable)
             } else {
@@ -1425,19 +1502,15 @@ final class NetworkModeController: ObservableObject {
         _ event: NetworkChangeEvent,
         fallbackDelay: TimeInterval = 0.25
     ) {
-        guard let policyShadow else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + fallbackDelay) { [weak self] in
-                self?.performPolicyCheck(force: true)
-            }
-            return
-        }
-        Task { await policyShadow.networkDidChange(event) }
-        policyEventWorkItem?.cancel()
+        if let policyShadow { Task { await policyShadow.networkDidChange(event) } }
+        guard policyEventWorkItem == nil else { return }
         let workItem = DispatchWorkItem { [weak self] in
-            self?.performPolicyCheck(force: true)
+            guard let self else { return }
+            self.policyEventWorkItem = nil
+            self.performPolicyCheck(force: true)
         }
         policyEventWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + min(0.25, fallbackDelay), execute: workItem)
     }
 
     private func handleHealthySnapshot(
@@ -1508,6 +1581,13 @@ final class NetworkModeController: ObservableObject {
             publishPolicy(snapshot: activeSnapshot, message: "Mac mini 优先 · 当前出口正常", remaining: nil, activeCandidate: "Mac mini")
             return
         }
+        if let last = lastMiniQualificationAt,
+           checkDate.timeIntervalSince(last) > Self.miniQualificationGapTolerance {
+            policyState.readySince = nil
+            miniQualifyingSamples = 0
+        }
+        lastMiniQualificationAt = checkDate
+        miniQualifyingSamples += 1
         policyState.beginWiFiFallback(at: checkDate)
         policyState.recordHealthy(at: checkDate)
         policyState.phase = .miniStabilizing
@@ -1518,15 +1598,32 @@ final class NetworkModeController: ObservableObject {
             publishPolicy(snapshot: current, message: "Mac mini 上游反复抖动，\(seconds) 秒后重试", remaining: seconds)
             return
         }
+        // Stability needs both duration and repeated evidence: a slow qualification round
+        // must still count, while two samples far apart must not add up to 30 seconds.
         let elapsed = policyState.stableDuration(at: checkDate)
-        guard elapsed >= 30 else {
+        guard elapsed >= 30, miniQualifyingSamples >= Self.minimumMiniQualifyingSamples else {
             let remaining = max(0, Int(ceil(30 - elapsed)))
+            eventLogger.record(
+                event: "mini_stabilizing",
+                detail: "elapsed=\(Int(elapsed))s samples=\(miniQualifyingSamples)",
+                candidateSSID: nil
+            )
             publishPolicy(snapshot: current, message: "Mac mini 已恢复，稳定 \(remaining) 秒后自动切回", remaining: remaining)
             return
         }
-        guard let remote = provider.readMacMiniHelperStatus(),
+        let remoteStatus = provider.readMacMiniHelperStatus()
+        guard let remote = remoteStatus,
               remote.gatewayState == .ready,
               remote.guardianIsFresh(at: checkDate) else {
+            let reason: String
+            if let remote = remoteStatus {
+                reason = remote.gatewayState != .ready
+                    ? "remote=\(remote.gatewayState)"
+                    : "guardian stale at \(remote.guardianObservedAt ?? "-")"
+            } else {
+                reason = "remote status unreadable"
+            }
+            eventLogger.record(event: "mini_qualification_blocked", detail: reason, candidateSSID: nil)
             publishPolicy(snapshot: current, message: "等待 Mac mini Guardian 确认共享稳定", remaining: nil)
             return
         }
@@ -1535,10 +1632,15 @@ final class NetworkModeController: ObservableObject {
             self?.miniGuardianAvailable = true
         }
         guard helperAvailable else {
+            eventLogger.record(event: "mini_qualification_blocked", detail: "route safety helper unavailable", candidateSSID: nil)
             publishPolicy(snapshot: current, message: "Mac mini 已恢复；需安装自动切换组件", remaining: nil, helperAvailable: false)
             return
         }
-        guard currentPreference() == .miniPreferred else { return }
+        guard currentPreference() == .miniPreferred else {
+            eventLogger.record(event: "mini_qualification_blocked", detail: "preference is not miniPreferred", candidateSSID: nil)
+            return
+        }
+        eventLogger.record(event: "mini_trial_switch", detail: "stable \(Int(elapsed))s over \(miniQualifyingSamples) samples", candidateSSID: nil)
 
         let result = routeSafetyController.apply(.macMiniGateway)
         let verified = result.succeeded ? (try? provider.readSnapshot()) : nil
@@ -1548,7 +1650,8 @@ final class NetworkModeController: ObservableObject {
         let finalMiniProbe = verified.map {
             verifyDataPlane(
                 interfaceName: $0.thunderboltDevice ?? "bridge0",
-                afterRebind: rebindResult == .succeeded
+                afterRebind: rebindResult == .succeeded,
+                convergenceBudget: 8
             )
         }
         if let verified,
@@ -1580,12 +1683,14 @@ final class NetworkModeController: ObservableObject {
         at checkDate: Date,
         helperAvailable: Bool
     ) {
+        guard ProbeContext.current?.isStopped != true else { return }
+        miniQualifyingSamples = 0
         policyState.recordFailure()
         var definitiveFailure: Bool
         switch current.linkState {
-        case .disconnected, .unavailable, .addressNotProvisioned, .miniUnreachable:
+        case .disconnected, .unavailable, .addressNotProvisioned:
             definitiveFailure = true
-        case .connected:
+        case .connected, .miniUnreachable:
             definitiveFailure = false
         }
         switch current.gatewayState {
@@ -1598,9 +1703,11 @@ final class NetworkModeController: ObservableObject {
         }
 
         if !definitiveFailure {
+            let parent = ProbeContext.current
+            let confirmation = ProbeContext(generation: parent?.generation ?? 0, timeout: 8, parent: parent)
             var consecutiveHTTPSFailures = 0
-            for attempt in 0..<3 {
-                let probe = connectivityProber.probe(interfaceName: current.thunderboltDevice ?? "bridge0")
+            for _ in 0..<2 {
+                let probe = ProbeContext.withValue(confirmation) { connectivityProber.probe(interfaceName: current.thunderboltDevice ?? "bridge0") }
                 publishConnectivityFacts(probe)
                 if probe.directInternetReady {
                     policyState.consecutiveFailures = 0
@@ -1612,9 +1719,9 @@ final class NetworkModeController: ObservableObject {
                     return
                 }
                 consecutiveHTTPSFailures += 1
-                if attempt < 2 { sleeper(2) }
+                if confirmation.isStopped { break }
             }
-            definitiveFailure = consecutiveHTTPSFailures == 3
+            definitiveFailure = consecutiveHTTPSFailures > 0 && parent?.isCancelled != true
         }
 
         guard definitiveFailure else {
@@ -1692,7 +1799,8 @@ final class NetworkModeController: ObservableObject {
             keepRouteWhenSourceUnavailable: true
         )
         if !restored {
-            nextWiFiFallbackAttemptAt = checkDate.addingTimeInterval(60)
+            nextWiFiFallbackAttemptAt = now().addingTimeInterval([5.0, 15.0, 30.0][min(retryStep, 2)])
+            retryStep += 1
             let refreshed = (try? provider.readSnapshot()) ?? current
             publishPolicy(
                 snapshot: refreshed,
@@ -1717,7 +1825,7 @@ final class NetworkModeController: ObservableObject {
         var candidates = wifi.candidates.filter { $0.isPinned && $0.state != .unavailable }
         if candidates.isEmpty,
            wifi.currentSSID == nil,
-           connectivityProber.probe(interfaceName: wifi.interfaceName).hasLocalNetwork {
+           connectivityProber.probeLocal(interfaceName: wifi.interfaceName).hasLocalNetwork {
             // Location access can redact the current SSID. Reusing the already-associated
             // interface does not expand the whitelist or attempt any unknown network.
             candidates = [WiFiCandidateSelector.anonymousCurrentCandidate(interfaceName: wifi.interfaceName)]
@@ -1732,6 +1840,11 @@ final class NetworkModeController: ObservableObject {
         }
 
         for candidate in candidates {
+            let parent = ProbeContext.current
+            guard parent?.isStopped != true else { return false }
+            let candidateContext = ProbeContext(generation: parent?.generation ?? 0, timeout: 15, parent: parent)
+            ProbeContext.install(candidateContext)
+            defer { ProbeContext.install(parent) }
             let wifiInterface = candidate.interfaceName.isEmpty ? "en0" : candidate.interfaceName
             updateCandidateState(ssid: candidate.displayName, state: .connecting, current: candidate.isCurrent)
             if !candidate.isCurrent {
@@ -1754,16 +1867,8 @@ final class NetworkModeController: ObservableObject {
                 }
             }
 
-            var directProbe = connectivityProber.probe(interfaceName: wifiInterface)
+            let directProbe = connectivityProber.probeLocal(interfaceName: wifiInterface)
             publishConnectivityFacts(directProbe)
-            if !directProbe.hasLocalNetwork {
-                for _ in 0..<2 {
-                    sleeper(1)
-                    directProbe = connectivityProber.probe(interfaceName: wifiInterface)
-                    publishConnectivityFacts(directProbe)
-                    if directProbe.hasLocalNetwork { break }
-                }
-            }
             guard directProbe.hasLocalNetwork else {
                 let state: NetworkCandidateState = .localOnly
                 fallbackFailureMessage = state.displayName
@@ -1772,7 +1877,7 @@ final class NetworkModeController: ObservableObject {
                 continue
             }
 
-            let current = try? provider.readSnapshot()
+            let current = try? provider.readLocalSnapshot()
             var routeTransactionStarted = false
             if current?.effectiveMode != .localWiFi || current?.intendedMode != .localWiFi {
                 let helperAvailable = routeSafetyController.status() != nil
@@ -1790,7 +1895,7 @@ final class NetworkModeController: ObservableObject {
                 }
             }
 
-            guard let refreshed = (try? provider.readSnapshot()) ?? current,
+            guard let refreshed = (try? provider.readLocalSnapshot()) ?? current,
                   refreshed.effectiveMode == .localWiFi,
                   refreshed.intendedMode == .localWiFi else {
                 if routeTransactionStarted { _ = routeSafetyController.rollback() }
@@ -1799,6 +1904,7 @@ final class NetworkModeController: ObservableObject {
                 continue
             }
 
+            publishPolicy(snapshot: refreshed, message: "Wi-Fi 已接管，正在验证", remaining: nil, activeCandidate: candidate.displayName)
             let rebindResult = rebindMihomoUnderlayIfNeeded(
                 snapshot: refreshed,
                 previousHint: current?.effectiveMode,
@@ -1861,6 +1967,7 @@ final class NetworkModeController: ObservableObject {
             let loggedSSID = candidate.id == WiFiCandidateSelector.anonymousCurrentID ? nil : candidate.displayName
             eventLogger.record(event: "wifi_fallback_active", detail: message, candidateSSID: loggedSSID)
             nextWiFiFallbackAttemptAt = nil
+            retryStep = 0
             lastLoggedFallbackFailureReason = nil
             DispatchQueue.main.async { [weak self] in self?.onNetworkChanged() }
             return true
@@ -1875,22 +1982,14 @@ final class NetworkModeController: ObservableObject {
         underlayRebound: Bool,
         at checkDate: Date
     ) -> Bool {
-        var probe = connectivityProber.probe(interfaceName: interfaceName)
+        let probe = connectivityProber.probe(interfaceName: interfaceName)
         if probe.completeInternetReady || probe.routedInternetReady {
             updateCandidateState(ssid: ssid, state: .internetReady, current: true)
             return true
         }
         if underlayRebound {
-            for _ in 0..<3 {
-                sleeper(2)
-                probe = connectivityProber.probe(interfaceName: interfaceName)
-                if probe.completeInternetReady || probe.routedInternetReady {
-                    updateCandidateState(ssid: ssid, state: .internetReady, current: true)
-                    return true
-                }
-            }
             updateCandidateState(ssid: ssid, state: .proxyDegraded, current: true)
-            return false
+            return false // next timer/event verifies; never hold the write queue for retries
         }
         guard initialProbe.directInternetReady,
               probe.clashControllerReachable,
@@ -1910,14 +2009,7 @@ final class NetworkModeController: ObservableObject {
             updateCandidateState(ssid: ssid, state: .proxyDegraded, current: true)
             return false
         }
-        for _ in 0..<3 {
-            sleeper(2)
-            probe = connectivityProber.probe(interfaceName: interfaceName)
-            if probe.completeInternetReady {
-                updateCandidateState(ssid: ssid, state: .internetReady, current: true)
-                return true
-            }
-        }
+
         updateCandidateState(ssid: ssid, state: .proxyDegraded, current: true)
         return false
     }
@@ -1970,26 +2062,48 @@ final class NetworkModeController: ObservableObject {
         guard closed else { return .failed }
         pendingMihomoTransition = nil
         lastMihomoRebindAttemptAt = nil
-        sleeper(1)
         return .succeeded
     }
 
+    /// A route write makes the overlay reconfigure: for about a second afterwards the Clash
+    /// controller stops answering, and `routedInternetReady` then falls back to bound-direct
+    /// HTTPS, which a managed upstream refuses outright.  Probing once at that instant judges
+    /// every trial switch a failure, so allow a bounded, cancellable convergence window —
+    /// still inside the round budget, and it returns the moment the data plane is proven.
     private func verifyDataPlane(
         interfaceName: String,
-        afterRebind: Bool
+        afterRebind: Bool,
+        convergenceBudget: TimeInterval = 0
     ) -> ConnectivityProbeResult {
         var probe = connectivityProber.probe(interfaceName: interfaceName)
-        guard afterRebind else { return probe }
-        for _ in 0..<3 where !probe.routedInternetReady {
-            sleeper(2)
-            probe = connectivityProber.probe(interfaceName: interfaceName)
-        }
         publishConnectivityFacts(probe)
+        guard convergenceBudget > 0 else { return probe }
+        let context = ProbeContext.current
+        let deadline = ProbeContext.monotonicNow + min(convergenceBudget, context?.remaining ?? convergenceBudget)
+        var attempts = 0
+        while !probe.routedInternetReady,
+              ProbeContext.monotonicNow < deadline,
+              context?.isStopped != true {
+            sleeper(1)
+            guard context?.isStopped != true else { break }
+            attempts += 1
+            probe = connectivityProber.probe(interfaceName: interfaceName)
+            publishConnectivityFacts(probe)
+        }
+        if attempts > 0 {
+            eventLogger.record(
+                event: "data_plane_convergence",
+                detail: "iface=\(interfaceName) attempts=\(attempts) ready=\(probe.routedInternetReady)",
+                candidateSSID: nil
+            )
+        }
         return probe
     }
 
     private func publishConnectivityFacts(_ probe: ConnectivityProbeResult) {
+        let context = ProbeContext.current
         DispatchQueue.main.async { [weak self] in
+            guard context?.isCancelled != true else { return }
             self?.dnsPathFacts = probe.dnsPath
             self?.applicationPathFacts = probe.applicationPath
             self?.connectivityProofLevel = probe.proofLevel
@@ -2005,7 +2119,9 @@ final class NetworkModeController: ObservableObject {
         isError: Bool = false,
         activeCandidate: String? = nil
     ) {
+        let context = ProbeContext.current
         DispatchQueue.main.async { [weak self] in
+            guard context?.isCancelled != true else { return }
             guard let self else { return }
             self.snapshot = snapshot
             self.policyMessage = message
@@ -2024,9 +2140,11 @@ final class NetworkModeController: ObservableObject {
     }
 
     private func reconcilePendingRouteTransaction() {
-        guard let status = routeSafetyController.status(), status.pendingTransaction else { return }
-        workQueue.async { [weak self] in
-            guard let self else { return }
+        workQueue.async { [weak self] in self?.reconcilePendingRouteTransactionNow() }
+    }
+
+    private func reconcilePendingRouteTransactionNow() {
+            guard let status = self.routeSafetyController.status(), status.pendingTransaction else { return }
             if status.pendingKind == "dns" {
                 let probe = self.connectivityProber.probe(interfaceName: status.wifiDevice)
                 self.publishConnectivityFacts(probe)
@@ -2074,8 +2192,11 @@ final class NetworkModeController: ObservableObject {
             let interface = target == .macMiniGateway
                 ? (snapshot?.thunderboltDevice ?? "bridge0")
                 : (snapshot?.wifiDevice ?? "en0")
-            let verified = snapshot?.verifies(target) == true &&
-                self.connectivityProber.probe(interfaceName: interface).routedInternetReady
+            let local = self.connectivityProber.probeLocal(interfaceName: interface)
+            // A pending Wi-Fi rescue must not restore a dead Mini just because overlay is still converging.
+            let verified = snapshot?.effectiveMode == target &&
+                (target == .localWiFi ? local.hasLocalNetwork :
+                    (snapshot?.verifies(target) == true && self.connectivityProber.probe(interfaceName: interface).routedInternetReady))
             let result = verified
                 ? self.routeSafetyController.commit()
                 : self.routeSafetyController.rollback()
@@ -2090,7 +2211,6 @@ final class NetworkModeController: ObservableObject {
                     self.errorMessage = "未完成的路由事务无法自动恢复"
                 }
             }
-        }
     }
 
     private func fallbackRemaining(at date: Date) -> Int? {

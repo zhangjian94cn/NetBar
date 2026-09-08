@@ -49,6 +49,8 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
     private let environment: [String: String]
     private let queue = DispatchQueue(label: "com.zjah.NetBar.company-vpn-diagnostic", qos: .utility)
     private var timer: Timer?
+    private var refreshInFlight = false
+    private var inspectionInFlight = false
     private var lastObservedDoubleOff: Bool?
     private var isRunningOverlayDiagnostic = false
 
@@ -78,10 +80,13 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
 
     func refresh() {
         guard DistributionFlavor.current == .directFull else { return }
+        guard !refreshInFlight else { return }
+        refreshInFlight = true
         queue.async { [weak self] in
             guard let self else { return }
             let snapshot = self.collectSnapshot()
             DispatchQueue.main.async {
+                self.refreshInFlight = false
                 self.snapshot = snapshot
                 self.errorMessage = nil
             }
@@ -138,8 +143,21 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
         } else {
             proxyEnabled = false
         }
-        guard let runtime = MihomoClient.runtimeConfiguration() else { return }
-        let doubleOff = !proxyEnabled && !runtime.tunEnabled
+        guard !inspectionInFlight else { return }
+        inspectionInFlight = true
+        queue.async { [weak self] in
+            let runtime = MihomoClient.runtimeConfiguration()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.inspectionInFlight = false
+                guard let runtime else { return }
+                self.acceptOverlayObservation(proxyEnabled: proxyEnabled, tunEnabled: runtime.tunEnabled)
+            }
+        }
+    }
+
+    private func acceptOverlayObservation(proxyEnabled: Bool, tunEnabled: Bool) {
+        let doubleOff = !proxyEnabled && !tunEnabled
         guard lastObservedDoubleOff != doubleOff else { return }
         lastObservedDoubleOff = doubleOff
         guard doubleOff, !isRunningOwnerDiagnostic, !isRunningOverlayDiagnostic else { return }
