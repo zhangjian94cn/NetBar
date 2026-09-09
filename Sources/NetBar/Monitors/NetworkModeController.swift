@@ -536,7 +536,7 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
         targets: [String],
         probe: (String) -> Bool
     ) -> Bool {
-        guard let context = ProbeContext.current?.root else { return targets.contains(where: probe) }
+        guard let context = ProbeContext.current else { return targets.contains(where: probe) }
         return context.memoized("bound-direct:\(device)@\(physicalDefaultInterface ?? "-")") {
             targets.contains(where: probe)
         }
