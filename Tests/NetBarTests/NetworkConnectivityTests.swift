@@ -293,14 +293,6 @@ final class NetworkConnectivityTests: XCTestCase {
         XCTAssertEqual(lines.count, 1)
     }
 
-    private func waitUntil(timeout: TimeInterval = 1, predicate: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if predicate() { return true }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
-        }
-        return predicate()
-    }
 
     // 关键路径上唯一的无界原语：任何忽略共享预算的调用都不能挂死整个恢复循环。
     func testProbeGivesUpOnAJobThatIgnoresTheSharedBudget() {

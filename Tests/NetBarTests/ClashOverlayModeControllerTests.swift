@@ -225,14 +225,6 @@ final class ClashOverlayModeControllerTests: XCTestCase {
         return .init(mixedPort: 7897, tunEnabled: tun, ipv6Enabled: !baseline, routeExclusions: exclusions)
     }
 
-    private func waitUntil(timeout: TimeInterval = 2, predicate: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if predicate() { return true }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
-        }
-        return predicate()
-    }
 }
 
 private final class TemporaryVergeFixture {
