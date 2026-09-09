@@ -339,6 +339,9 @@ private final class MockNetworkModeProvider: NetworkModeSystemProviding {
 
     func readSnapshot() throws -> NetworkModeSnapshot {
         guard !snapshots.isEmpty else {
+            // 脚本用尽必须让用例变红。此前静默抛出「no mock snapshot」，多读一次会伪装成
+            // 一条看似合理的失败路径，被测代码多采样一次也测不出来。
+            XCTFail("MockNetworkModeProvider 的快照脚本已用尽：被测代码比预期多读了一次")
             throw NetworkModeSystemError.commandFailed("no mock snapshot")
         }
         if snapshots.count == 1 {
@@ -350,6 +353,7 @@ private final class MockNetworkModeProvider: NetworkModeSystemProviding {
     func setServiceOrder(_ serviceNames: [String]) -> NetworkModeCommandResult {
         orders.append(serviceNames)
         guard !setResults.isEmpty else {
+            XCTFail("MockNetworkModeProvider 的 setServiceOrder 脚本已用尽：多写了一次服务顺序")
             return .failure("no mock result")
         }
         return setResults.removeFirst()
@@ -375,6 +379,7 @@ private final class MockNetworkModeCommandRunner: NetworkModeCommandRunning {
     func run(executable: String, arguments: [String]) -> NetworkModeCommandResult {
         directInvocations.append(Invocation(executable: executable, arguments: arguments))
         guard !directResults.isEmpty else {
+            XCTFail("MockNetworkModeCommandRunner 的脚本已用尽：\(executable) 比预期多执行了一次")
             return .failure("no mock result")
         }
         return directResults.removeFirst()

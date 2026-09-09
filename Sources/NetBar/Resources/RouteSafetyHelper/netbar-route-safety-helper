@@ -1,26 +1,29 @@
 #!/bin/zsh
 set -euo pipefail
 
-NETWORKSETUP=/usr/sbin/networksetup
-IFCONFIG=/sbin/ifconfig
-PLUTIL=/usr/bin/plutil
-ROUTE=/sbin/route
-NETSTAT=/usr/sbin/netstat
-AWK=/usr/bin/awk
-GREP=/usr/bin/grep
-SHASUM=/usr/bin/shasum
-MKDIR=/bin/mkdir
-CHMOD=/bin/chmod
-SLEEP=/bin/sleep
-RM=/bin/rm
+# 默认值可被环境变量覆盖，仅为让测试能指向假的二进制目录与临时状态目录。
+# 这在授权路径上不可被利用：App 通过 `sudo -n` 调用本脚本，而 sudoers 的 env_reset
+# 会清掉环境，因此走 sudo 时永远取下面的默认值。只有直接执行（测试）才能覆盖。
+: ${NETWORKSETUP:=/usr/sbin/networksetup}
+: ${IFCONFIG:=/sbin/ifconfig}
+: ${PLUTIL:=/usr/bin/plutil}
+: ${ROUTE:=/sbin/route}
+: ${NETSTAT:=/usr/sbin/netstat}
+: ${AWK:=/usr/bin/awk}
+: ${GREP:=/usr/bin/grep}
+: ${SHASUM:=/usr/bin/shasum}
+: ${MKDIR:=/bin/mkdir}
+: ${CHMOD:=/bin/chmod}
+: ${SLEEP:=/bin/sleep}
+: ${RM:=/bin/rm}
 
-STATE_DIR=/Library/Application\ Support/NetBar/RouteSafety
+: ${STATE_DIR:="/Library/Application Support/NetBar/RouteSafety"}
 BACKUP_ORDER="$STATE_DIR/service-order-backup.txt"
 BACKUP_DNS="$STATE_DIR/wifi-dns-backup.txt"
 BACKUP_DNS_SHA="$STATE_DIR/wifi-dns-backup.sha256"
 PENDING_KIND="$STATE_DIR/pending-kind.txt"
 PENDING_TARGET="$STATE_DIR/pending-target.txt"
-PROFILE=/Library/Application\ Support/NetBar/MacMiniLinkProfile.plist
+: ${PROFILE:="/Library/Application Support/NetBar/MacMiniLinkProfile.plist"}
 
 fail() {
     print -u2 -- "$1"

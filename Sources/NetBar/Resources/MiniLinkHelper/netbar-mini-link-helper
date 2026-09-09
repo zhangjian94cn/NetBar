@@ -1,29 +1,31 @@
 #!/bin/zsh
 set -euo pipefail
 
-NETWORKSETUP=/usr/sbin/networksetup
-IFCONFIG=/sbin/ifconfig
-PLUTIL=/usr/bin/plutil
-GREP=/usr/bin/grep
-AWK=/usr/bin/awk
-MKDIR=/bin/mkdir
-CHMOD=/bin/chmod
-SLEEP=/bin/sleep
-LAUNCHCTL=/bin/launchctl
-SYSCTL=/usr/sbin/sysctl
-DATE=/bin/date
-SYSTEM_PROFILER=/usr/sbin/system_profiler
-NETSTAT=/usr/sbin/netstat
-ARP=/usr/sbin/arp
+# 默认值可被环境变量覆盖，仅为让测试能指向假的二进制目录与临时状态目录。
+# 授权路径不受影响：App 经 `sudo -n` 调用，sudoers 的 env_reset 会清掉环境。
+: ${NETWORKSETUP:=/usr/sbin/networksetup}
+: ${IFCONFIG:=/sbin/ifconfig}
+: ${PLUTIL:=/usr/bin/plutil}
+: ${GREP:=/usr/bin/grep}
+: ${AWK:=/usr/bin/awk}
+: ${MKDIR:=/bin/mkdir}
+: ${CHMOD:=/bin/chmod}
+: ${SLEEP:=/bin/sleep}
+: ${LAUNCHCTL:=/bin/launchctl}
+: ${SYSCTL:=/usr/sbin/sysctl}
+: ${DATE:=/bin/date}
+: ${SYSTEM_PROFILER:=/usr/sbin/system_profiler}
+: ${NETSTAT:=/usr/sbin/netstat}
+: ${ARP:=/usr/sbin/arp}
 
-PROFILE=/Library/Application\ Support/NetBar/MacMiniLinkProfile.plist
-NAT_PROFILE=/Library/Preferences/SystemConfiguration/com.apple.nat.plist
-BOOTPD_PROFILE=/etc/bootpd.plist
-STATE_DIR=/Library/Application\ Support/NetBar/ThunderboltLink
+: ${PROFILE:="/Library/Application Support/NetBar/MacMiniLinkProfile.plist"}
+: ${NAT_PROFILE:=/Library/Preferences/SystemConfiguration/com.apple.nat.plist}
+: ${BOOTPD_PROFILE:=/etc/bootpd.plist}
+: ${STATE_DIR:="/Library/Application Support/NetBar/ThunderboltLink"}
 BACKUP_PLIST="$STATE_DIR/mini-network-backup-v5.plist"
 BACKUP_DNS="$STATE_DIR/mini-dns-backup-v5.txt"
-GUARDIAN_STATUS=/Library/Application\ Support/NetBar/MiniGuardian/status.json
-EGRESS_FAILURE_MARKER=/Library/Application\ Support/NetBar/MiniGuardian/downstream-egress-failure.txt
+: ${GUARDIAN_STATUS:="/Library/Application Support/NetBar/MiniGuardian/status.json"}
+: ${EGRESS_FAILURE_MARKER:="/Library/Application Support/NetBar/MiniGuardian/downstream-egress-failure.txt"}
 
 fail() { print -u2 -- "$1"; exit 1 }
 
@@ -32,6 +34,18 @@ case "$1" in
     status|prepare|migrate|rollback|finalize-rollback|report-egress-failure) ACTION="$1" ;;
     *) fail "unsupported command" ;;
 esac
+
+# 与 RouteSafetyHelper 对称：prepare / migrate / rollback / finalize-rollback 都会写
+# bridge0 的地址面与备份文件，交错执行会互相覆盖。此前这里完全没有串行化保护。
+# status 与 report-egress-failure 是只读/追加，保持无锁——否则一次卡住的写会让状态读不出来。
+if [[ "$ACTION" != "status" && "$ACTION" != "report-egress-failure" ]]; then
+    "$MKDIR" -p "$STATE_DIR"
+    "$CHMOD" 700 "$STATE_DIR"
+    [[ -f "$STATE_DIR/execution.lock" ]] || : > "$STATE_DIR/execution.lock"
+    zmodload zsh/system || fail "cannot load helper lock support"
+    zsystem flock -t 0 -f NETBAR_MINI_LOCK_FD "$STATE_DIR/execution.lock" \
+        || fail "helper busy; reconcile after current command exits"
+fi
 
 if [[ "$ACTION" == report-egress-failure ]]; then
     "$MKDIR" -p "${EGRESS_FAILURE_MARKER:h}"

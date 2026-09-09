@@ -19,25 +19,29 @@ public final class ProbeContext: @unchecked Sendable {
         self.deadline = min(Self.monotonicNow + max(0, timeout), parent?.deadline ?? .infinity)
     }
     public var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled || parent?.isCancelled == true }
-    /// Evidence is reused per generation, so the memo lives on the round context,
-    /// not on the short-lived child a single probe creates for its own budget.
+    /// Evidence is reused per generation, so the memo lives on the round context, not on the
+    /// short-lived child a single probe creates for its own budget.  `memoized` and `store`
+    /// enforce this themselves — callers must not have to remember to write `.root`, which is
+    /// exactly the inconsistency that let one call site share evidence while two others did not.
     public var root: ProbeContext { parent?.root ?? self }
     public var remaining: TimeInterval { max(0, deadline - Self.monotonicNow) }
     public var isStopped: Bool { isCancelled || remaining <= 0 }
     public func memoized<T>(_ key: String, _ make: () -> T) -> T {
-        cacheLock.lock(); defer { cacheLock.unlock() }
+        let owner = root
+        owner.cacheLock.lock(); defer { owner.cacheLock.unlock() }
         // Presence must be tested before the cast: for an optional `T`, `cache[key] as? T`
         // also succeeds on a *missing* key and yields nil, which would skip `make()`
         // entirely and memoize "no evidence" forever.  `as Any` keeps a cached nil stored
         // instead of deleting the key.
-        if let entry = cache[key], let cached = entry as? T { return cached }
-        let value = make(); cache[key] = value as Any; return value
+        if let entry = owner.cache[key], let cached = entry as? T { return cached }
+        let value = make(); owner.cache[key] = value as Any; return value
     }
     /// Records evidence worth reusing this round.  Callers use this instead of `memoized`
     /// when a failed read must stay retryable rather than becoming the round's verdict.
     public func store<T>(_ key: String, _ value: T) {
-        cacheLock.lock(); defer { cacheLock.unlock() }
-        cache[key] = value as Any
+        let owner = root
+        owner.cacheLock.lock(); defer { owner.cacheLock.unlock() }
+        owner.cache[key] = value as Any
     }
     public func cancel() { lock.lock(); cancelled = true; lock.unlock() }
     // The legacy synchronous policy passes its scope through nested adapters.

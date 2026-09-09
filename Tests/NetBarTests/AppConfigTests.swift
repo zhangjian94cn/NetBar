@@ -2,18 +2,8 @@ import XCTest
 @testable import NetBar
 
 final class AppConfigTests: XCTestCase {
-    func testNetworkPolicyShadowIsOffUnlessExplicitlyEnabled() {
-        let defaults = makeDefaults()
-        let config = AppConfig(defaults: defaults)
-
-        XCTAssertFalse(config.networkPolicyShadowEnabled)
-
-        config.networkPolicyShadowEnabled = true
-        XCTAssertTrue(AppConfig(defaults: defaults).networkPolicyShadowEnabled)
-    }
-
     func testV2SchemaDefaultsProviderAndCertificateFlag() throws {
-        let defaults = makeDefaults()
+        let defaults = isolatedDefaults()
         let legacyV2JSON = """
         [{"id":"old","name":"Old","host":"example.com","port":2053,"basePath":"xui","username":"u","useTLS":true}]
         """
@@ -27,7 +17,7 @@ final class AppConfigTests: XCTestCase {
     }
 
     func testDeletingVPSConfigDeletesPasswordKey() {
-        let defaults = makeDefaults()
+        let defaults = isolatedDefaults()
         let configStore = AppConfig(defaults: defaults)
         let id = "test-delete-\(UUID().uuidString)"
         let server = AppConfig.VPSConfig(
@@ -51,7 +41,7 @@ final class AppConfigTests: XCTestCase {
     }
 
     func testLegacyVPSMigrationIsOneTimeAndKeepsSelfSignedCompatibility() {
-        let defaults = makeDefaults()
+        let defaults = isolatedDefaults()
         defaults.set("legacy.example.com", forKey: "vps_bwg_host")
         defaults.set(2053, forKey: "vps_bwg_port")
         defaults.set("xui", forKey: "vps_bwg_path")
@@ -71,7 +61,7 @@ final class AppConfigTests: XCTestCase {
     }
 
     func testIPCheckDefaultsAndVersionStorage() {
-        let defaults = makeDefaults()
+        let defaults = isolatedDefaults()
         let configStore = AppConfig(defaults: defaults)
 
         XCTAssertTrue(configStore.ipCheckEnabled)
@@ -100,7 +90,7 @@ final class AppConfigTests: XCTestCase {
             }
         }
 
-        let configStore = AppConfig(defaults: makeDefaults())
+        let configStore = AppConfig(defaults: isolatedDefaults())
         configStore.ping0APIKey = "  test-key  "
         XCTAssertEqual(configStore.ping0APIKey, "test-key")
 
@@ -109,7 +99,7 @@ final class AppConfigTests: XCTestCase {
     }
 
     func testPopoverSelectionPersistsWithinCurrentDistributionFlavor() {
-        let defaults = makeDefaults()
+        let defaults = isolatedDefaults()
         let configStore = AppConfig(defaults: defaults)
         let expected: PopoverSection = DistributionFlavor.current == .directFull ? .applications : .monitoring
 
@@ -118,10 +108,4 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(AppConfig(defaults: defaults).selectedPopoverSection, expected)
     }
 
-    private func makeDefaults() -> UserDefaults {
-        let suiteName = "NetBarTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        return defaults
-    }
 }
