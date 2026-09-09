@@ -718,10 +718,15 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
     private let client = CWWiFiClient.shared()
     private let locationManager = CLLocationManager()
     private let runner: NetworkModeCommandRunning
+    private let sleeper: (TimeInterval) -> Void
     private var onChange: (() -> Void)?
 
-    init(runner: NetworkModeCommandRunning = DefaultNetworkModeCommandRunner()) {
+    init(
+        runner: NetworkModeCommandRunning = DefaultNetworkModeCommandRunner(),
+        sleeper: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+    ) {
         self.runner = runner
+        self.sleeper = sleeper
         super.init()
         locationManager.delegate = self
     }
@@ -790,13 +795,21 @@ final class LiveWiFiCandidateController: NSObject, WiFiCandidateControlling, CWE
             }
             return .failed(result.combinedMessage.isEmpty ? "Wi-Fi 关联失败" : result.combinedMessage)
         }
-        for _ in 0..<12 {
+        // The association command returns before the SSID is visible; this loop used to spin
+        // twelve times with no delay at all, rejecting every candidate in microseconds while
+        // reporting a twelve-second wait.  Poll on a real clock inside the candidate budget.
+        let started = ProbeContext.monotonicNow
+        let deadline = started + min(12, ProbeContext.current?.remaining ?? 12)
+        while true {
             if client.interface()?.ssid() == ssid || currentSSIDFromIPConfig(interfaceName: interfaceName) == ssid {
                 return .connected
             }
-            if ProbeContext.current?.isStopped == true { return .failed("Wi-Fi 连接验证超时") }
+            if ProbeContext.current?.isStopped == true { return .failed("Wi-Fi 连接验证被取消") }
+            guard ProbeContext.monotonicNow + 0.5 < deadline else { break }
+            sleeper(0.5)
         }
-        return .failed("Wi-Fi 关联命令已执行，但未在 12 秒内完成连接")
+        let waited = Int((ProbeContext.monotonicNow - started).rounded())
+        return .failed("Wi-Fi 关联命令已执行，但未在 \(waited) 秒内完成连接")
         #endif
     }
 
