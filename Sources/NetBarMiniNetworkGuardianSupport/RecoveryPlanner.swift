@@ -155,9 +155,7 @@ public enum MiniGuardianRecoveryPlanner {
             return .restartSharing
         }
 
-        let healthy = input.addressReady && input.routeReady && input.sharedAddressReady && input.hotspotAPActive &&
-            input.sharingRunning && input.forwardingEnabled && input.upstreamReachable
-        if healthy {
+        if isFullyHealthy(input) {
             let elapsed = input.healthyElapsed ?? 0
             if elapsed < 30 {
                 return .readyStabilizing(30 - elapsed)
@@ -179,7 +177,53 @@ public enum MiniGuardianRecoveryPlanner {
             return elapsed < 15 ? .sharingRecovering(15 - elapsed) : .restartSharing
         }
 
+        // Unreachable: arriving here requires every fact checked by the two blocks above to be
+        // true, which is exactly `isFullyHealthy` and would have returned already.  Kept as a
+        // benign fallback rather than a trap — this runs as root on the Mini, where crashing
+        // is strictly worse than reporting a repair failure.
         return .repairFailed
+    }
+
+    /// The single definition of "every observed fact is healthy".
+    ///
+    /// `decide` reaches its health check only after guards have already established carrier,
+    /// management address, bridge DHCP and the Apple DHCP server, so re-checking them there is
+    /// redundant but harmless.  Guardian evaluates this standalone to drive `healthySince`,
+    /// with no guards in front of it, so it must check all of them.  Both callers now share one
+    /// expression: the previous arrangement was only equivalent as long as nobody reordered
+    /// `decide`'s guards, and nothing tested that.
+    public static func isFullyHealthy(_ input: MiniGuardianRecoveryInput) -> Bool {
+        isFullyHealthy(
+            carrierActive: input.carrierActive,
+            managementAddressReady: input.managementAddressReady,
+            bridgeUsesDHCP: input.bridgeUsesDHCP,
+            dhcpServerEnabled: input.dhcpServerEnabled,
+            addressReady: input.addressReady,
+            routeReady: input.routeReady,
+            sharedAddressReady: input.sharedAddressReady,
+            hotspotAPActive: input.hotspotAPActive,
+            sharingRunning: input.sharingRunning,
+            forwardingEnabled: input.forwardingEnabled,
+            upstreamReachable: input.upstreamReachable
+        )
+    }
+
+    public static func isFullyHealthy(
+        carrierActive: Bool,
+        managementAddressReady: Bool,
+        bridgeUsesDHCP: Bool,
+        dhcpServerEnabled: Bool,
+        addressReady: Bool,
+        routeReady: Bool,
+        sharedAddressReady: Bool,
+        hotspotAPActive: Bool,
+        sharingRunning: Bool,
+        forwardingEnabled: Bool,
+        upstreamReachable: Bool
+    ) -> Bool {
+        carrierActive && managementAddressReady && bridgeUsesDHCP && dhcpServerEnabled &&
+            addressReady && routeReady && sharedAddressReady && hotspotAPActive &&
+            sharingRunning && forwardingEnabled && upstreamReachable
     }
 }
 

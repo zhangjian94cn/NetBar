@@ -245,9 +245,22 @@ private final class MiniNetworkGuardian {
             transition(to: carrier ? .addressRecovering : .carrierDown, action: "carrier \(carrier ? "active" : "inactive")")
         }
 
-        let fullyHealthy = carrier && addressReady && routeReady && managementAddressReady &&
-            bridgeUsesDHCP && sharedAddressReady && hotspotAPActive && dhcpServerEnabled &&
-            sharingRunning && forwardingEnabled && reachable
+        // Shared with the planner so the two cannot drift: this one drives `healthySince`,
+        // which is fed back in as `healthyElapsed`, so a divergence here would silently change
+        // when the Mini is considered stable.
+        let fullyHealthy = MiniGuardianRecoveryPlanner.isFullyHealthy(
+            carrierActive: carrier,
+            managementAddressReady: managementAddressReady,
+            bridgeUsesDHCP: bridgeUsesDHCP,
+            dhcpServerEnabled: dhcpServerEnabled,
+            addressReady: addressReady,
+            routeReady: routeReady,
+            sharedAddressReady: sharedAddressReady,
+            hotspotAPActive: hotspotAPActive,
+            sharingRunning: sharingRunning,
+            forwardingEnabled: forwardingEnabled,
+            upstreamReachable: reachable
+        )
         if fullyHealthy {
             if healthySince == nil { healthySince = now }
         } else {
