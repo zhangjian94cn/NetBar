@@ -205,6 +205,9 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { controller.connectivityProofLevel == .degradedActive })
     }
 
+#if !APP_STORE
+    // 路由切换是 DIRECT_FULL 专有能力（DistributionFlavor.supportsNetworkModeSwitch），
+    // App Store Lite 下控制器直接早退，因此该用例只在 direct 构建中成立。
     func testWiFiMiniDependentDNSRepairCommitsOnlyAfterAutomaticDNSAndDataPlaneVerify() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "en0", gateway: .carrierDown, intendedMode: .localWiFi)
@@ -267,7 +270,11 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(routeSafety.rollbackCount, 0)
         XCTAssertTrue(waitUntil { controller.connectivityProofLevel == .activeVerified })
     }
+#endif
 
+#if !APP_STORE
+    // 路由切换是 DIRECT_FULL 专有能力（DistributionFlavor.supportsNetworkModeSwitch），
+    // App Store Lite 下控制器直接早退，因此该用例只在 direct 构建中成立。
     func testLegacyMiniDNSCleanupPreservesHealthyManualDNSAndCommitsAfterVerification() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "en0", gateway: .carrierDown, intendedMode: .localWiFi)
@@ -328,6 +335,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(routeSafety.rollbackCount, 0)
         XCTAssertTrue(waitUntil { controller.dnsPathFacts?.hasLegacyMiniResolver == false })
     }
+#endif
 
     func testCarrierLossRepairsWiFiServiceOrderAfterMacOSAlreadyChangedDefaultRoute() {
         let provider = SequencedPolicyProvider(snapshots: [
@@ -1298,6 +1306,9 @@ final class NetworkRoutePolicyTests: XCTestCase {
         )
     }
 
+#if !APP_STORE
+    // 路由切换是 DIRECT_FULL 专有能力（DistributionFlavor.supportsNetworkModeSwitch），
+    // App Store Lite 下控制器直接早退，因此该用例只在 direct 构建中成立。
     func testStartupCommitsPendingRouteTransactionOnlyAfterDataPlaneVerification() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "en0", gateway: .ready)
@@ -1320,7 +1331,11 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { routeSafety.commitCount == 1 })
         XCTAssertEqual(routeSafety.rollbackCount, 0)
     }
+#endif
 
+#if !APP_STORE
+    // 路由切换是 DIRECT_FULL 专有能力（DistributionFlavor.supportsNetworkModeSwitch），
+    // App Store Lite 下控制器直接早退，因此该用例只在 direct 构建中成立。
     func testStartupRollsBackPendingRouteTransactionWhenTargetIsNotVerified() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "bridge0", gateway: .ready)
@@ -1343,7 +1358,11 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { routeSafety.rollbackCount == 1 })
         XCTAssertEqual(routeSafety.commitCount, 0)
     }
+#endif
 
+#if !APP_STORE
+    // 路由切换是 DIRECT_FULL 专有能力（DistributionFlavor.supportsNetworkModeSwitch），
+    // App Store Lite 下控制器直接早退，因此该用例只在 direct 构建中成立。
     func testStartupRollsBackCorruptedPendingRouteTargetWithoutGuessing() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "en0", gateway: .ready)
@@ -1366,6 +1385,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertTrue(waitUntil { routeSafety.rollbackCount == 1 })
         XCTAssertEqual(routeSafety.commitCount, 0)
     }
+#endif
 
     private func run(_ executable: String, _ arguments: [String]) -> NetworkModeCommandResult {
         let process = Process()

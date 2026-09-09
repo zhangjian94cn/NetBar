@@ -170,6 +170,9 @@ final class NetworkStaticLinkTests: XCTestCase {
         })
     }
 
+#if !APP_STORE
+    // 路由切换是 DIRECT_FULL 专有能力（DistributionFlavor.supportsNetworkModeSwitch），
+    // App Store Lite 下控制器直接早退，因此该用例只在 direct 构建中成立。
     func testRemoteReadyQualifiesTransactionalTrialWhenDirectBypassIsRestricted() throws {
         let runner = SnapshotCommandRunner(
             bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
@@ -182,6 +185,7 @@ final class NetworkStaticLinkTests: XCTestCase {
 
         XCTAssertEqual(snapshot.gatewayState, .ready)
     }
+#endif
 
     func testLiveSnapshotUsesNWIPhysicalInterfaceWhenDefaultRouteIsUTUN() throws {
         let runner = SnapshotCommandRunner(
@@ -196,6 +200,10 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertEqual(snapshot.physicalDefaultInterface, "bridge0")
         XCTAssertEqual(snapshot.effectiveMode, .macMiniGateway)
     }
+
+#if !APP_STORE
+    // 以下用例依赖 DIRECT_FULL 专有的 NetworkLinkProvisioner 静态方法与初始化器；
+    // App Store Lite 下该类型是签名不同的 stub，其行为由 DistributionFlavorTests 覆盖。
 
     func testConfigurationParserPreservesDHCPManualAndDNS() {
         let dhcp = NetworkLinkProvisioner.parseConfiguration(
@@ -337,6 +345,8 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(outcome.message.contains("本机地址面迁移失败"))
     }
 
+#endif
+
     func testMiniHelperRejectsUnknownCommandsAndHasExactSudoersContract() throws {
         let bundle = Bundle.module
         let helper = try XCTUnwrap(bundle.url(
@@ -436,6 +446,7 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertFalse(source.contains("en8"))
     }
 
+#if !APP_STORE
     private func makeProvisioner(
         runner: ProvisioningCommandRunner,
         backupDirectory: URL? = nil
@@ -452,6 +463,8 @@ final class NetworkStaticLinkTests: XCTestCase {
             sleeper: { _ in }
         )
     }
+#endif
+
 
     private func temporaryDirectory() -> URL {
         let url = FileManager.default.temporaryDirectory

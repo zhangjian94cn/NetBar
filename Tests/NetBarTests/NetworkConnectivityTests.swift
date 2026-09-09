@@ -310,6 +310,9 @@ final class NetworkConnectivityTests: XCTestCase {
 
     // 审核 S1：关联命令返回后 SSID 还要几秒才可见；原实现空转 12 次、微秒内否掉候选，
     // 文案却声称等了 12 秒。
+#if !APP_STORE
+    // 路由切换是 DIRECT_FULL 专有能力（DistributionFlavor.supportsNetworkModeSwitch），
+    // App Store Lite 下控制器直接早退，因此该用例只在 direct 构建中成立。
     func testAssociationWaitsOnARealClockBeforeRejectingACandidate() {
         var slept: [TimeInterval] = []
         let controller = LiveWiFiCandidateController(
@@ -327,6 +330,7 @@ final class NetworkConnectivityTests: XCTestCase {
         XCTAssertTrue(slept.allSatisfy { $0 > 0 })
         XCTAssertFalse(message.contains("12 秒"), "文案不能谎报等待时长：\(message)")
     }
+#endif
 }
 private final class StallingCommandRunner: NetworkModeCommandRunning {
     private let stalledExecutable: String

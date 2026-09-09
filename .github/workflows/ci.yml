@@ -18,15 +18,42 @@ jobs:
       - name: Build
         run: swift build
 
-      - name: Test
+      - name: Test (Direct Full)
         run: swift test
 
+      # App Store Lite 的 #if APP_STORE 分支此前在任何构建下都无人测试：
+      # CI 构建两个 flavor，却只测其中一个。
+      - name: Test (App Store Lite)
+        run: swift test -Xswiftc -DAPP_STORE
+
+      # 先只报告不设阈值，避免一上来就卡住合入。
+      - name: Coverage summary
+        run: |
+          swift test --enable-code-coverage
+          BIN=$(swift build --show-bin-path)
+          PROF="$BIN/codecov/default.profdata"
+          XCTEST=$(find "$BIN" -name '*.xctest' -maxdepth 1 | head -1)
+          xcrun llvm-cov report \
+            "$XCTEST/Contents/MacOS/$(basename "$XCTEST" .xctest)" \
+            -instr-profile "$PROF" \
+            -ignore-filename-regex='(Tests|\.build)/' \
+            | tail -25
+
+      # 两个 helper 都以 root 运行且都由 sudoers 授权，校验必须对称。
+      # RouteSafetyHelper 此前一项都没有——而它恰好是最近被改动的那个。
       - name: Validate helper and installer contracts
         run: |
           zsh -n Sources/NetBar/Resources/MiniLinkHelper/netbar-mini-link-helper
           zsh -n Sources/NetBar/Resources/MiniLinkHelper/install-netbar-mini-link-helper.command
           plutil -lint Sources/NetBar/Resources/MiniLinkHelper/MacMiniLinkProfile.plist
           /usr/sbin/visudo -cf Sources/NetBar/Resources/MiniLinkHelper/com.zjah.NetBarMiniLinkHelper.sudoers
+          zsh -n Sources/NetBar/Resources/RouteSafetyHelper/netbar-route-safety-helper
+          zsh -n Sources/NetBar/Resources/RouteSafetyHelper/install-netbar-route-safety-helper.command
+          zsh -n scripts/network-readiness-diagnostics.sh
+          sed 's/__USER__/ciuser/g' \
+            Sources/NetBar/Resources/RouteSafetyHelper/com.zjah.NetBarRouteSafetyHelper.sudoers \
+            > /tmp/route-safety.sudoers
+          /usr/sbin/visudo -cf /tmp/route-safety.sudoers
 
       - name: Build Direct Full
         run: ./scripts/build-direct.sh
