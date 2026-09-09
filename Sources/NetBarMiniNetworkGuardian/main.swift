@@ -539,14 +539,10 @@ private final class MiniNetworkGuardian {
     }
 
     private func sharingIntentIsEnabled() -> Bool {
-        guard let data = try? Data(contentsOf: natProfileURL),
-              let object = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-              let nat = object["NAT"] as? [String: Any] else {
-            return false
-        }
-        if let enabled = nat["Enabled"] as? Bool { return enabled }
-        if let enabled = nat["Enabled"] as? Int { return enabled == 1 }
-        return false
+        let object = (try? Data(contentsOf: natProfileURL))
+            .flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) }
+            as? [String: Any]
+        return GuardianInterfaceFacts.sharingIntentIsEnabled(natPlist: object)
     }
 
     private func bootpdDHCPIsEnabled() -> Bool {
@@ -573,14 +569,12 @@ private final class MiniNetworkGuardian {
     private func managementAliasCanBeRestored() -> Bool {
         let result = runner.run("/sbin/ifconfig", ["-a"])
         guard result.succeeded else { return false }
-        var device = ""
-        var knownBridge = false
-        for line in result.output.components(separatedBy: .newlines) {
-            if !line.hasPrefix("\t"), let name = line.split(separator: ":").first { device = String(name) }
-            if device == "bridge0", line.contains("member:") { knownBridge = true }
-            if device != "bridge0", line.contains("inet 10.254.254.") { return false }
-        }
-        return knownBridge
+        return GuardianInterfaceFacts.managementAliasCanBeRestored(
+            ifconfigOutput: result.output,
+            managementSubnetPrefix: GuardianInterfaceFacts.managementSubnetPrefix(
+                forAddress: profile.managementMiniAddress
+            )
+        )
     }
 
     private func managementAliasIsReady() -> Bool {

@@ -337,3 +337,75 @@ final class MiniGuardianRecoveryPlannerTests: XCTestCase {
         )
     }
 }
+
+final class GuardianInterfaceFactsTests: XCTestCase {
+    private let bridgeWithMember = """
+    en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+    \tinet 10.32.143.206 netmask 0xffffff00 broadcast 10.32.143.255
+    bridge0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+    \tConfiguration:
+    \tmember: en2 flags=3<LEARNING,DISCOVER>
+    \tinet 192.168.3.1 netmask 0xffffff00 broadcast 192.168.3.255
+    """
+
+    func testAliasIsRestorableOnlyWhenBridgeIdentityIsKnown() {
+        XCTAssertTrue(GuardianInterfaceFacts.managementAliasCanBeRestored(
+            ifconfigOutput: bridgeWithMember, managementSubnetPrefix: "10.254.254."
+        ))
+
+        // 同名但没有 member 的空桥：不能把管理别名写上去。
+        let memberless = bridgeWithMember.replacingOccurrences(of: "member: en2", with: "ipfilter disabled")
+        XCTAssertFalse(GuardianInterfaceFacts.managementAliasCanBeRestored(
+            ifconfigOutput: memberless, managementSubnetPrefix: "10.254.254."
+        ))
+    }
+
+    func testManagementSubnetAppearingElsewhereBlocksTheRepair() {
+        let conflicting = bridgeWithMember + "\nutun9: flags=8051<UP,POINTOPOINT,RUNNING> mtu 1380\n\tinet 10.254.254.9 --> 10.254.254.9 netmask 0xfffffffc"
+        XCTAssertFalse(
+            GuardianInterfaceFacts.managementAliasCanBeRestored(
+                ifconfigOutput: conflicting, managementSubnetPrefix: "10.254.254."
+            ),
+            "管理网段已出现在别的接口上，写别名会造成地址冲突"
+        )
+    }
+
+    func testBridgeOwnManagementAddressIsNotTreatedAsAConflict() {
+        let alreadyAliased = bridgeWithMember + "\n\tinet 10.254.254.1 netmask 0xfffffffc broadcast 10.254.254.3"
+        XCTAssertTrue(GuardianInterfaceFacts.managementAliasCanBeRestored(
+            ifconfigOutput: alreadyAliased, managementSubnetPrefix: "10.254.254."
+        ))
+    }
+
+    // 原实现把网段写死成 "10.254.254."，profile 换网段时这道保护会静默失效。
+    func testSubnetPrefixFollowsTheProfileInsteadOfAHardcodedValue() {
+        XCTAssertEqual(GuardianInterfaceFacts.managementSubnetPrefix(forAddress: "10.254.254.1"), "10.254.254.")
+        XCTAssertEqual(GuardianInterfaceFacts.managementSubnetPrefix(forAddress: "172.31.9.1"), "172.31.9.")
+        XCTAssertEqual(GuardianInterfaceFacts.managementSubnetPrefix(forAddress: "garbage"), "garbage")
+
+        let otherSubnet = bridgeWithMember + "\nutun9: flags=8051<UP> mtu 1380\n\tinet 172.31.9.9 netmask 0xfffffffc"
+        XCTAssertFalse(GuardianInterfaceFacts.managementAliasCanBeRestored(
+            ifconfigOutput: otherSubnet, managementSubnetPrefix: "172.31.9."
+        ))
+        XCTAssertTrue(GuardianInterfaceFacts.managementAliasCanBeRestored(
+            ifconfigOutput: otherSubnet, managementSubnetPrefix: "10.254.254."
+        ))
+    }
+
+    func testSharingIntentAcceptsBothBoolAndIntEncodings() {
+        XCTAssertTrue(GuardianInterfaceFacts.sharingIntentIsEnabled(natPlist: ["NAT": ["Enabled": true]]))
+        XCTAssertTrue(GuardianInterfaceFacts.sharingIntentIsEnabled(natPlist: ["NAT": ["Enabled": 1]]))
+        XCTAssertFalse(GuardianInterfaceFacts.sharingIntentIsEnabled(natPlist: ["NAT": ["Enabled": false]]))
+        XCTAssertFalse(GuardianInterfaceFacts.sharingIntentIsEnabled(natPlist: ["NAT": ["Enabled": 0]]))
+    }
+
+    func testSharingIntentFailsClosedOnMissingOrMalformedPlist() {
+        XCTAssertFalse(GuardianInterfaceFacts.sharingIntentIsEnabled(natPlist: nil))
+        XCTAssertFalse(GuardianInterfaceFacts.sharingIntentIsEnabled(natPlist: [:]))
+        XCTAssertFalse(GuardianInterfaceFacts.sharingIntentIsEnabled(natPlist: ["NAT": "not a dictionary"]))
+        XCTAssertFalse(
+            GuardianInterfaceFacts.sharingIntentIsEnabled(natPlist: ["NAT": ["Enabled": "yes"]]),
+            "字符串编码不被接受，宁可判为未开启也不猜"
+        )
+    }
+}
