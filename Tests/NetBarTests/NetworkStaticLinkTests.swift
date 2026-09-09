@@ -399,7 +399,10 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(helperSource.contains("evidenceConflict"))
         XCTAssertTrue(helperSource.contains("hotspotAPActive"))
         XCTAssertTrue(helperSource.contains("hotspotClientObserved"))
-        XCTAssertTrue(helperSource.contains("BOOTPD_PROFILE=/etc/bootpd.plist"))
+        // 断言的是「解析为绝对路径而非依赖 PATH 查找」这个意图。默认值改为可被环境变量覆盖
+        // （`: ${VAR:=default}`）以便测试注入假 bin；授权路径不受影响，sudoers 的 env_reset
+        // 会清掉环境，因此经 sudo 调用时恒取下面的绝对路径。
+        XCTAssertTrue(helperSource.contains("BOOTPD_PROFILE:=/etc/bootpd.plist"))
         XCTAssertTrue(helperSource.contains("dhcpServerEnabled"))
         XCTAssertTrue(helperSource.contains("-extract dhcp_enabled json"))
         XCTAssertTrue(helperSource.contains("*'\"bridge0\"'*"))
@@ -412,7 +415,7 @@ final class NetworkStaticLinkTests: XCTestCase {
         let guardianPlistSource = try String(contentsOf: guardianPlist)
         XCTAssertTrue(guardianPlistSource.contains("com.zjah.NetBarMiniNetworkGuardian"))
         XCTAssertTrue(guardianPlistSource.contains("<key>KeepAlive</key>"))
-        XCTAssertTrue(helperSource.contains("SLEEP=/bin/sleep"))
+        XCTAssertTrue(helperSource.contains("SLEEP:=/bin/sleep"))
         XCTAssertTrue(helperSource.contains("wait_for_management_alias"))
         XCTAssertTrue(helperSource.contains("for attempt in {1..10}"))
         XCTAssertTrue(helperSource.contains("if ($4 != \"bridge0\")"))
