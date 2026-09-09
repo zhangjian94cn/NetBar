@@ -897,7 +897,6 @@ final class NetworkModeController: ObservableObject {
     private let eventLogger: NetworkEventLogging
     private let candidateStore: WiFiCandidatePreferenceStore
     private let networkChangeObserver: NetworkChangeObserver
-    private let policyShadow: NetworkPolicyShadowCoordinator?
     private let userDefaults: UserDefaults
     private let now: () -> Date
     private let sleeper: (TimeInterval) -> Void
@@ -945,7 +944,6 @@ final class NetworkModeController: ObservableObject {
         mihomoRecovery: MihomoRouteRecovering = LiveMihomoRouteRecovery(),
         eventLogger: NetworkEventLogging = NetworkEventLogger.shared,
         networkChangeObserver: NetworkChangeObserver = NetworkChangeObserver(),
-        policyShadow: NetworkPolicyShadowCoordinator? = nil,
         userDefaults: UserDefaults = .standard,
         now: @escaping () -> Date = Date.init,
         sleeper: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
@@ -963,7 +961,6 @@ final class NetworkModeController: ObservableObject {
         self.mihomoRecovery = mihomoRecovery
         self.eventLogger = eventLogger
         self.networkChangeObserver = networkChangeObserver
-        self.policyShadow = policyShadow
         self.candidateStore = WiFiCandidatePreferenceStore(defaults: userDefaults)
         self.userDefaults = userDefaults
         self.now = now
@@ -1049,7 +1046,6 @@ final class NetworkModeController: ObservableObject {
         policyEventWorkItem = nil
         wifiCandidateController.stopMonitoring()
         networkChangeObserver.stop()
-        if let policyShadow { Task { await policyShadow.stop() } }
     }
 
     func runPolicyCheckNow() {
@@ -1404,11 +1400,6 @@ final class NetworkModeController: ObservableObject {
 
     private func performPolicyCheck(force: Bool = false) {
         guard !isSwitching, !isProvisioning else { return }
-        let shadowCandidates = wifiCandidates
-        let shadowUnderlayVerified = currentUnderlayVerified
-        let shadowConnectivityProof = connectivityProofLevel
-        let shadowDNSPath = dnsPathFacts
-        let shadowApplicationPath = applicationPathFacts
         let queuedAt = ProbeContext.monotonicNow
         policyScheduler.submit(timeout: 25, superseding: force) { [weak self] context in
             guard let self else { return }
@@ -1448,19 +1439,6 @@ final class NetworkModeController: ObservableObject {
             }
             guard !context.isStopped else { return }
             let checkDate = self.now()
-            if let policyShadow = self.policyShadow {
-                let observation = NetworkPolicyShadowObservation.make(
-                    snapshot: current,
-                    preference: preference,
-                    currentUnderlayVerified: shadowUnderlayVerified,
-                    wifiCandidates: shadowCandidates,
-                    connectivityProofLevel: shadowConnectivityProof,
-                    dnsPath: shadowDNSPath,
-                    applicationPath: shadowApplicationPath,
-                    observedAt: checkDate
-                )
-                Task { await policyShadow.observe(observation) }
-            }
             _ = self.rebindMihomoUnderlayIfNeeded(snapshot: current, previousHint: nil, at: checkDate)
             guard preference == .miniPreferred else { return }
             self.policyState.clearExpiredCircuitBreaker(at: checkDate)
@@ -1515,7 +1493,6 @@ final class NetworkModeController: ObservableObject {
         _ event: NetworkChangeEvent,
         fallbackDelay: TimeInterval = 0.25
     ) {
-        if let policyShadow { Task { await policyShadow.networkDidChange(event) } }
         guard policyEventWorkItem == nil else { return }
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }

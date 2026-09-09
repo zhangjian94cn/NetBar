@@ -15,12 +15,7 @@ class MonitorCoordinator {
     let companyVPNDiagnosticMonitor = CompanyVPNDiagnosticMonitor()
     private let egressIdentityRefreshScheduler = DebouncedRefreshScheduler(delay: 3)
     lazy var clashOverlayModeController = ClashOverlayModeController()
-    /// `nil` unless the shadow run is explicitly enabled; the controller guards
-    /// every use, so a disabled shadow costs nothing at runtime.
-    private lazy var networkPolicyShadow: NetworkPolicyShadowCoordinator? =
-        AppConfig.shared.networkPolicyShadowEnabled ? NetworkPolicyShadowCoordinator() : nil
     lazy var networkModeController = NetworkModeController(
-        policyShadow: networkPolicyShadow,
         onNetworkChanged: { [weak self] in
             self?.refreshAfterNetworkModeChange()
         }

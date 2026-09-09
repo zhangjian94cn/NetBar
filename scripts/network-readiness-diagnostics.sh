@@ -74,8 +74,10 @@ mini_end_to_end_readiness() {
 }
 
 network_trace_replay() {
-    (cd "$ROOT_DIR" && "$SWIFT" test --filter NetworkPolicyMachineTests/testTraceReplayOfRepeatedFailureHasBoundedSideEffects)
-    (cd "$ROOT_DIR" && "$SWIFT" test --filter NetworkPolicyShadowCoordinatorTests/testRapidEventsCoalesceIntoOneGeneration)
+    # The shadow policy machine was removed; these assert the same two properties
+    # against the controller that actually runs.
+    (cd "$ROOT_DIR" && "$SWIFT" test --filter NetworkRoutePolicyTests/testTwoFailedAutomaticReturnsWithinTenMinutesOpenCircuitForTenMinutes)
+    (cd "$ROOT_DIR" && "$SWIFT" test --filter LatestEvaluationTests/testStormKeepsOnlyLatestPendingAndCancelsOldGeneration)
     print -- "network-trace-replay: PASS repeated failure is bounded and rapid events coalesce into one generation"
 }
 
