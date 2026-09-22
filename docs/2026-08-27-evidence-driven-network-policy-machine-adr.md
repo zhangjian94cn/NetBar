@@ -2,6 +2,7 @@
 
 - 日期: 2026-08-27
 - 状态: partially superseded（状态机与影子门禁保留；Clash 完全只读边界由 2026-08-28 ADR 取代）
+- 2026-09-22 补充: 「重拉一次原生 Network Sharing」与 `report-egress-failure` 通道已移除，见 [Guardian 只观察不干预 ADR](../../../skills/my/infra/local-dev-config/netbar-app-management/docs/2026-09-22-guardian-observe-only-adr.md)
 - 范围: NetBar Direct Full / Mini 共享自愈、MacBook 路由事务与数据面验证
 - 相关源码: [NetworkModeController.swift](../Sources/NetBar/Monitors/NetworkModeController.swift)、[MacMiniLinkProfile.swift](../Sources/NetBar/Monitors/MacMiniLinkProfile.swift)、[Mini Guardian](../Sources/NetBarMiniNetworkGuardian/main.swift)、[Guardian 恢复规划器](../Sources/NetBarMiniNetworkGuardianSupport/RecoveryPlanner.swift)、[Mini Helper](../Sources/NetBar/Resources/MiniLinkHelper/netbar-mini-link-helper)、[诊断命令](../scripts/network-readiness-diagnostics.sh)
 - 取代范围: [Mac mini 优先路由 ADR](2026-08-26-mac-mini-preferred-route-self-healing-adr.md) 中“共享进程运行即可支撑 ready”的判断，以及 [候选故障转移 ADR](2026-08-26-connectivity-first-candidate-failover-adr.md) 中由大型控制器直接交织证据、动作和 UI 的实现选择

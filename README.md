@@ -144,15 +144,15 @@ Direct Full 使用固定高度菜单弹窗。顶部状态条持续显示在线�
 
 第一次展开候选池时，macOS 可能询问定位权限，这是 CoreWLAN 扫描附近 SSID 所需。拒绝后 NetBar 不会盲连其他不可见 SSID；若 macOS 连当前 SSID 名称也隐藏，但 `en0` 已经关联并取得 IPv4，候选池会显示“当前已连接 Wi-Fi”，并可直接用于保网。该匿名候选不执行 SSID 关联，也不写入持久白名单。需要密码、网页登录或管理员关联的网络只显示原因并跳过，后台不会弹授权框。
 
-回退后的前 5 分钟是 Mini 积极恢复窗口：Wi-Fi 已经保网，同时每 10 秒检查 Mini。满 5 分钟仍不可用会进入稳定 Wi-Fi 降级，Mini 检查降为每 60 秒一次；这 5 分钟不是断网等待时间。10 分钟内重复自动切回再失败会熔断 10 分钟，避免两个出口反复抖动。
+回退后的前 5 分钟是 Mini 积极恢复窗口：Wi-Fi 已经保网，同时持续检查 Mini。满 5 分钟仍不可用会进入稳定 Wi-Fi 降级并继续按同一节奏检查；这 5 分钟不是断网等待时间。10 分钟内重复自动切回再失败会熔断 10 分钟，避免两个出口反复抖动。
 
-首次初始化需要在 Mac mini 终端和本机各完成一次管理员授权。Mini Helper v5 仅允许 `status`、`prepare`、`migrate`、`rollback`、`finalize-rollback`、`report-egress-failure` 六个固定无参数命令；迁移先建立并验证管理地址 SSH，再切换 DHCP，回滚先恢复并验证旧链路，最后移除管理别名。本机 Route Safety Helper v5 仅允许固定无参数命令，并持续补回管理别名。NetBar 不接收或保存管理员密码。SSH 连接目标改为 `10.254.254.1` 后仍严格复用 `192.168.2.1` 的 `HostKeyAlias`，不自动接受未知或变化的密钥。
+首次初始化需要在 Mac mini 终端和本机各完成一次管理员授权。Mini Helper v5 仅允许 `status`、`prepare`、`migrate`、`rollback`、`finalize-rollback` 五个固定无参数命令；迁移先建立并验证管理地址 SSH，再切换 DHCP，回滚先恢复并验证旧链路，最后移除管理别名。本机 Route Safety Helper v5 仅允许固定无参数命令，并持续补回管理别名。NetBar 不接收或保存管理员密码。SSH 连接目标改为 `10.254.254.1` 后仍严格复用 `192.168.2.1` 的 `HostKeyAlias`，不自动接受未知或变化的密钥。
 
-Mac mini 的唯一上游是内置以太网 `en0`。`en0` 或 Internet Sharing 断开时，`10.254.254.1/.2` 管理链路仍用于 SSH、VNC、健康检查和恢复，MacBook 自动回退 Wi-Fi。Mini Guardian 不重写 `en0`、公司 DNS、NAT 或 DHCP；它只维护管理别名、观察 Apple 数据面，并在共享意图和 Apple DHCP 均有效时受限重启原生服务。共享总开关关闭，或 `/etc/bootpd.plist` 明确显示 Apple DHCP 未启用时，状态为 `manual_pending`；后者必须在“系统设置 → 通用 → 共享 → 互联网共享”中关闭并重新开启，Guardian 不会循环重拉进程或直接改写 Apple 私有配置。
+Mac mini 的唯一上游是内置以太网 `en0`。`en0` 或 Internet Sharing 断开时，`10.254.254.1/.2` 管理链路仍用于 SSH、VNC、健康检查和恢复，MacBook 自动回退 Wi-Fi。Mini Guardian 不重写 `en0`、公司 DNS、NAT 或 DHCP，也不对 Apple 的 Internet Sharing 进程做任何干预；它只维护管理别名、观察 Apple 数据面并如实分层报告。共享总开关关闭时立刻进入 `manual_pending`；开关开着但共享未在服务（Apple DHCP 未启用、进程未运行、转发关闭或 `bridge0` 没有共享地址）时先报「正在恢复」，持续 90 秒仍未恢复才报 `manual_pending` 并点名卡住的事实，此时必须在“系统设置 → 通用 → 共享 → 互联网共享”中关闭并重新开启。
 
-Guardian 的 `ready` 现在必须同时满足 `en0` 载波、预期地址与路由、共享拓扑、Network Sharing 进程、`net.inet.ip.forwarding=1` 和 Mini 自身上游探测。Helper 与 Guardian 对同一事实不一致时显示“共享状态证据冲突”；进程 running 但 forwarding=0 时显示“Mac mini 上游正常 · 共享转发未就绪”，期间保持 Wi-Fi。较新的 macOS/SIP 不允许对该关键系统服务执行 `launchctl kickstart -k`，因此 Guardian 会严格验证 `/usr/libexec/InternetSharing` 的进程身份，终止旧实例并等待其完全退出，再使用不带 `-k` 的启动请求让 launchd 重建原生服务；它不直接强写 forwarding。若公司 VPN 随即再次关闭 forwarding，Guardian 进入退避并继续保持 Wi-Fi，不与 VPN 循环争夺。`forwarding=1` 只是必要条件，绿色仍要求 MacBook 下游和切换后系统/Clash 数据面共同验证。
+Guardian 的 `ready` 必须同时满足 `en0` 载波、预期地址与路由、共享拓扑、共享意图、Apple DHCP、Network Sharing 进程、`net.inet.ip.forwarding=1`、`bridge0` 共享地址、管理别名，以及 Mini 自身绑定 `en0` 的 HTTPS 探测；探测失败单独显示为“Mac mini 上游不可达”，不会被当成共享故障，也不会进入需人工窗口。Helper 与 Guardian 对同一事实不一致，或 Guardian 的结论与 Helper 的实时事实矛盾时显示“共享状态证据冲突”；Guardian 状态超过 45 秒未更新时显示“Guardian 状态过期”，两者都不能触发自动切回。热点 AP 与客户端只作独立展示，不进入雷雳出口的就绪定义。曾经的“终止旧实例并重新拉起原生服务”路径已于 2026-09-22 移除：实机两次证明它无法恢复共享，只会让 Apple 关闭 DHCP 后停在需人工状态；公司 VPN 关闭 forwarding 时 Guardian 只报告，MacBook 保持 Wi-Fi，不与 VPN 争夺。`forwarding=1` 只是必要条件，绿色仍要求 MacBook 下游和切换后系统/Clash 数据面共同验证。
 
-恢复退避只限制下一次写操作，Guardian 在 60 秒、5 分钟或 15 分钟退避期间仍每 15 秒刷新进程、forwarding、载波、地址和路由事实。这样公司 VPN 退出或系统自行恢复时可以及时重新进入 30 秒稳定验证，而不会等到写操作退避结束；重复失败原因在只读采样中保持，不被空状态覆盖。
+MacBook 没有 DHCP 租约时直接转述 Mini 的结论（需人工、载波断开、正在恢复等），只有 Mini 正常或没有结论时才显示“雷雳共享地址正在获取”；`networksetup` 输出的 `(null)` 在两端都视为空值。Guardian 每 15 秒刷新事实，恢复窗口内的评估间隔不超过 15 秒，MacBook 因此始终能拿到新鲜结论。
 
 状态分别展示固定管理链路、雷雳共享出口、热点 AP 与客户端证据。绿色出口要求管理 Peer、Apple DHCP 地址/动态网关、实际物理默认路由和绑定 `bridge0` 的 HTTPS 连续稳定 30 秒；旧租约、进程 running 或 `forwarding=1` 都不能单独判定就绪。未观测到真实热点客户端时只显示“热点已配置，客户端出口未验证”。
 

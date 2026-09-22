@@ -1,7 +1,7 @@
 # ADR: Split Thunderbolt management and Internet Sharing address planes
 
 - 日期: 2026-08-28
-- 状态: accepted
+- 状态: accepted（「服务恢复继续使用 TERM 和 launchctl kickstart」一句已于 2026-09-22 被 [Guardian 只观察不干预 ADR](../../../skills/my/infra/local-dev-config/netbar-app-management/docs/2026-09-22-guardian-observe-only-adr.md) 取代）
 - 范围: NetBar Direct Full / MacBook-Mac mini Thunderbolt management and shared egress
 - 相关源码: [MacMiniLinkProfile.swift](../Sources/NetBar/Monitors/MacMiniLinkProfile.swift)、[NetworkLinkProvisioner.swift](../Sources/NetBar/Monitors/NetworkLinkProvisioner.swift)、[Mini Guardian](../Sources/NetBarMiniNetworkGuardian/main.swift)
 - 上位原则: [engineering-principles.md](../../../docs/engineering-principles.md)

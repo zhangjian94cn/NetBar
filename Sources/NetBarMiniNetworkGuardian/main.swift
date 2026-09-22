@@ -15,6 +15,10 @@ private struct GuardianProfile: Decodable {
     let httpsProbeTargets: [String]
 }
 
+/// Raw values are a wire contract with the MacBook's `MacMiniGatewayState`; never rename one.
+/// `recoveryBackoff` no longer means a repair backoff (there are no repairs left) — it is kept as
+/// the value for "the Guardian itself could not complete an observation", because every shipped
+/// MacBook build already decodes it.
 private enum GuardianState: String, Codable {
     case carrierDown
     case addressRecovering
@@ -25,8 +29,7 @@ private enum GuardianState: String, Codable {
     case recoveryBackoff
     case sharingManualPending
     case managementLinkRecovering
-    case dhcpLeaseRecovering
-    case hotspotClientUnverified
+    case upstreamUnreachable
 }
 
 private struct GuardianStatus: Codable {
@@ -44,8 +47,6 @@ private struct GuardianStatus: Codable {
     var forwardingEnabled: Bool
     var sharingConfigured: Bool
     var upstreamReachable: Bool
-    var nextRetryAt: String?
-    var failureCount: Int
     var managementAddressReady: Bool
     var bridgeUsesDHCP: Bool
     var sharingIntentEnabled: Bool
@@ -53,6 +54,7 @@ private struct GuardianStatus: Codable {
     var hotspotAPConfigured: Bool
     var hotspotAPActive: Bool
     var hotspotClientObserved: Bool
+    var guardianVersion: Int? = nil
 }
 
 private struct CommandResult {
@@ -66,13 +68,25 @@ private final class CommandRunner {
         let result = BoundedCommand.run(executable, arguments, timeout: executable.hasSuffix("curl") ? 4 : 2)
         return CommandResult(status: result.exitCode, output: result.stdout + result.stderr)
     }
-
 }
 
+/// Observes Apple Internet Sharing on the Mac mini and keeps the Thunderbolt management alias alive.
+///
+/// The Guardian never touches the sharing daemon: the signal-and-relaunch path was removed after
+/// two incidents in which it left sharing permanently stopped (Apple's graceful teardown
+/// disables its DHCP server and a relaunched instance carries no "enable" intent — only System
+/// Settings can restore it).  Its single write is `ifconfig bridge0 alias`, so SSH/VNC to the Mini
+/// survive whatever sharing does.
 private final class MiniNetworkGuardian {
+    /// Bumped whenever the MacBook must insist on a reinstall (it shows the update button when
+    /// the reported version is older than what it requires).  2 = observe-only Guardian.
+    static let version = 2
+    /// Telemetry (bound HTTPS via en0, `system_profiler`) is slow; sample it at most this often
+    /// and always after the verdict has been written, so it can never stall a status refresh.
+    private static let telemetryInterval: TimeInterval = 60
+
     private let profileURL = URL(fileURLWithPath: "/Library/Application Support/NetBar/MacMiniLinkProfile.plist")
     private let statusURL = URL(fileURLWithPath: "/Library/Application Support/NetBar/MiniGuardian/status.json")
-    private let downstreamEgressFailureURL = URL(fileURLWithPath: "/Library/Application Support/NetBar/MiniGuardian/downstream-egress-failure.txt")
     private let natProfileURL = URL(fileURLWithPath: "/Library/Preferences/SystemConfiguration/com.apple.nat.plist")
     private let bootpdProfileURL = URL(fileURLWithPath: "/etc/bootpd.plist")
     private let runner = CommandRunner()
@@ -82,15 +96,18 @@ private final class MiniNetworkGuardian {
     private var store: SCDynamicStore?
     private var source: CFRunLoopSource?
     private var timer: DispatchSourceTimer?
-    private var addressWaitStarted: Date?
     private var sharingWaitStarted: Date?
-    private var pendingRepairVerification = false
     private var healthySince: Date?
-    private var lastUpstreamProbeAt: Date?
+    private var telemetryProbedAt: Date?
     private var cachedUpstreamReachable = false
     private var previousCarrier: Bool?
     private var status: GuardianStatus
     private let profile: GuardianProfile
+
+    private struct AliasMaintenance {
+        let restorable: Bool
+        let failure: String?
+    }
 
     init?() {
         guard let data = try? Data(contentsOf: profileURL),
@@ -113,8 +130,6 @@ private final class MiniNetworkGuardian {
             forwardingEnabled: false,
             sharingConfigured: false,
             upstreamReachable: false,
-            nextRetryAt: nil,
-            failureCount: 0,
             managementAddressReady: false,
             bridgeUsesDHCP: false,
             sharingIntentEnabled: false,
@@ -123,11 +138,7 @@ private final class MiniNetworkGuardian {
             hotspotAPActive: false,
             hotspotClientObserved: false
         )
-        if GuardianPersistedRecoveryMigration.shouldResetBackoff(lastError: status.lastError) {
-            status.failureCount = 0
-            status.nextRetryAt = nil
-            status.lastError = "retrying with SIP-safe native sharing restart"
-        }
+        cachedUpstreamReachable = status.upstreamReachable
     }
 
     func run() {
@@ -185,14 +196,18 @@ private final class MiniNetworkGuardian {
     }
 
     private func evaluate() {
-        ProbeContext.withValue(ProbeContext(timeout: 12)) { evaluateFacts() }
+        // Verdict first, on its own budget; telemetry afterwards on another.  A slow probe can
+        // therefore delay the telemetry fields but never the state the MacBook acts on.
+        let observed = ProbeContext.withValue(ProbeContext(timeout: 12)) { evaluateFacts() }
+        guard observed else { return }
+        ProbeContext.withValue(ProbeContext(timeout: 12)) { refreshTelemetry() }
     }
 
-    private func evaluateFacts() {
+    /// Returns false when the observation ran out of budget and the previous facts were kept.
+    private func evaluateFacts() -> Bool {
         let now = Date()
-        status.observedAt = iso8601.string(from: now)
         status.generation &+= 1
-        maintainManagementAliasFirst()
+        let alias = maintainManagementAliasFirst()
         let carrier = interfaceIsActive()
         let addressReady = interfaceHasExpectedAddress()
         let routeReady = scopedDefaultRouteIsExpected()
@@ -203,93 +218,68 @@ private final class MiniNetworkGuardian {
         let bridgeUsesDHCP = bridgeServiceUsesDHCP()
         let sharedAddressReady = sharedBridgeAddressIsReady()
         let hotspotAPConfigured = hotspotIsConfigured()
-        let hotspotAPActive = hotspotAPIsActive()
-        let hotspotClientObserved = hotspotClientIsObserved()
         let sharingRunning = internetSharingIsRunning()
         let forwardingEnabled = kernelForwardingIsEnabled()
-        let reachable = addressReady && routeReady && upstreamReachability(at: now)
-        let freshDownstreamFailure = consumeFreshDownstreamEgressFailure(at: now)
-        let downstreamRecoveryRequested = freshDownstreamFailure && carrier && addressReady && routeReady &&
-            sharingConfigured && sharingRunning && forwardingEnabled && reachable
+        let preferencesMatch = carrier ? preferencesMatchExpectedConfiguration() : true
 
         guard ProbeContext.current?.isStopped != true else {
+            // Facts are incomplete: keep the previous facts *and* the previous `observedAt`, so the
+            // MacBook sees a stale Guardian rather than a freshly stamped guess.
             transition(to: .recoveryBackoff, error: "observation timed out; retaining previous facts")
             scheduleEvaluation(after: 5)
-            return
+            return false
         }
+        status.observedAt = iso8601.string(from: now)
+        status.guardianVersion = Self.version
         status.carrierActive = carrier
         status.addressReady = addressReady
         status.routeReady = routeReady
         status.sharingConfigured = sharingConfigured
         status.sharingRunning = sharingRunning
         status.forwardingEnabled = forwardingEnabled
-        status.upstreamReachable = reachable
         status.managementAddressReady = managementAddressReady
         status.bridgeUsesDHCP = bridgeUsesDHCP
         status.sharingIntentEnabled = sharingIntentEnabled
         status.dhcpServerEnabled = dhcpServerEnabled
         status.hotspotAPConfigured = hotspotAPConfigured
-        status.hotspotAPActive = hotspotAPActive
-        status.hotspotClientObserved = hotspotClientObserved
+        status.upstreamReachable = cachedUpstreamReachable
 
         if previousCarrier != carrier {
             previousCarrier = carrier
             status.lastCarrierChange = iso8601.string(from: now)
-            addressWaitStarted = nil
             sharingWaitStarted = nil
-            pendingRepairVerification = false
-            lastUpstreamProbeAt = nil
-            cachedUpstreamReachable = false
-            status.failureCount = 0
-            status.nextRetryAt = nil
+            healthySince = nil
             transition(to: carrier ? .addressRecovering : .carrierDown, action: "carrier \(carrier ? "active" : "inactive")")
         }
 
-        // Shared with the planner so the two cannot drift: this one drives `healthySince`,
-        // which is fed back in as `healthyElapsed`, so a divergence here would silently change
-        // when the Mini is considered stable.
-        let fullyHealthy = MiniGuardianRecoveryPlanner.isFullyHealthy(
+        let facts = MiniGuardianServingFacts(
             carrierActive: carrier,
-            managementAddressReady: managementAddressReady,
-            bridgeUsesDHCP: bridgeUsesDHCP,
+            preferencesMatch: preferencesMatch,
+            sharingConfigured: sharingConfigured,
+            sharingIntentEnabled: sharingIntentEnabled,
             dhcpServerEnabled: dhcpServerEnabled,
+            managementAddressReady: managementAddressReady,
+            managementAliasRestorable: managementAddressReady || alias.restorable,
+            bridgeUsesDHCP: bridgeUsesDHCP,
+            sharedAddressReady: sharedAddressReady,
             addressReady: addressReady,
             routeReady: routeReady,
-            sharedAddressReady: sharedAddressReady,
-            hotspotAPActive: hotspotAPActive,
             sharingRunning: sharingRunning,
             forwardingEnabled: forwardingEnabled,
-            upstreamReachable: reachable
+            upstreamReachable: cachedUpstreamReachable
         )
-        if fullyHealthy {
+        // Shared with the planner so the two cannot drift: this drives `healthySince`, which is fed
+        // back in as `healthyElapsed`, so a divergence here would silently change when the Mini is
+        // considered stable.
+        if MiniGuardianRecoveryPlanner.isFullyHealthy(facts) {
             if healthySince == nil { healthySince = now }
         } else {
             healthySince = nil
         }
-        let retryRemaining = parseDate(status.nextRetryAt).map { $0.timeIntervalSince(now) }
         let decision = MiniGuardianRecoveryPlanner.decide(
-            MiniGuardianRecoveryInput(
-                carrierActive: carrier,
-                preferencesMatch: carrier ? preferencesMatchExpectedConfiguration() : true,
-                sharingConfigured: sharingConfigured,
-                sharingIntentEnabled: sharingIntentEnabled,
-                dhcpServerEnabled: dhcpServerEnabled,
-                managementAddressReady: managementAddressReady,
-                bridgeUsesDHCP: bridgeUsesDHCP,
-                sharedAddressReady: sharedAddressReady,
-                hotspotAPActive: hotspotAPActive,
-                addressReady: addressReady,
-                routeReady: routeReady,
-                sharingRunning: sharingRunning,
-                forwardingEnabled: forwardingEnabled,
-                downstreamEgressFailureReported: downstreamRecoveryRequested,
-                upstreamReachable: reachable,
-                pendingRepairVerification: pendingRepairVerification,
-                retryRemaining: retryRemaining,
-                addressWaitElapsed: addressWaitStarted.map { now.timeIntervalSince($0) },
-                sharingWaitElapsed: sharingWaitStarted.map { now.timeIntervalSince($0) },
-                healthyElapsed: healthySince.map { now.timeIntervalSince($0) }
-            )
+            facts,
+            sharingWaitElapsed: sharingWaitStarted.map { now.timeIntervalSince($0) },
+            healthyElapsed: healthySince.map { now.timeIntervalSince($0) }
         )
 
         switch decision {
@@ -301,92 +291,69 @@ private final class MiniNetworkGuardian {
             transition(to: .configurationDrift, error: message)
             scheduleEvaluation(after: 15)
 
-        case .sharingManualPending:
-            pendingRepairVerification = false
-            let message = sharingIntentEnabled
-                ? "Apple DHCP is disabled; toggle Internet Sharing off and on in System Settings"
-                : "enable Internet Sharing in System Settings"
-            transition(to: .sharingManualPending, error: message)
-            scheduleEvaluation(after: 15)
-
-        case .reapplyManagementAlias:
-            guard managementAliasCanBeRestored() else {
-                transition(to: .configurationDrift, error: "management subnet conflicts or bridge identity unavailable")
-                scheduleEvaluation(after: 15)
-                return
-            }
-            let result = runner.run("/sbin/ifconfig", [
-                "bridge0", "alias", profile.managementMiniAddress,
-                "netmask", profile.managementSubnetMask
-            ])
-            guard result.succeeded else {
-                registerFailure(now: now, message: result.output)
-                return
-            }
-            status.lastAction = "restored Thunderbolt management alias"
-            status.lastError = nil
-            pendingRepairVerification = true
-            transition(to: .managementLinkRecovering, action: status.lastAction)
+        case .managementLinkRecovering:
+            // The alias write already happened at the top of this round; surface its failure text
+            // instead of pretending a silent retry is progress.
+            transition(to: .managementLinkRecovering, error: alias.failure)
             scheduleEvaluation(after: 5)
 
-        case .readyStabilizing(let delay):
-            addressWaitStarted = nil
-            sharingWaitStarted = nil
-            pendingRepairVerification = false
-            transition(to: .readyStabilizing)
-            scheduleEvaluation(after: min(15, delay))
-
-        case .ready(let resetBackoff):
-            addressWaitStarted = nil
-            sharingWaitStarted = nil
-            pendingRepairVerification = false
-            if resetBackoff {
-                status.failureCount = 0
-                status.nextRetryAt = nil
-            }
-            transition(to: .ready, action: status.lastAction)
+        case .addressRecovering:
+            transition(to: .addressRecovering)
             scheduleEvaluation(after: 15)
 
-        case .repairFailed:
-            pendingRepairVerification = false
-            registerFailure(now: now, message: "repair did not reach a healthy state")
-
-        case .recoveryBackoff(let delay):
-            transition(to: .recoveryBackoff, error: status.lastError)
-            scheduleEvaluation(after: GuardianEvaluationCadence.duringRecoveryBackoff(remaining: delay))
-
-        case .addressRecovering(let delay):
-            if addressWaitStarted == nil { addressWaitStarted = now }
-            transition(to: .addressRecovering)
-            scheduleEvaluation(after: delay)
-
-        case .sharingRecovering(let delay):
+        case .sharingRecovering(let reason, let remaining):
             if sharingWaitStarted == nil { sharingWaitStarted = now }
-            transition(to: .sharingRecovering)
-            scheduleEvaluation(after: delay)
+            transition(to: .sharingRecovering, error: reason)
+            // Never sleep past the MacBook's freshness window: it must keep seeing a live Guardian
+            // while Apple rebuilds sharing.
+            scheduleEvaluation(after: min(15, max(1, remaining)))
 
-        case .restartSharing:
-            let result = relaunchNativeSharing()
-            guard result.succeeded else {
-                registerFailure(now: now, message: result.output)
-                return
-            }
-            status.lastAction = "relaunched native InternetSharing service"
-            status.lastError = nil
-            pendingRepairVerification = true
-            sharingWaitStarted = nil
-            transition(to: .sharingRecovering, action: status.lastAction)
-            scheduleEvaluation(after: 10)
+        case .sharingManualPending(let reason):
+            transition(to: .sharingManualPending, error: reason)
+            scheduleEvaluation(after: 15)
+
+        case .upstreamUnreachable:
+            transition(to: .upstreamUnreachable, error: "bound HTTPS probe via \(profile.miniUpstreamDevice) failed")
+            scheduleEvaluation(after: 15)
+
+        case .readyStabilizing(let delay):
+            transition(to: .readyStabilizing)
+            scheduleEvaluation(after: min(15, max(1, delay)))
+
+        case .ready:
+            transition(to: .ready, action: status.lastAction)
+            scheduleEvaluation(after: 15)
         }
+
+        // The "not serving" window survives only the two states it explains.  Manual pending with
+        // sharing switched off is the user's intent, not a stuck rebuild, so it does not keep it.
+        switch decision {
+        case .sharingRecovering:
+            break
+        case .sharingManualPending where sharingIntentEnabled:
+            break
+        default:
+            sharingWaitStarted = nil
+        }
+        return true
     }
 
-    private func registerFailure(now: Date, message: String) {
-        status.failureCount += 1
-        let delays: [TimeInterval] = [60, 300, 900]
-        let delay = delays[min(status.failureCount - 1, delays.count - 1)]
-        status.nextRetryAt = iso8601.string(from: now.addingTimeInterval(delay))
-        transition(to: .recoveryBackoff, error: message)
-        scheduleEvaluation(after: GuardianEvaluationCadence.duringRecoveryBackoff(remaining: delay))
+    /// Slow, informational facts.  They are written after the verdict and never change `state`;
+    /// a flipped upstream sample only schedules the next verdict early.
+    private func refreshTelemetry() {
+        let now = Date()
+        if let telemetryProbedAt, now.timeIntervalSince(telemetryProbedAt) < Self.telemetryInterval {
+            return
+        }
+        telemetryProbedAt = now
+        let upstream = boundUpstreamIsReachable()
+        let upstreamChanged = upstream != cachedUpstreamReachable
+        cachedUpstreamReachable = upstream
+        status.upstreamReachable = upstream
+        status.hotspotAPActive = hotspotAPIsActive()
+        status.hotspotClientObserved = hotspotClientIsObserved()
+        writeStatus()
+        if upstreamChanged { scheduleEvaluation(after: 0) }
     }
 
     private func transition(to state: GuardianState, action: String? = nil, error: String? = nil) {
@@ -401,7 +368,7 @@ private final class MiniNetworkGuardian {
         status.lastError = error
         writeStatus()
         if previousState != status.state || previousAction != status.lastAction || previousError != status.lastError {
-            self.log.notice("state=\(self.status.state.rawValue, privacy: .public) carrier=\(self.status.carrierActive) address=\(self.status.addressReady) route=\(self.status.routeReady) sharing=\(self.status.sharingRunning) forwarding=\(self.status.forwardingEnabled) egress=\(self.status.upstreamReachable) action=\(self.status.lastAction ?? "-", privacy: .public) error=\(self.status.lastError ?? "-", privacy: .public)")
+            self.log.notice("state=\(self.status.state.rawValue, privacy: .public) carrier=\(self.status.carrierActive) address=\(self.status.addressReady) route=\(self.status.routeReady) sharing=\(self.status.sharingRunning) forwarding=\(self.status.forwardingEnabled) dhcp=\(self.status.dhcpServerEnabled ?? false) egress=\(self.status.upstreamReachable) action=\(self.status.lastAction ?? "-", privacy: .public) error=\(self.status.lastError ?? "-", privacy: .public)")
         }
     }
 
@@ -420,10 +387,6 @@ private final class MiniNetworkGuardian {
     private static func loadStatus(from url: URL) -> GuardianStatus? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(GuardianStatus.self, from: data)
-    }
-
-    private func parseDate(_ string: String?) -> Date? {
-        string.flatMap(iso8601.date(from:))
     }
 
     private func interfaceIsActive() -> Bool {
@@ -448,33 +411,6 @@ private final class MiniNetworkGuardian {
         return output.contains("state = running") && output.contains("/usr/libexec/InternetSharing")
     }
 
-    private func relaunchNativeSharing() -> CommandResult {
-        var service = runner.run("/bin/launchctl", ["print", "system/com.apple.NetworkSharing"])
-        guard service.succeeded else { return service }
-
-        if let pid = NativeSharingProcessIdentity.pid(fromLaunchctlPrint: service.output) {
-            let terminated = runner.run("/bin/kill", ["-TERM", String(pid)])
-            guard terminated.succeeded else { return terminated }
-            // Bounded already, but it used to ignore the evaluation's shared deadline:
-            // a slow launchctl here could push the whole cycle past its budget.
-            for _ in 0..<20 {
-                guard ProbeContext.current?.isStopped != true else { break }
-                Thread.sleep(forTimeInterval: 0.25)
-                service = runner.run("/bin/launchctl", ["print", "system/com.apple.NetworkSharing"])
-                if service.succeeded,
-                   NativeSharingProcessIdentity.isStoppedNativeService(launchctlPrint: service.output) {
-                    break
-                }
-            }
-        }
-
-        guard service.succeeded,
-              NativeSharingProcessIdentity.isStoppedNativeService(launchctlPrint: service.output) else {
-            return CommandResult(status: 1, output: "native InternetSharing did not reach a stopped state")
-        }
-        return runner.run("/bin/launchctl", ["kickstart", "system/com.apple.NetworkSharing"])
-    }
-
     private func kernelForwardingIsEnabled() -> Bool {
         let result = runner.run("/usr/sbin/sysctl", ["-n", "net.inet.ip.forwarding"])
         return result.succeeded && result.output.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
@@ -494,27 +430,6 @@ private final class MiniNetworkGuardian {
             }
             return target.contains("generate_204") ? status == 204 : status == 200
         }
-    }
-
-    private func upstreamReachability(at now: Date) -> Bool {
-        if let lastUpstreamProbeAt, now.timeIntervalSince(lastUpstreamProbeAt) < 60 {
-            return cachedUpstreamReachable
-        }
-        cachedUpstreamReachable = boundUpstreamIsReachable()
-        lastUpstreamProbeAt = now
-        return cachedUpstreamReachable
-    }
-
-    private func consumeFreshDownstreamEgressFailure(at now: Date) -> Bool {
-        guard let raw = try? String(contentsOf: downstreamEgressFailureURL, encoding: .utf8) else {
-            return false
-        }
-        try? FileManager.default.removeItem(at: downstreamEgressFailureURL)
-        guard let reportedAt = iso8601.date(from: raw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            return false
-        }
-        let age = now.timeIntervalSince(reportedAt)
-        return age >= -5 && age <= 60
     }
 
     private func preferencesMatchExpectedConfiguration() -> Bool {
@@ -552,18 +467,22 @@ private final class MiniNetworkGuardian {
         return MiniGuardianRecoveryPlanner.appleDHCPEnabled(from: object["dhcp_enabled"])
     }
 
-    /// Reordering the planner was not enough: the *execution* stage still sat behind the
-    /// upstream, sharing and hotspot observations, so a persistently slow probe could time the
-    /// cycle out before the alias was ever written — exactly the state that leaves the link
-    /// unmanageable.  These checks are cheap local reads and carry the same identity, DHCP and
-    /// address-conflict protection as the state machine's own repair step.
-    private func maintainManagementAliasFirst() {
-        guard !managementAliasIsReady(), bridgeServiceUsesDHCP(), managementAliasCanBeRestored() else { return }
+    /// The alias is written before anything else is observed, so a slow probe can never time the
+    /// round out before the one write that keeps the Mini manageable.  Same identity, DHCP and
+    /// address-conflict protection as before; the result is surfaced through the planner's
+    /// `managementLinkRecovering` verdict instead of being logged and forgotten.
+    private func maintainManagementAliasFirst() -> AliasMaintenance {
+        guard !managementAliasIsReady() else { return AliasMaintenance(restorable: true, failure: nil) }
+        guard bridgeServiceUsesDHCP(), managementAliasCanBeRestored() else {
+            return AliasMaintenance(restorable: false, failure: nil)
+        }
         let result = runner.run("/sbin/ifconfig", [
             "bridge0", "alias", profile.managementMiniAddress,
             "netmask", profile.managementSubnetMask
         ])
         log.info("管理别名先行维护 succeeded=\(result.succeeded, privacy: .public)")
+        if result.succeeded { status.lastAction = "restored Thunderbolt management alias" }
+        return AliasMaintenance(restorable: true, failure: result.succeeded ? nil : result.output)
     }
 
     private func managementAliasCanBeRestored() -> Bool {

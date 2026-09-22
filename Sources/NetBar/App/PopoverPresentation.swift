@@ -262,8 +262,18 @@ struct NetworkOutletPresentation: Equatable {
         } else {
             sharingValue = snapshot?.gatewayState.displayName ?? "待检测"
         }
-        sharingDetail = helperStatus?.sharingIntentEnabled == false
-            ? "Mac mini：系统设置 → 通用 → 共享" : snapshot?.miniGateway
+        // "Needs a hand" always names where to go; other non-ready verdicts show the Guardian's
+        // own reason (which fact is missing) rather than a gateway address that is not there.
+        let guardianReason = helperStatus?.guardian?.lastError?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if helperStatus?.sharingIntentEnabled == false || snapshot?.gatewayState == .sharingManualPending {
+            sharingDetail = "Mac mini：系统设置 → 通用 → 共享"
+        } else if let state = snapshot?.gatewayState, state != .ready, state != .unknown,
+                  let guardianReason, !guardianReason.isEmpty {
+            sharingDetail = guardianReason
+        } else {
+            sharingDetail = snapshot?.miniGateway
+        }
         sharingStateDot = snapshot.map { $0.gatewayState == .ready ? .ok : .warning } ?? .unknown
 
         switch proofLevel {
