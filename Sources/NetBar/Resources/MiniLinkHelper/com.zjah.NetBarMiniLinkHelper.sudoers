@@ -3,4 +3,3 @@ zhangjian ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarMin
 zhangjian ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper migrate
 zhangjian ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper rollback
 zhangjian ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper finalize-rollback
-zhangjian ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarMiniLinkHelper report-egress-failure

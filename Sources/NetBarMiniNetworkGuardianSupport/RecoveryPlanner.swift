@@ -1,65 +1,26 @@
 import Foundation
 
-public enum NativeSharingProcessIdentity {
-    public static func pid(fromLaunchctlPrint output: String) -> Int32? {
-        let lines = output.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        guard lines.contains("state = running"),
-              lines.contains("program = /usr/libexec/InternetSharing"),
-              let pidLine = lines.first(where: { $0.hasPrefix("pid = ") }) else {
-            return nil
-        }
-        let value = String(pidLine.dropFirst("pid = ".count))
-        guard !value.isEmpty, value.allSatisfy(\.isNumber), let pid = Int32(value), pid > 1 else {
-            return nil
-        }
-        return pid
-    }
-
-    public static func isStoppedNativeService(launchctlPrint output: String) -> Bool {
-        let lines = output.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        return lines.contains("state = not running") &&
-            lines.contains("program = /usr/libexec/InternetSharing") &&
-            !lines.contains(where: { $0.hasPrefix("pid = ") })
-    }
-}
-
-public enum GuardianPersistedRecoveryMigration {
-    public static func shouldResetBackoff(lastError: String?) -> Bool {
-        guard let lastError else { return false }
-        return lastError.contains("Could not kickstart service") &&
-            lastError.contains("System Integrity Protection")
-    }
-}
-
-public enum GuardianEvaluationCadence {
-    public static func duringRecoveryBackoff(remaining: TimeInterval) -> TimeInterval {
-        min(15, max(1, remaining))
-    }
-}
-
-public struct MiniGuardianRecoveryInput: Equatable {
+/// Everything the Guardian knows about whether the Mac mini can serve as the Thunderbolt egress.
+///
+/// These are *serving* facts.  Hotspot AP state and downstream reports are deliberately absent:
+/// they used to feed a "restart Apple sharing" branch that never restored sharing and twice left
+/// it permanently stopped.  `upstreamReachable` is the Mini's own bound HTTPS probe; it gates
+/// `ready` but is never a reason to treat sharing as broken.
+public struct MiniGuardianServingFacts: Equatable {
     public let carrierActive: Bool
     public let preferencesMatch: Bool
     public let sharingConfigured: Bool
     public let sharingIntentEnabled: Bool
     public let dhcpServerEnabled: Bool
     public let managementAddressReady: Bool
+    public let managementAliasRestorable: Bool
     public let bridgeUsesDHCP: Bool
     public let sharedAddressReady: Bool
-    public let hotspotAPActive: Bool
     public let addressReady: Bool
     public let routeReady: Bool
     public let sharingRunning: Bool
     public let forwardingEnabled: Bool
-    public let downstreamEgressFailureReported: Bool
     public let upstreamReachable: Bool
-    public let pendingRepairVerification: Bool
-    public let retryRemaining: TimeInterval?
-    public let addressWaitElapsed: TimeInterval?
-    public let sharingWaitElapsed: TimeInterval?
-    public let healthyElapsed: TimeInterval?
 
     public init(
         carrierActive: Bool,
@@ -68,20 +29,14 @@ public struct MiniGuardianRecoveryInput: Equatable {
         sharingIntentEnabled: Bool,
         dhcpServerEnabled: Bool,
         managementAddressReady: Bool,
+        managementAliasRestorable: Bool,
         bridgeUsesDHCP: Bool,
         sharedAddressReady: Bool,
-        hotspotAPActive: Bool,
         addressReady: Bool,
         routeReady: Bool,
         sharingRunning: Bool,
         forwardingEnabled: Bool,
-        downstreamEgressFailureReported: Bool,
-        upstreamReachable: Bool,
-        pendingRepairVerification: Bool,
-        retryRemaining: TimeInterval?,
-        addressWaitElapsed: TimeInterval?,
-        sharingWaitElapsed: TimeInterval?,
-        healthyElapsed: TimeInterval?
+        upstreamReachable: Bool
     ) {
         self.carrierActive = carrierActive
         self.preferencesMatch = preferencesMatch
@@ -89,38 +44,41 @@ public struct MiniGuardianRecoveryInput: Equatable {
         self.sharingIntentEnabled = sharingIntentEnabled
         self.dhcpServerEnabled = dhcpServerEnabled
         self.managementAddressReady = managementAddressReady
+        self.managementAliasRestorable = managementAliasRestorable
         self.bridgeUsesDHCP = bridgeUsesDHCP
         self.sharedAddressReady = sharedAddressReady
-        self.hotspotAPActive = hotspotAPActive
         self.addressReady = addressReady
         self.routeReady = routeReady
         self.sharingRunning = sharingRunning
         self.forwardingEnabled = forwardingEnabled
-        self.downstreamEgressFailureReported = downstreamEgressFailureReported
         self.upstreamReachable = upstreamReachable
-        self.pendingRepairVerification = pendingRepairVerification
-        self.retryRemaining = retryRemaining
-        self.addressWaitElapsed = addressWaitElapsed
-        self.sharingWaitElapsed = sharingWaitElapsed
-        self.healthyElapsed = healthyElapsed
     }
 }
 
+/// The Guardian's verdict.  Every case is a *state*; none is an action on Apple's daemon.
 public enum MiniGuardianRecoveryDecision: Equatable {
     case carrierDown
     case configurationDrift(String)
-    case sharingManualPending
-    case reapplyManagementAlias
-    case addressRecovering(TimeInterval)
-    case sharingRecovering(TimeInterval)
-    case restartSharing
+    /// The alias was missing and has just been (re)written; verify on the next round.
+    case managementLinkRecovering
+    case addressRecovering
+    /// Sharing is switched on but not serving; Apple is expected to rebuild it within the grace period.
+    case sharingRecovering(reason: String, remaining: TimeInterval)
+    case sharingManualPending(String)
+    /// Everything local serves, but the Mini's own bound HTTPS probe failed.  Not a sharing fault,
+    /// so it never counts towards the manual-pending window.
+    case upstreamUnreachable
     case readyStabilizing(TimeInterval)
-    case ready(resetBackoff: Bool)
-    case recoveryBackoff(TimeInterval)
-    case repairFailed
+    case ready
 }
 
 public enum MiniGuardianRecoveryPlanner {
+    /// Apple's daemon idles out 60 s after a teardown and rebuilt sharing in ~20 s on 2026-09-14;
+    /// a not-serving condition older than this has stopped being a transient.
+    public static let sharingRecoveryGracePeriod: TimeInterval = 90
+    public static let readyStabilization: TimeInterval = 30
+    public static let manualRecoveryHint = "toggle Internet Sharing off and on in System Settings"
+
     public static func appleDHCPEnabled(from value: Any?) -> Bool {
         if let interfaces = value as? [String] {
             return interfaces.contains("bridge0")
@@ -130,100 +88,64 @@ public enum MiniGuardianRecoveryPlanner {
         return false
     }
 
-    public static func decide(_ input: MiniGuardianRecoveryInput) -> MiniGuardianRecoveryDecision {
-        guard input.bridgeUsesDHCP else {
+    public static func decide(
+        _ facts: MiniGuardianServingFacts,
+        sharingWaitElapsed: TimeInterval?,
+        healthyElapsed: TimeInterval?
+    ) -> MiniGuardianRecoveryDecision {
+        guard facts.bridgeUsesDHCP else {
             return .configurationDrift("Thunderbolt Bridge must use DHCP; fixed IPv4 conflicts with Internet Sharing")
         }
-        guard input.managementAddressReady else {
-            return input.pendingRepairVerification ? .repairFailed : .reapplyManagementAlias
+        guard facts.managementAddressReady else {
+            return facts.managementAliasRestorable
+                ? .managementLinkRecovering
+                : .configurationDrift("management subnet conflicts or bridge identity unavailable")
         }
-        guard input.carrierActive else { return .carrierDown }
-        guard input.preferencesMatch else {
+        guard facts.carrierActive else { return .carrierDown }
+        guard facts.preferencesMatch else {
             return .configurationDrift("en0 manual configuration differs from NetBar profile")
         }
-        guard input.sharingConfigured else {
+        guard facts.sharingConfigured else {
             return .configurationDrift("Internet Sharing must use en0 and include Wi-Fi plus bridge0")
         }
-        guard input.sharingIntentEnabled else { return .sharingManualPending }
-        guard input.dhcpServerEnabled else { return .sharingManualPending }
+        guard facts.sharingIntentEnabled else {
+            return .sharingManualPending("enable Internet Sharing in System Settings")
+        }
+        guard facts.addressReady, facts.routeReady else { return .addressRecovering }
 
-
-        if input.downstreamEgressFailureReported {
-            if let remaining = input.retryRemaining, remaining > 0 {
-                return .recoveryBackoff(remaining)
+        let missing = notServingFacts(facts)
+        if !missing.isEmpty {
+            let reason = missing.joined(separator: "; ")
+            let waited = sharingWaitElapsed ?? 0
+            if waited < sharingRecoveryGracePeriod {
+                return .sharingRecovering(reason: reason, remaining: sharingRecoveryGracePeriod - waited)
             }
-            return .restartSharing
+            return .sharingManualPending("\(reason); \(manualRecoveryHint)")
         }
+        guard facts.upstreamReachable else { return .upstreamUnreachable }
 
-        if isFullyHealthy(input) {
-            let elapsed = input.healthyElapsed ?? 0
-            if elapsed < 30 {
-                return .readyStabilizing(30 - elapsed)
-            }
-            return .ready(resetBackoff: elapsed >= 60)
-        }
-
-        if input.pendingRepairVerification { return .repairFailed }
-        if let remaining = input.retryRemaining, remaining > 0 {
-            return .recoveryBackoff(remaining)
-        }
-        if !input.addressReady || !input.routeReady {
-            let elapsed = input.addressWaitElapsed ?? 0
-            return elapsed < 15 ? .addressRecovering(15 - elapsed) : .repairFailed
-        }
-        if !input.sharedAddressReady || !input.hotspotAPActive || !input.sharingRunning ||
-            !input.forwardingEnabled || !input.upstreamReachable {
-            let elapsed = input.sharingWaitElapsed ?? 0
-            return elapsed < 15 ? .sharingRecovering(15 - elapsed) : .restartSharing
-        }
-
-        // Unreachable: arriving here requires every fact checked by the two blocks above to be
-        // true, which is exactly `isFullyHealthy` and would have returned already.  Kept as a
-        // benign fallback rather than a trap — this runs as root on the Mini, where crashing
-        // is strictly worse than reporting a repair failure.
-        return .repairFailed
+        let elapsed = healthyElapsed ?? 0
+        return elapsed < readyStabilization ? .readyStabilizing(readyStabilization - elapsed) : .ready
     }
 
-    /// The single definition of "every observed fact is healthy".
-    ///
-    /// `decide` reaches its health check only after guards have already established carrier,
-    /// management address, bridge DHCP and the Apple DHCP server, so re-checking them there is
-    /// redundant but harmless.  Guardian evaluates this standalone to drive `healthySince`,
-    /// with no guards in front of it, so it must check all of them.  Both callers now share one
-    /// expression: the previous arrangement was only equivalent as long as nobody reordered
-    /// `decide`'s guards, and nothing tested that.
-    public static func isFullyHealthy(_ input: MiniGuardianRecoveryInput) -> Bool {
-        isFullyHealthy(
-            carrierActive: input.carrierActive,
-            managementAddressReady: input.managementAddressReady,
-            bridgeUsesDHCP: input.bridgeUsesDHCP,
-            dhcpServerEnabled: input.dhcpServerEnabled,
-            addressReady: input.addressReady,
-            routeReady: input.routeReady,
-            sharedAddressReady: input.sharedAddressReady,
-            hotspotAPActive: input.hotspotAPActive,
-            sharingRunning: input.sharingRunning,
-            forwardingEnabled: input.forwardingEnabled,
-            upstreamReachable: input.upstreamReachable
-        )
+    /// The serving facts that are false, in the words the status file and the MacBook card show.
+    public static func notServingFacts(_ facts: MiniGuardianServingFacts) -> [String] {
+        var missing: [String] = []
+        if !facts.dhcpServerEnabled { missing.append("Apple DHCP is disabled") }
+        if !facts.sharingRunning { missing.append("InternetSharing is not running") }
+        if !facts.forwardingEnabled { missing.append("kernel forwarding is disabled") }
+        if !facts.sharedAddressReady { missing.append("no shared IPv4 on bridge0") }
+        return missing
     }
 
-    public static func isFullyHealthy(
-        carrierActive: Bool,
-        managementAddressReady: Bool,
-        bridgeUsesDHCP: Bool,
-        dhcpServerEnabled: Bool,
-        addressReady: Bool,
-        routeReady: Bool,
-        sharedAddressReady: Bool,
-        hotspotAPActive: Bool,
-        sharingRunning: Bool,
-        forwardingEnabled: Bool,
-        upstreamReachable: Bool
-    ) -> Bool {
-        carrierActive && managementAddressReady && bridgeUsesDHCP && dhcpServerEnabled &&
-            addressReady && routeReady && sharedAddressReady && hotspotAPActive &&
-            sharingRunning && forwardingEnabled && upstreamReachable
+    /// The single definition of "every fact `decide` needs for `ready` is true".  The Guardian
+    /// evaluates this standalone to drive `healthySince`, which is fed back in as `healthyElapsed`;
+    /// `decide` reaches its stabilization branch under exactly this condition.
+    public static func isFullyHealthy(_ facts: MiniGuardianServingFacts) -> Bool {
+        facts.bridgeUsesDHCP && facts.managementAddressReady && facts.carrierActive &&
+            facts.preferencesMatch && facts.sharingConfigured && facts.sharingIntentEnabled &&
+            facts.addressReady && facts.routeReady && notServingFacts(facts).isEmpty &&
+            facts.upstreamReachable
     }
 }
 

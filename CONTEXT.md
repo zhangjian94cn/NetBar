@@ -39,12 +39,12 @@
 
 当实际物理出口已经是 `bridge0` 或 Wi-Fi 时，同接口的新鲜 `activeVerified` 证明可以覆盖旧的 direct-bypass 失败分类；这用于保住公司网络下已经工作的 TUN/代理路径。它不能把尚未激活的候选直接提升为可切换状态，也不能覆盖载波、地址、共享进程或 forwarding 的明确故障。
 
-Wi-Fi 是当前出口时，Mini Helper 的 `ready` 只允许进入 30 秒资格确认和事务性试切；direct-bypass 失败不得向 Guardian 报告下游故障。`report-egress-failure` 只能来自实际已激活的 Mini 路径，避免预检反过来重启健康的 Internet Sharing。
+Wi-Fi 是当前出口时，Mini Helper 的 `ready` 只允许进入 30 秒资格确认和事务性试切。NetBar 对出口失败只做本地回退，不向 Mini 报告，Mini 也不会因此重启 Internet Sharing。
 
 ## 动作所有权
 
-- Mini Helper v5：只接受 `status/prepare/migrate/rollback/finalize-rollback/report-egress-failure` 六个固定命令；迁移管理别名与 `bridge0` DHCP 契约，不写 Apple NAT/DHCP 私有配置。
-- Mini Guardian：维护 Mini 管理别名并观察 `en0`、Apple Internet Sharing、forwarding 与共享数据面；不重写公司 DNS、NAT/DHCP 或 VPN。共享总开关关闭时进入 `manual_pending`。
+- Mini Helper v5：只接受 `status/prepare/migrate/rollback/finalize-rollback` 五个固定命令；迁移管理别名与 `bridge0` DHCP 契约，不写 Apple NAT/DHCP 私有配置。
+- Mini Guardian：维护 Mini 管理别名并观察 `en0`、Apple Internet Sharing、forwarding 与共享数据面；对 Apple 共享进程只观察不干预（不发信号、不 kickstart），不重写公司 DNS、NAT/DHCP 或 VPN。共享总开关关闭立刻 `manual_pending`；开着但未在服务时先报恢复中，90 秒后才 `manual_pending` 并点名原因。
 - Route Safety Helper v4：管理 Wi-Fi 与 `bridge0` 的相对服务顺序、补回本机管理别名，并只在用户明确点击且 Wi-Fi DNS 精确依赖 `192.168.2.1` 时恢复自动 DNS；每次事务必须以 commit、rollback 或 manual recovery 结束。
 - NetBar 策略机：读取事实、决定候选与事务，不直接持有管理员密码。
 - Clash Overlay Controller：只响应用户模式命令；拥有 `enable_tun_mode` 与 runtime TUN 的窄写权限，并负责用户级事务回滚。

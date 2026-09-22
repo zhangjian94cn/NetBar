@@ -69,7 +69,17 @@ enum MacMiniGatewayState: String, Codable, Equatable {
     case managementLinkRecovering
     case dhcpLeaseRecovering
     case hotspotClientUnverified
+    case upstreamUnreachable
+    case guardianStale
     case unknown
+
+    /// The Guardian ships separately from the app.  A verdict this build does not know must not
+    /// throw away the whole helper status (that used to degrade to "无法读取 Mac mini 状态"); it is
+    /// simply an unknown verdict, which never qualifies anything.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = MacMiniGatewayState(rawValue: raw) ?? .unknown
+    }
 
     var displayName: String {
         switch self {
@@ -86,7 +96,7 @@ enum MacMiniGatewayState: String, Codable, Equatable {
         case .configurationDrift:
             return "Mac mini 上游配置已变化"
         case .recoveryBackoff:
-            return "Mac mini 恢复等待中"
+            return "Mac mini Guardian 观测未完成"
         case .routeFlapping:
             return "Mac mini 上游反复抖动"
         case .boundEgressUnavailable:
@@ -105,6 +115,10 @@ enum MacMiniGatewayState: String, Codable, Equatable {
             return "雷雳共享地址正在获取"
         case .hotspotClientUnverified:
             return "热点已配置，客户端出口未验证"
+        case .upstreamUnreachable:
+            return "Mac mini 上游不可达"
+        case .guardianStale:
+            return "Mac mini Guardian 状态过期"
         case .unknown:
             return "Mac mini 上游待检测"
         }
@@ -136,6 +150,7 @@ struct MacMiniGuardianStatus: Codable, Equatable {
     let hotspotAPConfigured: Bool?
     var hotspotAPActive: Bool? = nil
     var hotspotClientObserved: Bool? = nil
+    var guardianVersion: Int? = nil
 }
 
 struct MacMiniHelperStatus: Codable, Equatable {
@@ -161,7 +176,12 @@ struct MacMiniHelperStatus: Codable, Equatable {
     let evidenceConflict: Bool
     let guardian: MacMiniGuardianStatus?
 
-    func guardianIsFresh(at date: Date, maximumAge: TimeInterval = 45) -> Bool {
+    static let guardianFreshnessWindow: TimeInterval = 45
+    /// Guardian builds older than this still relaunch Apple sharing on a failed probe; the app keeps
+    /// offering the update button until the Mini reports at least this version.
+    static let requiredGuardianVersion = 2
+
+    func guardianIsFresh(at date: Date, maximumAge: TimeInterval = guardianFreshnessWindow) -> Bool {
         guard let guardianObservedAt,
               let observed = ISO8601DateFormatter().date(from: guardianObservedAt) else {
             return false
@@ -170,24 +190,43 @@ struct MacMiniHelperStatus: Codable, Equatable {
         return age >= -5 && age <= maximumAge
     }
 
-    var gatewayState: MacMiniGatewayState {
+    var guardianNeedsUpdate: Bool {
+        guard let guardian else { return false }
+        return (guardian.guardianVersion ?? 1) < Self.requiredGuardianVersion
+    }
+
+    /// The Mini's sharing verdict has one owner: the Guardian, the only party with a clock (it is
+    /// what tells a transient Apple rebuild from a stuck one).  The MacBook only vetoes it — when
+    /// the helper's live facts contradict it, or when it is stale — and, without a fresh verdict,
+    /// the raw facts may say what is wrong but never that the Mini is ready.
+    func gatewayState(at now: Date) -> MacMiniGatewayState {
         if !sharingIntentEnabled { return .sharingManualPending }
         if !configured { return .managementLinkRecovering }
         if !upstreamActive { return .carrierDown }
         if !sharingConfigured { return .configurationDrift }
-        if dhcpServerEnabled == false || guardian?.dhcpServerEnabled == false { return .sharingManualPending }
         if evidenceConflict { return .remoteEvidenceConflict }
-        if guardian?.state == .sharingManualPending { return .sharingManualPending }
+        if let guardian, guardianIsFresh(at: now) {
+            if guardianContradictsLiveFacts(guardian) { return .remoteEvidenceConflict }
+            return guardian.state
+        }
+        if dhcpServerEnabled == false { return .sharingManualPending }
         if !sharingProcessRunning { return .sharingRecovering }
         if !forwardingEnabled { return .sharingForwardingUnavailable }
         if !bridgeUsesDHCP || serviceIPv4 == nil || gatewayIPv4 == nil { return .dhcpLeaseRecovering }
-        if let guardian,
-           guardian.sharingRunning != sharingProcessRunning ||
-           guardian.forwardingEnabled != forwardingEnabled {
-            return .remoteEvidenceConflict
-        }
-        if let guardian { return guardian.state }
-        return .unknown
+        return guardian == nil ? .unknown : .guardianStale
+    }
+
+    var gatewayState: MacMiniGatewayState { gatewayState(at: Date()) }
+
+    /// A frozen status file (dead Guardian) keeps its old facts; the helper reads the live ones.
+    /// Any disagreement means the verdict is not about the Mini as it is now.
+    private func guardianContradictsLiveFacts(_ guardian: MacMiniGuardianStatus) -> Bool {
+        if guardian.sharingRunning != sharingProcessRunning { return true }
+        if guardian.forwardingEnabled != forwardingEnabled { return true }
+        if guardian.carrierActive != upstreamActive { return true }
+        if let intent = guardian.sharingIntentEnabled, intent != sharingIntentEnabled { return true }
+        if let claimed = guardian.dhcpServerEnabled, let live = dhcpServerEnabled, claimed != live { return true }
+        return false
     }
 }
 

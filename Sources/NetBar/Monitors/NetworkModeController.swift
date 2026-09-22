@@ -166,14 +166,12 @@ protocol NetworkModeSystemProviding {
     func readSnapshot() throws -> NetworkModeSnapshot
     func setServiceOrder(_ serviceNames: [String]) -> NetworkModeCommandResult
     func readMacMiniHelperStatus() -> MacMiniHelperStatus?
-    func reportMacMiniEgressFailure() -> Bool
 }
 
 extension NetworkModeSystemProviding {
     func readLocalSnapshot() throws -> NetworkModeSnapshot { try readSnapshot() }
     func qualifySnapshot(_ local: NetworkModeSnapshot) throws -> NetworkModeSnapshot { local }
     func readMacMiniHelperStatus() -> MacMiniHelperStatus? { nil }
-    func reportMacMiniEgressFailure() -> Bool { false }
 }
 
 protocol NetworkModeCommandRunning {
@@ -460,8 +458,10 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
         let gatewayState: MacMiniGatewayState
         if !qualify || linkState != .connected {
             gatewayState = .unknown
-        } else if bridgeIPv4 == nil || gateway == nil || gateway == "none" || gateway == "0.0.0.0" {
-            gatewayState = readMacMiniHelperStatus().flatMap { !$0.sharingIntentEnabled ? .sharingManualPending : nil } ?? .dhcpLeaseRecovering
+        } else if bridgeIPv4 == nil || gateway == nil || gateway == "0.0.0.0" {
+            // No lease yet.  The Mini's own verdict says whether that is a Mini problem (surface
+            // it) or just DHCP still negotiating (keep waiting).
+            gatewayState = Self.missingLeaseGatewayState(remote: readMacMiniHelperStatus()?.gatewayState)
         } else {
             // Take the cheap, decisive remote evidence first.  A managed upstream can reject
             // every bound-direct probe, and those burn the whole round budget; reading the
@@ -527,6 +527,18 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
         return commandRunner.runPrivilegedNetworkServiceOrder(serviceNames)
     }
 
+    /// Remote verdicts that explain a missing lease pass through; anything that says the Mini is
+    /// fine (or says nothing) means the MacBook is simply still waiting for DHCP.
+    static func missingLeaseGatewayState(remote: MacMiniGatewayState?) -> MacMiniGatewayState {
+        guard let remote else { return .dhcpLeaseRecovering }
+        switch remote {
+        case .ready, .readyStabilizing, .unknown, .guardianStale, .dhcpLeaseRecovering, .hotspotClientUnverified:
+            return .dhcpLeaseRecovering
+        default:
+            return remote
+        }
+    }
+
     /// One bound-direct verdict per round (FR-003: same-generation evidence is reused).
     /// The key carries the physical default interface, so a route write inside the round
     /// asks a different question and re-probes instead of reusing a pre-switch answer.
@@ -578,25 +590,6 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             return nil
         }
         return status
-        #endif
-    }
-
-    func reportMacMiniEgressFailure() -> Bool {
-        #if APP_STORE
-        return false
-        #else
-        return commandRunner.run(
-            executable: "/usr/bin/ssh",
-            arguments: NetworkLinkProvisioner.sshArguments(
-                profile: profile,
-                host: profile.managementMiniAddress,
-                remoteArguments: [
-                    "/usr/bin/sudo", "-n",
-                    NetworkLinkProvisioner.miniHelperPath,
-                    "report-egress-failure"
-                ]
-            )
-        ).succeeded
         #endif
     }
 
@@ -672,7 +665,9 @@ final class LiveNetworkModeSystemProvider: NetworkModeSystemProviding {
             if trimmed.hasPrefix(prefix) {
                 let value = String(trimmed.dropFirst(prefix.count))
                     .trimmingCharacters(in: .whitespaces)
-                return value.isEmpty || value == "none" ? nil : value
+                // Older networksetup prints "none" for an absent value; current macOS prints a
+                // literal "(null)".  Both are "nothing", not an address.
+                return value.isEmpty || value == "none" || value == "(null)" ? nil : value
             }
         }
         return nil
@@ -920,7 +915,6 @@ final class NetworkModeController: ObservableObject {
     private var fallbackFailureMessage: String?
     private var nextWiFiFallbackAttemptAt: Date?
     private var lastLoggedFallbackFailureReason: String?
-    private var reportedMiniEgressFailure = false
     private var observedPhysicalOutlet: NetworkRouteMode?
     private var pendingMihomoTransition: PhysicalOutletTransition?
     private var lastMihomoRebindAttemptAt: Date?
@@ -1128,6 +1122,16 @@ final class NetworkModeController: ObservableObject {
                     }
                     self.snapshot = merged
                     self.miniHelperStatus = helperStatus
+                    // While the Mini is already the outlet the switch-back gate never runs, so
+                    // this is the only place an old (still relaunching) Guardian gets noticed.
+                    // Keep the update button honest from whatever the helper just reported.
+                    if let helperStatus, helperStatus.guardian != nil {
+                        let guardianCurrent = !helperStatus.guardianNeedsUpdate
+                        if self.miniGuardianAvailable != guardianCurrent {
+                            self.miniGuardianAvailable = guardianCurrent
+                            self.recordMiniGuardianAvailability(guardianCurrent)
+                        }
+                    }
                     if !self.requiresManualRecovery {
                         self.errorMessage = nil
                     }
@@ -1560,7 +1564,6 @@ final class NetworkModeController: ObservableObject {
                 eventLogger.record(event: "mini_service_order_reconcile", detail: "success", candidateSSID: nil)
             }
             policyState.recordHealthy(at: checkDate)
-            reportedMiniEgressFailure = false
             lastLoggedFallbackFailureReason = nil
             let previousPhase = policyState.phase
             policyState.markMiniActive()
@@ -1603,12 +1606,13 @@ final class NetworkModeController: ObservableObject {
         }
         let remoteStatus = provider.readMacMiniHelperStatus()
         guard let remote = remoteStatus,
-              remote.gatewayState == .ready,
+              remote.gatewayState(at: checkDate) == .ready,
               remote.guardianIsFresh(at: checkDate) else {
             let reason: String
             if let remote = remoteStatus {
-                reason = remote.gatewayState != .ready
-                    ? "remote=\(remote.gatewayState)"
+                let remoteState = remote.gatewayState(at: checkDate)
+                reason = remoteState != .ready
+                    ? "remote=\(remoteState)"
                     : "guardian stale at \(remote.guardianObservedAt ?? "-")"
             } else {
                 reason = "remote status unreadable"
@@ -1617,9 +1621,12 @@ final class NetworkModeController: ObservableObject {
             publishPolicy(snapshot: current, message: "等待 Mac mini Guardian 确认共享稳定", remaining: nil)
             return
         }
-        recordMiniGuardianAvailability(true)
+        // An old Guardian still relaunches Apple sharing on a failed probe: keep the update button
+        // visible until the Mini reports the observe-only version.
+        let guardianCurrent = !remote.guardianNeedsUpdate
+        recordMiniGuardianAvailability(guardianCurrent)
         DispatchQueue.main.async { [weak self] in
-            self?.miniGuardianAvailable = true
+            self?.miniGuardianAvailable = guardianCurrent
         }
         guard helperAvailable else {
             eventLogger.record(event: "mini_qualification_blocked", detail: "route safety helper unavailable", candidateSSID: nil)
@@ -1719,7 +1726,8 @@ final class NetworkModeController: ObservableObject {
         switch current.gatewayState {
         case .carrierDown, .addressRecovering, .sharingRecovering, .sharingForwardingUnavailable,
              .configurationDrift, .recoveryBackoff, .sharingManualPending,
-             .managementLinkRecovering, .dhcpLeaseRecovering, .hotspotClientUnverified:
+             .managementLinkRecovering, .dhcpLeaseRecovering, .hotspotClientUnverified,
+             .upstreamUnreachable:
             definitiveFailure = true
         default:
             break
@@ -1768,19 +1776,6 @@ final class NetworkModeController: ObservableObject {
         policyState.beginWiFiFallback(at: checkDate)
         persistPolicyState()
 
-        if current.effectiveMode == .macMiniGateway,
-           current.linkState == .connected,
-           current.gatewayState == .boundEgressUnavailable,
-           !reportedMiniEgressFailure {
-            reportedMiniEgressFailure = true
-            let reported = provider.reportMacMiniEgressFailure()
-            eventLogger.record(
-                event: "mini_downstream_egress_report",
-                detail: reported ? "accepted" : "failed",
-                candidateSSID: nil
-            )
-        }
-
         let reason = current.linkState != .connected
             ? current.linkState.displayName
             : current.gatewayState.displayName
@@ -1793,7 +1788,7 @@ final class NetworkModeController: ObservableObject {
                 persistPolicyState()
                 let message: String
                 if current.gatewayState == .sharingForwardingUnavailable {
-                    message = "Mac mini 上游正常 · 共享转发未就绪；正在恢复 Network Sharing，期间保持 Wi-Fi"
+                    message = "Mac mini 共享转发未就绪；等待 Apple Internet Sharing 自行恢复，期间保持 Wi-Fi"
                 } else if current.gatewayState == .remoteEvidenceConflict {
                     message = "Mac mini 共享状态证据冲突；重新采样期间保持 Wi-Fi"
                 } else if let until = policyState.circuitBreakerUntil, until > checkDate {
@@ -2403,7 +2398,8 @@ final class NetworkModeController: ObservableObject {
                 }
             }
             let refreshedSnapshot = try? self.provider.readSnapshot()
-            let guardianInstalled = finalOutcome.succeeded && self.provider.readMacMiniHelperStatus()?.guardian != nil
+            let remote = self.provider.readMacMiniHelperStatus()
+            let guardianInstalled = finalOutcome.succeeded && remote?.guardian != nil && remote?.guardianNeedsUpdate == false
             if guardianInstalled {
                 self.recordMiniGuardianAvailability(true)
             }

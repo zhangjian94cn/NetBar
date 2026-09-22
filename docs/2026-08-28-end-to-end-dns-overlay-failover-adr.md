@@ -1,7 +1,7 @@
 # ADR: 端到端 DNS、overlay 与物理出口故障转移
 
 - 日期: 2026-08-28
-- 状态: accepted（Route Safety Helper v3/v4 部分已由 v5 supersede）
+- 状态: accepted（Route Safety Helper v3/v4 部分已由 v5 supersede；文中 `report-egress-failure` 通道已于 2026-09-22 移除，见 [Guardian 只观察不干预 ADR](../../../skills/my/infra/local-dev-config/netbar-app-management/docs/2026-09-22-guardian-observe-only-adr.md)）
 - 范围: NetBar Direct Full / DNS 证据、Route Safety Helper、应用链路诊断
 - 相关源码: [NetworkConnectivity.swift](../Sources/NetBar/Monitors/NetworkConnectivity.swift)、[NetworkModeController.swift](../Sources/NetBar/Monitors/NetworkModeController.swift)、[NetworkLinkProvisioner.swift](../Sources/NetBar/Monitors/NetworkLinkProvisioner.swift)、[Route Safety Helper](../Sources/NetBar/Resources/RouteSafetyHelper/netbar-route-safety-helper)、[NetworkModeCard.swift](../Sources/NetBar/Views/Components/NetworkModeCard.swift)
 - 部分取代: [underlay/overlay 控制边界 ADR](2026-08-28-underlay-overlay-control-boundary-adr.md) 中 Route Safety Helper v2 协议，以及 [影子发布说明](2026-08-28-network-policy-shadow-rollout.md) 中“DNS 只在激活后由 HTTPS 间接验证”的表述

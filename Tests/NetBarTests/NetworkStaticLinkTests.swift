@@ -77,6 +77,53 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertEqual(snapshot.gatewayState, .ready)
     }
 
+    // 2026-09-21：本机没有租约，helper JSON 已经写着「需人工」，卡片却显示「地址正在获取 (null)」。
+    // 远端结论必须胜出；`Router: (null)` 不是地址。
+    func testMissingLeaseSurfacesRemoteVerdictAndNeverPrintsNull() throws {
+        func snapshot(remoteJSON: String?) throws -> NetworkModeSnapshot {
+            let runner = SnapshotCommandRunner(
+                bridgeOutput: Self.bridge(address: "169.254.222.179", active: true),
+                router: "(null)",
+                remoteHelperJSON: remoteJSON,
+                serviceAddress: "169.254.222.179"
+            )
+            return try LiveNetworkModeSystemProvider(commandRunner: runner).readSnapshot()
+        }
+
+        let noLease = try snapshot(remoteJSON: nil)
+        XCTAssertEqual(noLease.linkState, .connected)
+        XCTAssertNil(noLease.bridgeIPv4)
+        XCTAssertNil(noLease.miniGateway, "(null) 不得进入地址字段")
+        XCTAssertEqual(noLease.gatewayState, .dhcpLeaseRecovering, "读不到远端结论时只能如实说在等租约")
+
+#if !APP_STORE
+        // App Store Lite 不读远端 helper；远端结论只在 Direct Full 中存在。
+        let stuck = try snapshot(remoteJSON: Self.helperJSON(
+            guardianState: "sharingManualPending", dhcpServerEnabled: false, sharingProcessRunning: false
+        ))
+        XCTAssertEqual(stuck.gatewayState, .sharingManualPending)
+
+        let miniFine = try snapshot(remoteJSON: Self.helperJSON(guardianState: "ready"))
+        XCTAssertEqual(miniFine.gatewayState, .dhcpLeaseRecovering, "Mini 正常、本机没租约，才是真的「正在获取」")
+
+        let miniCarrierDown = try snapshot(remoteJSON: Self.helperJSON(guardianState: "carrierDown", upstreamActive: false))
+        XCTAssertEqual(miniCarrierDown.gatewayState, .carrierDown)
+#endif
+    }
+
+    // Guardian 与 App 分开发布：不认识的结论只能是「未知」，不能让整份 helper 状态解码失败。
+    func testUnknownGuardianVerdictDecodesAsUnknownInsteadOfDroppingTheWholeStatus() throws {
+        let json = Self.helperJSON(guardianState: "somethingFromTheFuture")
+        let status = try JSONDecoder().decode(MacMiniHelperStatus.self, from: Data(json.utf8))
+
+        XCTAssertEqual(status.guardian?.state, .unknown)
+        XCTAssertEqual(status.gatewayState(at: Date()), .unknown)
+        XCTAssertEqual(
+            LiveNetworkModeSystemProvider.missingLeaseGatewayState(remote: .unknown),
+            .dhcpLeaseRecovering
+        )
+    }
+
     func testLiveSnapshotRejectsMissingManagementAlias() throws {
         for address in ["169.254.4.8", "192.168.3.2", nil] {
             let runner = SnapshotCommandRunner(
@@ -178,12 +225,25 @@ final class NetworkStaticLinkTests: XCTestCase {
             bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
             router: "192.168.2.1",
             boundEgressReachable: false,
-            remoteHelperJSON: Self.readyHelperJSON
+            remoteHelperJSON: Self.helperJSON(guardianState: "ready")
         )
 
         let snapshot = try LiveNetworkModeSystemProvider(commandRunner: runner).readSnapshot()
 
         XCTAssertEqual(snapshot.gatewayState, .ready)
+
+        // Spec 003 US3：同样的 ready，但 Guardian 的时间戳已经过期——冻结的 status.json 不能把
+        // 一个可能已经死掉的 Guardian 的旧结论当成资格。
+        let stale = SnapshotCommandRunner(
+            bridgeOutput: Self.bridge(address: "192.168.2.2", active: true),
+            router: "192.168.2.1",
+            boundEgressReachable: false,
+            remoteHelperJSON: Self.readyHelperJSON
+        )
+        XCTAssertEqual(
+            try LiveNetworkModeSystemProvider(commandRunner: stale).readSnapshot().gatewayState,
+            .guardianStale
+        )
     }
 #endif
 
@@ -229,8 +289,15 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
             "{\"protocolVersion\":4}"
         )))
-        XCTAssertTrue(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
+        // 协议 5 但 Guardian 还是会重启共享的旧版本（不报版本或版本 < 2）：必须触发重装。
+        XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
             "{\"protocolVersion\":5}"
+        )))
+        XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
+            "{\"protocolVersion\":5,\"guardian\":{\"state\":\"ready\",\"guardianVersion\":1}}"
+        )))
+        XCTAssertTrue(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
+            "{\"protocolVersion\":5,\"guardian\":{\"state\":\"ready\",\"guardianVersion\":2}}"
         )))
     }
 
@@ -381,7 +448,10 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper migrate"))
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper rollback"))
         XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper finalize-rollback"))
-        XCTAssertTrue(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper report-egress-failure"))
+        // 下游上报通道随 Guardian 的重启路径一起移除：sudoers 只剩五个只读/迁移动词。
+        XCTAssertFalse(sudoersSource.contains("report-egress-failure"))
+        XCTAssertEqual(sudoersSource.split(separator: "\n").filter { $0.contains("NOPASSWD") }.count, 5)
+        XCTAssertNotEqual(run("/bin/zsh", [helper.path, "report-egress-failure"]).exitCode, 0)
         XCTAssertFalse(sudoersSource.contains("com.zjah.NetBarMiniLinkHelper *"))
         XCTAssertTrue(installerSource.contains("visudo -cf"))
         XCTAssertTrue(installerSource.contains(
@@ -434,13 +504,13 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertTrue(source.contains("SCDynamicStoreSetNotificationKeys"))
         XCTAssertTrue(source.contains("State:/Network/Interface/"))
         XCTAssertTrue(source.contains("system/com.apple.NetworkSharing"))
-        XCTAssertTrue(source.contains("/bin/kill"))
-        XCTAssertTrue(source.contains("NativeSharingProcessIdentity.pid"))
-        XCTAssertTrue(source.contains("[\"kickstart\", \"system/com.apple.NetworkSharing\"]"))
-        XCTAssertFalse(source.contains("\"kickstart\", \"-k\""))
+        // Observe-only（Spec 003）：Guardian 读取原生服务的状态，但绝不碰它的生命周期。
+        XCTAssertFalse(source.contains("/bin/kill"))
+        XCTAssertFalse(source.contains("kickstart"))
+        XCTAssertFalse(source.contains("NativeSharingProcessIdentity"))
+        XCTAssertFalse(source.contains("downstream-egress-failure"))
         XCTAssertFalse(source.contains("\"-w\", \"net.inet.ip.forwarding"))
-        XCTAssertTrue(source.contains("GuardianEvaluationCadence.duringRecoveryBackoff"))
-        XCTAssertTrue(source.contains("transition(to: .recoveryBackoff, error: status.lastError)"))
+        XCTAssertTrue(source.contains("\"bridge0\", \"alias\""), "唯一保留的写动作是管理别名")
         XCTAssertFalse(source.contains("-setmanual"))
         XCTAssertFalse(source.contains("-setdnsservers"))
         XCTAssertFalse(source.contains("-setnetworkserviceenabled"))
@@ -507,6 +577,29 @@ final class NetworkStaticLinkTests: XCTestCase {
         if let address { lines.append("\tinet \(address) netmask 0xffffff00") }
         lines.append("\tstatus: \(active ? "active" : "inactive")")
         return lines.joined(separator: "\n")
+    }
+
+    /// A protocol-5 helper payload whose Guardian verdict is fresh, so the MacBook adopts it.
+    static func helperJSON(
+        guardianState: String,
+        dhcpServerEnabled: Bool = true,
+        sharingProcessRunning: Bool = true,
+        upstreamActive: Bool = true
+    ) -> String {
+        let now = ISO8601DateFormatter().string(from: Date())
+        return """
+        {"protocolVersion":5,"configured":true,"serviceIPv4":"192.168.3.1","gatewayIPv4":"192.168.3.1",
+         "managementIPv4":"10.254.254.1","managementPeerIPv4":"10.254.254.2","bridgeUsesDHCP":true,
+         "sharingIntentEnabled":true,"dhcpServerEnabled":\(dhcpServerEnabled),"hotspotAPConfigured":true,
+         "upstreamDevice":"en0","upstreamActive":\(upstreamActive),"sharingConfigured":true,
+         "sharingProcessRunning":\(sharingProcessRunning),"forwardingEnabled":true,
+         "guardianObservedAt":"\(now)","guardianGeneration":7,"evidenceConflict":false,
+         "guardian":{"state":"\(guardianState)","observedAt":"\(now)","generation":7,"carrierActive":\(upstreamActive),
+          "addressReady":true,"routeReady":true,"sharingRunning":\(sharingProcessRunning),"forwardingEnabled":true,
+          "sharingConfigured":true,"upstreamReachable":true,"managementAddressReady":true,"bridgeUsesDHCP":true,
+          "sharingIntentEnabled":true,"dhcpServerEnabled":\(dhcpServerEnabled),"hotspotAPConfigured":true,
+          "guardianVersion":2}}
+        """
     }
 
     private static let readyHelperJSON = """
@@ -654,7 +747,7 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
                 remoteActions.append(action)
                 if action == "status" {
                     return remoteHelperInstalled
-                        ? .success("{\"protocolVersion\":5}")
+                        ? .success("{\"protocolVersion\":5,\"guardian\":{\"state\":\"ready\",\"guardianVersion\":2}}")
                         : .failure("missing")
                 }
                 if action == "rollback" { return remoteRollbackSucceeds ? .success("{}") : .failure("rollback failed") }

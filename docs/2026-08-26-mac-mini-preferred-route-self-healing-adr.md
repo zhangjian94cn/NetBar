@@ -1,7 +1,7 @@
 # ADR: Mac mini 优先路由与双端自动自愈
 
 - 日期: 2026-08-26
-- 状态: partially superseded（共享 ready 与控制器所有权由 2026-08-27 ADR 取代）
+- 状态: partially superseded（共享 ready 与控制器所有权由 2026-08-27 ADR 取代；Guardian 对原生共享的任何重启动作已于 2026-09-22 移除，见 [Guardian 只观察不干预 ADR](../../../skills/my/infra/local-dev-config/netbar-app-management/docs/2026-09-22-guardian-observe-only-adr.md)）
 - 范围: NetBar Direct Full / MacBook 路由策略与 Mac mini 上游恢复
 - 相关源码: [NetworkRoutePolicy.swift](../Sources/NetBar/Monitors/NetworkRoutePolicy.swift)、[NetworkModeController.swift](../Sources/NetBar/Monitors/NetworkModeController.swift)、[Mini Guardian](../Sources/NetBarMiniNetworkGuardian/main.swift)、[Guardian 恢复规划器](../Sources/NetBarMiniNetworkGuardianSupport/RecoveryPlanner.swift)
 - 被扩展决策: [2026-08-24-network-mode-switch-adr.md](2026-08-24-network-mode-switch-adr.md)、[2026-08-25-thunderbolt-static-link-adr.md](2026-08-25-thunderbolt-static-link-adr.md)

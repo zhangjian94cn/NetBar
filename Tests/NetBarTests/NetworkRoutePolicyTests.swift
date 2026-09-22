@@ -451,7 +451,8 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(controller.connectivityProofLevel, .activeVerified)
     }
 
-    func testDownstreamFailureStartsEpisodeAndReportsGuardianOnlyOnceWhenWiFiFallbackFails() {
+    // Spec 003 FR-004：出口失败只做本地回退，不再向 Mini 上报——上报的唯一消费者是已删除的重启路径。
+    func testDownstreamFailureStartsOneEpisodeWithoutTouchingTheMini() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "bridge0", gateway: .boundEgressUnavailable)
         ])
@@ -473,16 +474,15 @@ final class NetworkRoutePolicyTests: XCTestCase {
         )
 
         controller.runPolicyCheckNow()
-        XCTAssertTrue(waitUntil { provider.egressReportCount == 1 })
         XCTAssertTrue(waitUntil { controller.failoverPhase == .temporaryWiFi })
         controller.runPolicyCheckNow()
         XCTAssertTrue(waitUntil { provider.readCount >= 2 })
 
-        XCTAssertEqual(provider.egressReportCount, 1)
         XCTAssertEqual(logger.events.filter { $0 == "wifi_fallback_started" }.count, 1)
+        XCTAssertFalse(logger.events.contains("mini_downstream_egress_report"))
     }
 
-    func testInactiveMiniPreflightFailureDoesNotRestartRemoteSharing() {
+    func testInactiveMiniPreflightFailureDoesNotConsultTheRemoteGuardian() {
         let provider = SequencedPolicyProvider(snapshots: [
             policySnapshot(interface: "en0", gateway: .boundEgressUnavailable)
         ])
@@ -505,7 +505,7 @@ final class NetworkRoutePolicyTests: XCTestCase {
         controller.runPolicyCheckNow()
 
         XCTAssertTrue(waitUntil { provider.readCount == 1 })
-        XCTAssertEqual(provider.egressReportCount, 0)
+        XCTAssertEqual(provider.helperReadCount, 0)
     }
 
     func testHealthyMiniRouteDoesNotReadRemoteHelper() {
@@ -1252,6 +1252,165 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(status.gatewayState, .sharingForwardingUnavailable)
     }
 
+    // MARK: Spec 003 US3 — Guardian 拥有共享阶段判定，MacBook 只否决
+
+    func testFreshGuardianVerdictIsAdoptedWhenLiveFactsAgree() {
+        let now = Date()
+        // 2026-09-14：Apple 重建的 20 秒里 DHCP 短暂关闭，Guardian 说「恢复中」，MacBook 不能自己抢答需人工。
+        let recovering = helperStatus(
+            guardianState: .sharingRecovering, sharingProcessRunning: false, dhcpServerEnabled: false, observedAt: now
+        )
+        XCTAssertEqual(recovering.gatewayState(at: now), .sharingRecovering)
+
+        let stuck = helperStatus(
+            guardianState: .sharingManualPending, sharingProcessRunning: false, dhcpServerEnabled: false, observedAt: now
+        )
+        XCTAssertEqual(stuck.gatewayState(at: now), .sharingManualPending)
+
+        let upstream = helperStatus(guardianState: .upstreamUnreachable, observedAt: now)
+        XCTAssertEqual(upstream.gatewayState(at: now), .upstreamUnreachable)
+
+        XCTAssertEqual(helperStatus(guardianState: .ready, observedAt: now).gatewayState(at: now), .ready)
+    }
+
+    func testGuardianVerdictThatContradictsLiveFactsIsAConflictNeverReady() {
+        let now = Date()
+        // Guardian 进程死了、status.json 冻结在 ready；helper 实时看到进程不在。
+        let frozenProcess = helperStatus(
+            guardianState: .ready, sharingProcessRunning: false, guardianSharingRunning: true, observedAt: now
+        )
+        XCTAssertEqual(frozenProcess.gatewayState(at: now), .remoteEvidenceConflict)
+
+        let frozenDHCP = helperStatus(
+            guardianState: .ready, dhcpServerEnabled: false, guardianDHCP: true, observedAt: now
+        )
+        XCTAssertEqual(frozenDHCP.gatewayState(at: now), .remoteEvidenceConflict)
+
+        let frozenCarrier = helperStatus(
+            guardianState: .carrierDown, upstreamActive: true, guardianCarrier: false, observedAt: now
+        )
+        XCTAssertEqual(frozenCarrier.gatewayState(at: now), .remoteEvidenceConflict)
+    }
+
+    func testStaleOrMissingGuardianNeverYieldsReadyAndRawFactsOnlyExplainFailures() {
+        let now = Date()
+        let stale = helperStatus(guardianState: .ready, observedAt: now.addingTimeInterval(-120))
+        XCTAssertEqual(stale.gatewayState(at: now), .guardianStale)
+
+        let staleDHCPOff = helperStatus(
+            guardianState: .ready, dhcpServerEnabled: false, guardianDHCP: false, observedAt: now.addingTimeInterval(-120)
+        )
+        XCTAssertEqual(staleDHCPOff.gatewayState(at: now), .sharingManualPending)
+
+        let staleNoProcess = helperStatus(
+            guardianState: .ready, sharingProcessRunning: false, guardianSharingRunning: false,
+            observedAt: now.addingTimeInterval(-120)
+        )
+        XCTAssertEqual(staleNoProcess.gatewayState(at: now), .sharingRecovering)
+
+        XCTAssertEqual(helperStatus(guardianState: nil, observedAt: now).gatewayState(at: now), .unknown)
+    }
+
+    func testGuardianVersionGatesTheUpdateButton() {
+        let now = Date()
+        XCTAssertTrue(helperStatus(guardianState: .ready, guardianVersion: nil, observedAt: now).guardianNeedsUpdate,
+                      "不报版本的就是会重启共享的老 Guardian")
+        XCTAssertTrue(helperStatus(guardianState: .ready, guardianVersion: 1, observedAt: now).guardianNeedsUpdate)
+        XCTAssertFalse(helperStatus(guardianState: .ready, guardianVersion: 2, observedAt: now).guardianNeedsUpdate)
+        XCTAssertFalse(helperStatus(guardianState: nil, observedAt: now).guardianNeedsUpdate)
+    }
+
+    // 已经在 Mini 出口时切回门槛不会跑，更新按钮只能靠 refresh 读到的 helper 状态来点亮/熄灭。
+    func testRefreshFlagsAnOldGuardianForUpdateEvenWhileMiniIsTheOutlet() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .ready)
+        ])
+        provider.helperStatus = helperStatus(guardianState: .ready, guardianVersion: 2, observedAt: Date())
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: RecordingRouteSafetyController(),
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber { interface in
+                Self.probe(interface: interface, ready: true)
+            },
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.refresh()
+        XCTAssertTrue(waitUntil { controller.miniGuardianAvailable })
+
+        provider.helperStatus = helperStatus(guardianState: .ready, guardianVersion: nil, observedAt: Date())
+        controller.refresh()
+        XCTAssertTrue(
+            waitUntil { !controller.miniGuardianAvailable },
+            "不报版本的 Guardian 还会重启共享，卡片必须重新显示「安装/更新 Mini 自愈组件」"
+        )
+    }
+
+    private func helperStatus(
+        guardianState: MacMiniGatewayState?,
+        sharingProcessRunning: Bool = true,
+        forwardingEnabled: Bool = true,
+        dhcpServerEnabled: Bool? = true,
+        upstreamActive: Bool = true,
+        guardianSharingRunning: Bool? = nil,
+        guardianDHCP: Bool? = nil,
+        guardianCarrier: Bool? = nil,
+        guardianVersion: Int? = 2,
+        observedAt: Date
+    ) -> MacMiniHelperStatus {
+        let timestamp = ISO8601DateFormatter().string(from: observedAt)
+        let guardian = guardianState.map { state in
+            MacMiniGuardianStatus(
+                state: state,
+                observedAt: timestamp,
+                generation: 1,
+                lastTransition: nil,
+                lastCarrierChange: nil,
+                lastAction: nil,
+                lastError: nil,
+                carrierActive: guardianCarrier ?? upstreamActive,
+                addressReady: true,
+                routeReady: true,
+                sharingRunning: guardianSharingRunning ?? sharingProcessRunning,
+                forwardingEnabled: forwardingEnabled,
+                sharingConfigured: true,
+                upstreamReachable: true,
+                nextRetryAt: nil,
+                managementAddressReady: true,
+                bridgeUsesDHCP: true,
+                sharingIntentEnabled: true,
+                dhcpServerEnabled: guardianDHCP ?? dhcpServerEnabled,
+                hotspotAPConfigured: true,
+                guardianVersion: guardianVersion
+            )
+        }
+        return MacMiniHelperStatus(
+            protocolVersion: 5,
+            configured: true,
+            serviceIPv4: "192.168.3.1",
+            gatewayIPv4: "192.168.3.1",
+            managementIPv4: "10.254.254.1",
+            managementPeerIPv4: "10.254.254.2",
+            bridgeUsesDHCP: true,
+            sharingIntentEnabled: true,
+            dhcpServerEnabled: dhcpServerEnabled,
+            hotspotAPConfigured: true,
+            upstreamDevice: "en0",
+            upstreamActive: upstreamActive,
+            sharingConfigured: true,
+            sharingProcessRunning: sharingProcessRunning,
+            forwardingEnabled: forwardingEnabled,
+            guardianObservedAt: timestamp,
+            guardianGeneration: 1,
+            evidenceConflict: false,
+            guardian: guardian
+        )
+    }
+
     func testRouteSafetyHelperHasExactNoArgumentContract() throws {
         let bundle = Bundle.module
         let helper = try XCTUnwrap(bundle.url(
@@ -1771,7 +1930,6 @@ private final class SplitQualificationProvider: NetworkModeSystemProviding {
         .init(exitCode: 0, standardOutput: "", standardError: "")
     }
     func readMacMiniHelperStatus() -> MacMiniHelperStatus? { helperStatus }
-    func reportMacMiniEgressFailure() -> Bool { true }
 }
 
 private final class SequencedPolicyProvider: NetworkModeSystemProviding {
@@ -1780,7 +1938,6 @@ private final class SequencedPolicyProvider: NetworkModeSystemProviding {
     var helperStatus: MacMiniHelperStatus?
     private(set) var readCount = 0
     private(set) var helperReadCount = 0
-    private(set) var egressReportCount = 0
 
     init(snapshots: [NetworkModeSnapshot]) {
         self.snapshots = snapshots
@@ -1816,14 +1973,6 @@ private final class SequencedPolicyProvider: NetworkModeSystemProviding {
         helperReadCount += 1
         lock.unlock()
         return helperStatus
-    }
-
-
-    func reportMacMiniEgressFailure() -> Bool {
-        lock.lock()
-        egressReportCount += 1
-        lock.unlock()
-        return true
     }
 }
 

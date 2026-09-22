@@ -25,35 +25,27 @@ set -euo pipefail
 BACKUP_PLIST="$STATE_DIR/mini-network-backup-v5.plist"
 BACKUP_DNS="$STATE_DIR/mini-dns-backup-v5.txt"
 : ${GUARDIAN_STATUS:="/Library/Application Support/NetBar/MiniGuardian/status.json"}
-: ${EGRESS_FAILURE_MARKER:="/Library/Application Support/NetBar/MiniGuardian/downstream-egress-failure.txt"}
 
 fail() { print -u2 -- "$1"; exit 1 }
 
-[[ "$#" -eq 1 ]] || fail "usage: netbar-mini-link-helper status|prepare|migrate|rollback|finalize-rollback|report-egress-failure"
+# report-egress-failure 已移除：它唯一的消费者是 Guardian 里「重启 Apple 共享」的路径，
+# 而那条路径从未恢复过共享，只会把可自愈的故障变成必须人工处理。
+[[ "$#" -eq 1 ]] || fail "usage: netbar-mini-link-helper status|prepare|migrate|rollback|finalize-rollback"
 case "$1" in
-    status|prepare|migrate|rollback|finalize-rollback|report-egress-failure) ACTION="$1" ;;
+    status|prepare|migrate|rollback|finalize-rollback) ACTION="$1" ;;
     *) fail "unsupported command" ;;
 esac
 
 # 与 RouteSafetyHelper 对称：prepare / migrate / rollback / finalize-rollback 都会写
 # bridge0 的地址面与备份文件，交错执行会互相覆盖。此前这里完全没有串行化保护。
-# status 与 report-egress-failure 是只读/追加，保持无锁——否则一次卡住的写会让状态读不出来。
-if [[ "$ACTION" != "status" && "$ACTION" != "report-egress-failure" ]]; then
+# status 是只读，保持无锁——否则一次卡住的写会让状态读不出来。
+if [[ "$ACTION" != "status" ]]; then
     "$MKDIR" -p "$STATE_DIR"
     "$CHMOD" 700 "$STATE_DIR"
     [[ -f "$STATE_DIR/execution.lock" ]] || : > "$STATE_DIR/execution.lock"
     zmodload zsh/system || fail "cannot load helper lock support"
     zsystem flock -t 0 -f NETBAR_MINI_LOCK_FD "$STATE_DIR/execution.lock" \
         || fail "helper busy; reconcile after current command exits"
-fi
-
-if [[ "$ACTION" == report-egress-failure ]]; then
-    "$MKDIR" -p "${EGRESS_FAILURE_MARKER:h}"
-    "$CHMOD" 700 "${EGRESS_FAILURE_MARKER:h}"
-    "$DATE" -u '+%Y-%m-%dT%H:%M:%SZ' > "$EGRESS_FAILURE_MARKER"
-    "$CHMOD" 600 "$EGRESS_FAILURE_MARKER"
-    print -r -- '{"protocolVersion":5,"reported":true}'
-    exit 0
 fi
 
 [[ -r "$PROFILE" ]] || fail "profile missing"
@@ -72,10 +64,14 @@ find_bridge_service() {
 }
 
 network_value() {
-    local key="$1" info="$2"
-    print -r -- "$info" | "$AWK" -v prefix="$key:" '
+    local key="$1" info="$2" value
+    value="$(print -r -- "$info" | "$AWK" -v prefix="$key:" '
         index($0, prefix) == 1 { sub(prefix, ""); sub(/^[[:space:]]+/, ""); print; exit }
-    '
+    ')"
+    # 当前 macOS 的 networksetup 把没有的值打印成字面 "(null)"；它和 none 一样是「没有」，
+    # 不能当地址存进备份、传给 -setmanual 或原样发给 MacBook。
+    [[ "$value" == "(null)" ]] && value=""
+    print -rn -- "$value"
 }
 
 json_escape() {
@@ -87,7 +83,7 @@ json_escape() {
 
 json_optional_string() {
     local value="$1"
-    if [[ -n "$value" && "$value" != none && "$value" != 0.0.0.0 ]]; then
+    if [[ -n "$value" && "$value" != none && "$value" != "(null)" && "$value" != 0.0.0.0 ]]; then
         print -rn -- "\"$(json_escape "$value")\""
     else
         print -rn -- null
@@ -108,8 +104,10 @@ sharing_devices_include() {
 BRIDGE_SERVICE="$(find_bridge_service)"
 [[ -n "$BRIDGE_SERVICE" ]] || fail "Thunderbolt Bridge service not found"
 
-bridge_has_address() { "$IFCONFIG" bridge0 2>/dev/null | "$GREP" -q "inet $1 " }
-bridge_uses_dhcp() { "$NETWORKSETUP" -getinfo "$BRIDGE_SERVICE" | "$GREP" -q '^DHCP Configuration' }
+# 不用 `cmd | grep -q`：grep 一匹配就退出，还在写的 cmd 收到 SIGPIPE，pipefail 把整条管道判成失败，
+# 一个存在的地址就被稳定误报成不存在（与 2026-08-27 修掉的 `ps | grep -q` 是同一类 bug）。
+bridge_has_address() { [[ "$("$IFCONFIG" bridge0 2>/dev/null)" == *"inet $1 "* ]] }
+bridge_uses_dhcp() { [[ "$("$NETWORKSETUP" -getinfo "$BRIDGE_SERVICE")" == "DHCP Configuration"* ]] }
 
 check_management_conflict() {
     local conflicts route_conflicts
@@ -149,7 +147,7 @@ save_backup_once() {
     local info method ip subnet router
     info="$($NETWORKSETUP -getinfo "$BRIDGE_SERVICE")"
     method=DHCP
-    print -r -- "$info" | "$GREP" -q '^Manual Configuration' && method=Manual
+    [[ "$info" == "Manual Configuration"* ]] && method=Manual
     ip="$(network_value "IP address" "$info")"
     subnet="$(network_value "Subnet mask" "$info")"
     router="$(network_value "Router" "$info")"
@@ -207,11 +205,11 @@ dhcp_server_enabled() {
 }
 
 hotspot_ap_active() {
-    "$SYSTEM_PROFILER" SPAirPortDataType 2>/dev/null | "$GREP" -q 'Network Type: Wi-Fi Internet Sharing'
+    [[ "$("$SYSTEM_PROFILER" SPAirPortDataType 2>/dev/null)" == *"Network Type: Wi-Fi Internet Sharing"* ]]
 }
 
 hotspot_client_observed() {
-    "$ARP" -an -i ap1 2>/dev/null | "$GREP" -q ' at '
+    [[ "$("$ARP" -an -i ap1 2>/dev/null)" == *" at "* ]]
 }
 
 emit_status() {
@@ -299,6 +297,8 @@ case "$ACTION" in
             ip="$($PLUTIL -extract ip raw -o - "$BACKUP_PLIST")"
             subnet="$($PLUTIL -extract subnet raw -o - "$BACKUP_PLIST")"
             router="$($PLUTIL -extract router raw -o - "$BACKUP_PLIST")"
+            # 修复前写下的备份可能把 "(null)" 当路由器存了进去。
+            [[ "$router" == "(null)" ]] && router=""
             [[ -n "$ip" && -n "$subnet" ]] || fail "manual backup incomplete"
             "$NETWORKSETUP" -setmanual "$BRIDGE_SERVICE" "$ip" "$subnet" "${router:-0.0.0.0}"
         else

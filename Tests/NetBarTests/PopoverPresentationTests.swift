@@ -200,6 +200,81 @@ final class PopoverPresentationTests: XCTestCase {
         XCTAssertNotEqual(unreadable.sharingValue, off.sharingValue)
     }
 
+    // Spec 003 US2：共享开关开着但卡住了，卡片仍要说清去哪里、为什么；恢复中时显示 Guardian 的原因。
+    func testStuckSharingPointsAtSystemSettingsAndRecoveringShowsTheGuardianReason() {
+        func status(state: MacMiniGatewayState, reason: String) -> MacMiniHelperStatus {
+            let now = ISO8601DateFormatter().string(from: Date())
+            return MacMiniHelperStatus(
+                protocolVersion: 5,
+                configured: true,
+                serviceIPv4: "192.168.3.1",
+                gatewayIPv4: nil,
+                managementIPv4: "10.254.254.1",
+                managementPeerIPv4: "10.254.254.2",
+                bridgeUsesDHCP: true,
+                sharingIntentEnabled: true,
+                dhcpServerEnabled: false,
+                hotspotAPConfigured: true,
+                upstreamDevice: "en0",
+                upstreamActive: true,
+                sharingConfigured: true,
+                sharingProcessRunning: false,
+                forwardingEnabled: true,
+                guardianObservedAt: now,
+                guardianGeneration: 1,
+                evidenceConflict: false,
+                guardian: MacMiniGuardianStatus(
+                    state: state,
+                    observedAt: now,
+                    generation: 1,
+                    lastTransition: nil,
+                    lastCarrierChange: nil,
+                    lastAction: nil,
+                    lastError: reason,
+                    carrierActive: true,
+                    addressReady: true,
+                    routeReady: true,
+                    sharingRunning: false,
+                    forwardingEnabled: true,
+                    sharingConfigured: true,
+                    upstreamReachable: true,
+                    nextRetryAt: nil,
+                    managementAddressReady: true,
+                    bridgeUsesDHCP: true,
+                    sharingIntentEnabled: true,
+                    dhcpServerEnabled: false,
+                    hotspotAPConfigured: true
+                )
+            )
+        }
+
+        let stuck = NetworkOutletPresentation(
+            snapshot: outletSnapshot(linkState: .connected, gatewayState: .sharingManualPending),
+            helperStatus: status(state: .sharingManualPending, reason: "Apple DHCP is disabled; toggle Internet Sharing off and on in System Settings"),
+            proofLevel: .unavailable,
+            failoverPhase: .temporaryWiFi,
+            routePreference: .miniPreferred,
+            requiresManualRecovery: false,
+            dnsFacts: nil,
+            applicationFacts: nil
+        )
+        XCTAssertEqual(stuck.sharingValue, "请在 Mac mini 系统设置中重新开启互联网共享")
+        XCTAssertEqual(stuck.sharingDetail, "Mac mini：系统设置 → 通用 → 共享")
+
+        let recovering = NetworkOutletPresentation(
+            snapshot: outletSnapshot(linkState: .connected, gatewayState: .sharingRecovering),
+            helperStatus: status(state: .sharingRecovering, reason: "Apple DHCP is disabled"),
+            proofLevel: .unavailable,
+            failoverPhase: .temporaryWiFi,
+            routePreference: .miniPreferred,
+            requiresManualRecovery: false,
+            dnsFacts: nil,
+            applicationFacts: nil
+        )
+        XCTAssertEqual(recovering.sharingValue, "Mac mini 正在恢复共享")
+        XCTAssertEqual(recovering.sharingDetail, "Apple DHCP is disabled")
+    }
+
     // US3: 雷雳插着但管理通道断了，不能笼统报"不可用"。
     func testConnectedCableIsReportedSeparatelyFromManagementReachability() {
         let presentation = NetworkOutletPresentation(
