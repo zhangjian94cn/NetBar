@@ -289,8 +289,15 @@ final class NetworkStaticLinkTests: XCTestCase {
         XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
             "{\"protocolVersion\":4}"
         )))
-        XCTAssertTrue(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
+        // 协议 5 但 Guardian 还是会重启共享的旧版本（不报版本或版本 < 2）：必须触发重装。
+        XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
             "{\"protocolVersion\":5}"
+        )))
+        XCTAssertFalse(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
+            "{\"protocolVersion\":5,\"guardian\":{\"state\":\"ready\",\"guardianVersion\":1}}"
+        )))
+        XCTAssertTrue(NetworkLinkProvisioner.isCompatibleHelperStatus(.success(
+            "{\"protocolVersion\":5,\"guardian\":{\"state\":\"ready\",\"guardianVersion\":2}}"
         )))
     }
 
@@ -740,7 +747,7 @@ private final class ProvisioningCommandRunner: NetworkModeCommandRunning {
                 remoteActions.append(action)
                 if action == "status" {
                     return remoteHelperInstalled
-                        ? .success("{\"protocolVersion\":5}")
+                        ? .success("{\"protocolVersion\":5,\"guardian\":{\"state\":\"ready\",\"guardianVersion\":2}}")
                         : .failure("missing")
                 }
                 if action == "rollback" { return remoteRollbackSucceeds ? .success("{}") : .failure("rollback failed") }

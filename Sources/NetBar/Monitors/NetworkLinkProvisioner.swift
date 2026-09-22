@@ -213,7 +213,11 @@ final class NetworkLinkProvisioner: NetworkLinkProvisioning {
               let version = object["protocolVersion"] as? Int else {
             return false
         }
-        return version == miniHelperProtocolVersion
+        // A protocol-5 helper sitting next to a Guardian that still relaunches Apple sharing is not
+        // "compatible": replacing that Guardian is the whole point of the update button.
+        let guardianVersion = (object["guardian"] as? [String: Any])?["guardianVersion"] as? Int ?? 1
+        return version == miniHelperProtocolVersion &&
+            guardianVersion >= MacMiniHelperStatus.requiredGuardianVersion
     }
 
     static func hasManagementSubnetConflict(
