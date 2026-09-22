@@ -1320,6 +1320,36 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertFalse(helperStatus(guardianState: nil, observedAt: now).guardianNeedsUpdate)
     }
 
+    // 已经在 Mini 出口时切回门槛不会跑，更新按钮只能靠 refresh 读到的 helper 状态来点亮/熄灭。
+    func testRefreshFlagsAnOldGuardianForUpdateEvenWhileMiniIsTheOutlet() {
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "bridge0", gateway: .ready)
+        ])
+        provider.helperStatus = helperStatus(guardianState: .ready, guardianVersion: 2, observedAt: Date())
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: RecordingRouteSafetyController(),
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber { interface in
+                Self.probe(interface: interface, ready: true)
+            },
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: isolatedDefaults(),
+            sleeper: { _ in }
+        )
+
+        controller.refresh()
+        XCTAssertTrue(waitUntil { controller.miniGuardianAvailable })
+
+        provider.helperStatus = helperStatus(guardianState: .ready, guardianVersion: nil, observedAt: Date())
+        controller.refresh()
+        XCTAssertTrue(
+            waitUntil { !controller.miniGuardianAvailable },
+            "不报版本的 Guardian 还会重启共享，卡片必须重新显示「安装/更新 Mini 自愈组件」"
+        )
+    }
+
     private func helperStatus(
         guardianState: MacMiniGatewayState?,
         sharingProcessRunning: Bool = true,

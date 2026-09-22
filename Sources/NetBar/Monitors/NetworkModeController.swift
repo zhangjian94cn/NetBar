@@ -1122,6 +1122,16 @@ final class NetworkModeController: ObservableObject {
                     }
                     self.snapshot = merged
                     self.miniHelperStatus = helperStatus
+                    // While the Mini is already the outlet the switch-back gate never runs, so
+                    // this is the only place an old (still relaunching) Guardian gets noticed.
+                    // Keep the update button honest from whatever the helper just reported.
+                    if let helperStatus, helperStatus.guardian != nil {
+                        let guardianCurrent = !helperStatus.guardianNeedsUpdate
+                        if self.miniGuardianAvailable != guardianCurrent {
+                            self.miniGuardianAvailable = guardianCurrent
+                            self.recordMiniGuardianAvailability(guardianCurrent)
+                        }
+                    }
                     if !self.requiresManualRecovery {
                         self.errorMessage = nil
                     }
