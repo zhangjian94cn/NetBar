@@ -50,3 +50,11 @@ Wi-Fi 是当前出口时，Mini Helper 的 `ready` 只允许进入 30 秒资格�
 - Clash Overlay Controller：只响应用户模式命令；拥有 `enable_tun_mode` 与 runtime TUN 的窄写权限，并负责用户级事务回滚。
 - Mihomo underlay 协作：物理出口确实变化时每个 route generation 最多清理一次现有连接；不改配置或 TUN 状态。
 - ZCode 诊断：匿名 2xx–4xx 只证明端点传输可达，不是物理路由门禁，也不发送 OAuth token、Cookie 或账号信息。
+
+## Mihomo 控制端发现
+
+[MihomoControllerAccess](Sources/NetBar/Monitors/MihomoControllerAccess.swift) 是控制端发现与请求的唯一所有者。默认在当前用户服务 Socket、旧 Socket、本地 HTTP 之间有界验证；空配置及保存过的旧默认路径都使用自动发现，真正自定义 Socket/HTTP 独占选择。发现总预算 2 秒并继承恢复轮次预算，只复用本轮成功证据，失败保持可重试。自动结果不持久固定成用户偏好。
+
+读取配置、流量快照和已有写动作共用已验证目标；写动作仍只允许 Unix Socket，失败不跨目标重试。控制请求绕过环境代理，日志只记录来源/验证结论，不含 Secret 或响应正文。
+
+自动切回失败保留具体阶段及验证结果；退避不能一律归因于 Mini 上游抖动，成功切回后才清除上次失败。发现控制端成功不能替代路由和上网验证。

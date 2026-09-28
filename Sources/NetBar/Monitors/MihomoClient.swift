@@ -7,9 +7,8 @@ enum MihomoClient {
 
     // MARK: - Configuration (from AppConfig)
 
-    private static var socketPath: String { AppConfig.shared.mihomoSocketPath }
-    private static var controllerURL: String { AppConfig.shared.mihomoControllerURL }
-    private static var secret: String { AppConfig.shared.mihomoSecret }
+    private static let controller = MihomoControllerAccess()
+    static var controllerFailureDescription: String { controller.failureDescription }
 
     // MARK: - Public Types
 
@@ -60,24 +59,21 @@ enum MihomoClient {
     }
 
     static func runtimeConfiguration() -> RuntimeConfiguration? {
-        // Reuse a successful read within the round, but never cache a failure: this is a
-        // 2s read of a local socket, and a transient miss right after a route write would
-        // otherwise mark the controller unavailable for the rest of the recovery.
-        if let context = ProbeContext.current {
-            if let cached: RuntimeConfiguration = context.memoized("mihomo-config") { nil } {
-                return cached
-            }
-            let fresh = fetchRuntimeConfiguration()
-            if let fresh { context.store("mihomo-config", fresh) }
-            return fresh
-        }
-        return fetchRuntimeConfiguration()
-    }
-    private static func fetchRuntimeConfiguration() -> RuntimeConfiguration? {
-        guard let data = fetchControllerData(path: "/configs", timeout: "2"),
-              let response = try? JSONDecoder().decode(RuntimeConfigurationResponse.self, from: data) else {
+        switch controller.resolve() {
+        case .success(let session):
+            NetworkEventLogger.shared.record(event: "mihomo_controller_discovery",
+                detail: "ready source=\(session.endpoint.diagnosticLabel)", candidateSSID: nil)
+            return session.configuration
+        case .failure(let failure):
+            NetworkEventLogger.shared.record(event: "mihomo_controller_discovery",
+                detail: failure.description, candidateSSID: nil)
             return nil
         }
+    }
+
+    static func decodeRuntimeConfiguration(_ data: Data) -> RuntimeConfiguration? {
+        guard let response = try? JSONDecoder().decode(RuntimeConfigurationResponse.self, from: data),
+              (0...65535).contains(response.mixedPort) else { return nil }
         return RuntimeConfiguration(
             mixedPort: response.mixedPort,
             tunEnabled: response.tun?.enable ?? false,
@@ -90,26 +86,9 @@ enum MihomoClient {
     }
 
     static func setTunEnabled(_ enabled: Bool) -> Bool {
-        #if APP_STORE
-        return false
-        #else
-        guard FileManager.default.fileExists(atPath: socketPath),
-              let body = try? JSONSerialization.data(withJSONObject: ["tun": ["enable": enabled]]),
-              let bodyString = String(data: body, encoding: .utf8) else {
-            return false
-        }
-        var arguments = [
-            "-sS", "-o", "/dev/null", "-w", "%{http_code}",
-            "--max-time", "4", "-X", "PATCH",
-            "--unix-socket", socketPath,
-            "-H", "Content-Type: application/json"
-        ]
-        if !secret.isEmpty { arguments += ["-H", "Authorization: Bearer \(secret)"] }
-        arguments += ["--data-binary", bodyString, controllerEndpoint(path: "/configs", useUnixHost: true)]
-        let result = runCurlCommand(arguments: arguments)
-        let status = Int(result.output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
-        return result.exitCode == 0 && status == 204
-        #endif
+        guard let body = try? JSONSerialization.data(withJSONObject: ["tun": ["enable": enabled]]),
+              let json = String(data: body, encoding: .utf8) else { return false }
+        return controller.write(method: "PATCH", path: "/configs", body: json)
     }
 
     static func probeHTTPS() -> Bool {
@@ -130,63 +109,13 @@ enum MihomoClient {
     /// Close only Mihomo's active connections so new dials follow the new underlay.
     /// This does not reload configuration, toggle TUN, or restart the core process.
     static func closeAllConnections() -> Bool {
-        guard FileManager.default.fileExists(atPath: socketPath) else { return false }
-        var arguments = [
-            "-sS", "-o", "/dev/null", "-w", "%{http_code}",
-            "--max-time", "2", "-X", "DELETE",
-            "--unix-socket", socketPath
-        ]
-        if !secret.isEmpty {
-            arguments += ["-H", "Authorization: Bearer \(secret)"]
-        }
-        arguments.append(controllerEndpoint(path: "/connections", useUnixHost: true))
-        let result = runCurlCommand(arguments: arguments)
-        let status = Int(result.output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
-        return result.exitCode == 0 && status == 204
+        controller.write(method: "DELETE", path: "/connections")
     }
 
     // MARK: - Network
 
     private static func fetchConnectionsData() -> Data? {
-        if FileManager.default.fileExists(atPath: socketPath),
-           let data = runCurl(arguments: [
-                "-sS", "--max-time", "1",
-                "--unix-socket", socketPath,
-                "-H", "Authorization: Bearer \(secret)",
-                "http://unix/connections"
-           ]) {
-            return data
-        }
-
-        return runCurl(arguments: [
-            "-sS", "--max-time", "1",
-            "-H", "Authorization: Bearer \(secret)",
-            controllerURL
-        ])
-    }
-
-    private static func fetchControllerData(path: String, timeout: String) -> Data? {
-        var arguments = ["-sS", "--max-time", timeout]
-        let useSocket = FileManager.default.fileExists(atPath: socketPath)
-        if useSocket { arguments += ["--unix-socket", socketPath] }
-        if !secret.isEmpty { arguments += ["-H", "Authorization: Bearer \(secret)"] }
-        arguments.append(controllerEndpoint(path: path, useUnixHost: useSocket))
-        return runCurl(arguments: arguments)
-    }
-
-    private static func controllerEndpoint(path: String, useUnixHost: Bool) -> String {
-        if useUnixHost { return "http://unix\(path)" }
-        guard var components = URLComponents(string: controllerURL) else { return controllerURL }
-        components.path = path
-        components.query = nil
-        components.fragment = nil
-        return components.url?.absoluteString ?? controllerURL
-    }
-
-    private static func runCurl(arguments: [String]) -> Data? {
-        let result = runCurlCommand(arguments: arguments)
-        guard result.exitCode == 0, let data = result.output.data(using: .utf8), !data.isEmpty else { return nil }
-        return data
+        controller.read(path: "/connections")
     }
 
     private static func runCurlCommand(arguments: [String]) -> (exitCode: Int32, output: String) {

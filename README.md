@@ -158,6 +158,8 @@ MacBook 没有 DHCP 租约时直接转述 Mini 的结论（需人工、载波断
 
 Wi-Fi 先验证载波、IPv4 和网关；能绑定实际 Wi-Fi 设备直连 HTTPS 时采用 make-before-break。部分公司网络会阻断绕过代理的 HTTPS，因此公网 ICMP 和单次直连失败都不是 readiness 的决定性证据。Mini 切换前组合固定 Peer、Guardian、forwarding 与绑定 `bridge0` 的 TCP/TLS 事实，切换后再以实际物理路由、系统 HTTPS 和 Clash HTTPS 确认可用。每当实际物理出口在 `bridge0` 与 Wi-Fi 之间变化，NetBar 都会通过 Mihomo Unix Socket 调用一次 `DELETE /connections`，关闭旧 underlay 上的运行中连接，再等待并验证新连接；同一出口的重复检查不会重复清理。网络出口状态机不退出、重启、重载 Clash，也不会开关 TUN。
 
+NetBar 默认自动发现当前用户的 Clash Verge 控制端，兼容服务模式与旧版 Socket；无需额外开放控制端口。设置中的 Socket 留空表示自动发现，旧默认路径也自动兼容。自定义 Socket 优先；没有自定义 Socket 时，自定义 Controller URL 优先且仅供读取。配置错误会明确显示，不会静默控制另一实例。自动试切失败会保留具体原因，并在退避期间显示重试等待时间。
+
 DNS 是端到端互联网证明的一部分，但不是固定雷雳管理链路的成立条件。Wi-Fi 同时配置健康公共 DNS 与旧 Mini 地址 `192.168.2.1` 时，NetBar 显示“DNS 当前可用 · 含旧 Mini DNS”，不会误报为完全依赖 Mini。用户可点击“清理旧 Mini DNS”，Route Safety Helper v5 只删除该精确地址并保留其余手动 resolver；“恢复 Wi-Fi 自动 DNS”仍是另一个明确操作。两者都备份原值、验证 DNS 与数据面后提交，失败完整回滚，普通插拔和出口切换不会自动触发。`114.114.114.114`、公司 DNS及其他手动 DNS只诊断，不自动修改。
 
 “监控”页的公司 VPN 分组只读取 `dual-vpn-config` 产生的脱敏 artifact，并展示 aTrust 进程、企业路由、OAVPN 公网入口、系统代理/TUN/Fake-IP 一致性和共存基线漂移。点击“运行公司 VPN 诊断”会依次运行 OAVPN 入口与 overlay 过渡的只读命令；NetBar 不登录腾讯云、不保存 SSH 凭据，也不修改 aTrust、OAVPN hosts、Clash DNS、VPN 路由或公司 DNS。单个 OAVPN/ZCode、代理节点、浏览器缓存或 Fake-IP 收敛故障不驱动物理出口切换；只有 Mini 下游端到端出口失败才按原状态机回退 Wi-Fi。

@@ -1094,6 +1094,56 @@ final class NetworkRoutePolicyTests: XCTestCase {
         XCTAssertFalse(routeSafety.appliedModes.contains(.localWiFi))
     }
 
+    func testCircuitBreakerExplainsControllerFailureAndHealthyMiniClearsIt() {
+        let currentTime = Date(timeIntervalSince1970: 20_000)
+        let defaults = isolatedDefaults()
+        defaults.set(currentTime.addingTimeInterval(600), forKey: "networkCircuitBreakerUntil")
+        defaults.set("Clash 控制端不可达，且直连验证失败", forKey: "networkLastMiniReturnFailure")
+        let provider = SequencedPolicyProvider(snapshots: [
+            policySnapshot(interface: "en0", gateway: .ready),
+            policySnapshot(interface: "bridge0", gateway: .ready)
+        ])
+        let controller = NetworkModeController(
+            provider: provider,
+            routeSafetyController: RecordingRouteSafetyController(),
+            wifiCandidateController: PolicyWiFiCandidateController(),
+            connectivityProber: PolicyConnectivityProber(),
+            mihomoRecovery: PolicyMihomoRecovery(),
+            eventLogger: PolicyEventLogger(),
+            userDefaults: defaults,
+            now: { currentTime }, sleeper: { _ in }
+        )
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { controller.policyMessage?.contains("Clash 控制端不可达") == true })
+        XCTAssertTrue(controller.policyMessage?.contains("600 秒后重试") == true)
+        XCTAssertFalse(controller.policyMessage?.contains("上游反复抖动") == true)
+        XCTAssertEqual(NetworkFailoverPhase.routeFlapping.displayName, "自动切回暂缓")
+        controller.runPolicyCheckNow()
+        XCTAssertTrue(waitUntil { controller.policyMessage == "Mac mini 优先 · 当前出口正常" })
+        XCTAssertNil(defaults.string(forKey: "networkLastMiniReturnFailure"))
+    }
+
+    func testMiniReturnFailureDistinguishesControllerFromInternetAndCommit() {
+        let unavailable = ConnectivityProbeResult(interfaceName: "bridge0", carrierActive: true,
+            ipv4Address: "192.168.3.2", gateway: "192.168.3.1", directHTTPSReachable: false,
+            clashControllerReachable: false, clashHTTPSReachable: false,
+            systemHTTPSReachable: false, physicalDefaultInterface: "bridge0")
+        XCTAssertEqual(NetworkModeController.miniReturnFailureReason(applied: true, verifies: true, probe: unavailable),
+                       "Clash 控制端不可达，且直连验证失败")
+        let internetFailed = ConnectivityProbeResult(interfaceName: "bridge0", carrierActive: true,
+            ipv4Address: "192.168.3.2", gateway: "192.168.3.1", directHTTPSReachable: false,
+            clashControllerReachable: true, clashHTTPSReachable: false,
+            systemHTTPSReachable: false, physicalDefaultInterface: "bridge0")
+        XCTAssertEqual(NetworkModeController.miniReturnFailureReason(applied: true, verifies: true, probe: internetFailed),
+                       "经 Mac mini 的上网验证失败")
+        XCTAssertEqual(NetworkModeController.miniReturnFailureReason(applied: true, verifies: true,
+            probe: Self.probe(interface: "bridge0", ready: true)), "路由提交失败")
+        XCTAssertEqual(NetworkModeController.miniReturnFailureReason(applied: false, verifies: false, probe: nil),
+                       "路由切换未成功")
+        XCTAssertEqual(NetworkModeController.miniReturnFailureReason(applied: true, verifies: false, probe: nil),
+                       "路由未收敛到 Mac mini")
+    }
+
     func testControllerRestoresWiFiWhenAutomaticSwitchVerificationFails() throws {
         var currentTime = Date(timeIntervalSince1970: 4_000)
         let provider = SequencedPolicyProvider(snapshots: [

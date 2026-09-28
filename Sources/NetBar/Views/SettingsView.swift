@@ -154,7 +154,7 @@ private struct ProxySettingsTab: View {
     var body: some View {
         Form {
             Section {
-                TextField("Socket 路径", text: $socketPath)
+                TextField("Socket 路径（留空自动发现）", text: $socketPath)
                     .onChange(of: socketPath) { AppConfig.shared.mihomoSocketPath = $0 }
 
                 TextField("Controller URL", text: $controllerURL)
@@ -165,7 +165,7 @@ private struct ProxySettingsTab: View {
             } header: {
                 Text("Mihomo / Clash Verge")
             } footer: {
-                Text("Direct Full 用于读取本机代理核心连接信息，App Store Lite 不包含该能力。")
+                Text("Socket 留空时自动发现当前用户的 Clash Verge 控制端，兼容旧默认路径。自定义 Socket 优先；未指定 Socket 时，自定义 Controller URL 优先。HTTP 控制端仅供读取。清空自定义地址可恢复自动发现。")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

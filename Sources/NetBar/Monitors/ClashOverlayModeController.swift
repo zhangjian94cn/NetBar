@@ -46,13 +46,19 @@ struct ClashOverlaySnapshot: Equatable {
 #if !APP_STORE
 
 protocol ClashRuntimeControlling {
+    var failureDescription: String { get }
     func configuration() -> MihomoClient.RuntimeConfiguration?
     func setTunEnabled(_ enabled: Bool) -> Bool
     func closeAllConnections() -> Bool
     func probeHTTPS() -> Bool
 }
 
+extension ClashRuntimeControlling {
+    var failureDescription: String { "Clash/Mihomo 控制面不可用" }
+}
+
 struct LiveClashRuntimeController: ClashRuntimeControlling {
+    var failureDescription: String { MihomoClient.controllerFailureDescription }
     func configuration() -> MihomoClient.RuntimeConfiguration? { MihomoClient.runtimeConfiguration() }
     func setTunEnabled(_ enabled: Bool) -> Bool { MihomoClient.setTunEnabled(enabled) }
     func closeAllConnections() -> Bool { MihomoClient.closeAllConnections() }
@@ -309,7 +315,7 @@ final class ClashOverlayModeController: ObservableObject {
 
     private func apply(_ target: ClashOverlayMode) -> ClashOverlaySnapshot {
         guard let originalRuntime = runtime.configuration() else {
-            return failedSnapshot(.unavailable, "Clash/Mihomo 控制面不可用")
+            return failedSnapshot(.unavailable, self.runtime.failureDescription)
         }
         let proxyEnabled = proxyInspector.isEnabled(expectedPort: originalRuntime.mixedPort)
         guard proxyEnabled else {
@@ -417,7 +423,7 @@ final class ClashOverlayModeController: ObservableObject {
         proxyEnabled: Bool,
         dataPlaneReady: Bool
     ) -> ClashOverlaySnapshot {
-        guard let runtime else { return failedSnapshot(.unavailable, "Clash/Mihomo 控制面不可用") }
+        guard let runtime else { return failedSnapshot(.unavailable, self.runtime.failureDescription) }
         let mode: ClashOverlayMode = runtime.tunEnabled ? .tunFull : .systemProxy
         let baseline = Self.baselineReady(runtime)
         let consistent = persistent == runtime.tunEnabled

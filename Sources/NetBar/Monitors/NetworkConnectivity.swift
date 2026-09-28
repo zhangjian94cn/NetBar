@@ -272,7 +272,7 @@ enum NetworkFailoverPhase: String, Codable, Equatable {
         case .temporaryWiFi: return "Wi-Fi 临时保网"
         case .stableWiFiFallback: return "Wi-Fi 稳定降级"
         case .miniStabilizing: return "Mac mini 恢复确认中"
-        case .routeFlapping: return "Mac mini 上游反复抖动"
+        case .routeFlapping: return "自动切回暂缓"
         case .manualWiFi: return "Wi-Fi 优先"
         }
     }
