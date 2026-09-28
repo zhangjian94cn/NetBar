@@ -20,12 +20,12 @@ final class AppConfig: ObservableObject {
     // MARK: - Mihomo 代理配置
 
     var mihomoSocketPath: String {
-        get { defaults.string(forKey: Keys.mihomoSocketPath) ?? "/tmp/verge/verge-mihomo.sock" }
+        get { defaults.string(forKey: Keys.mihomoSocketPath) ?? "" }
         set { defaults.set(newValue, forKey: Keys.mihomoSocketPath) }
     }
 
     var mihomoControllerURL: String {
-        get { defaults.string(forKey: Keys.mihomoControllerURL) ?? "http://127.0.0.1:9097/connections" }
+        get { defaults.string(forKey: Keys.mihomoControllerURL) ?? MihomoControllerAccess.defaultControllerURL }
         set { defaults.set(newValue, forKey: Keys.mihomoControllerURL) }
     }
 

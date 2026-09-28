@@ -2,6 +2,19 @@ import XCTest
 @testable import NetBar
 
 final class AppConfigTests: XCTestCase {
+    func testMihomoDefaultsAreAutomaticAndCustomSettingsPersist() {
+        let defaults = isolatedDefaults()
+        let config = AppConfig(defaults: defaults)
+        XCTAssertEqual(config.mihomoSocketPath, "")
+        config.mihomoSocketPath = "/custom/controller.sock"
+        config.mihomoControllerURL = "http://127.0.0.1:9999"
+        let restored = AppConfig(defaults: defaults)
+        XCTAssertEqual(restored.mihomoSocketPath, "/custom/controller.sock")
+        XCTAssertEqual(restored.mihomoControllerURL, "http://127.0.0.1:9999")
+        config.mihomoSocketPath = ""
+        XCTAssertEqual(AppConfig(defaults: defaults).mihomoSocketPath, "")
+    }
+
     func testV2SchemaDefaultsProviderAndCertificateFlag() throws {
         let defaults = isolatedDefaults()
         let legacyV2JSON = """

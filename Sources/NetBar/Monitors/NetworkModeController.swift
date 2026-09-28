@@ -918,6 +918,7 @@ final class NetworkModeController: ObservableObject {
     private var observedPhysicalOutlet: NetworkRouteMode?
     private var pendingMihomoTransition: PhysicalOutletTransition?
     private var lastMihomoRebindAttemptAt: Date?
+    private var lastMiniReturnFailure: String?
     private var knownMiniGuardianAvailable = false
     private var policyState: NetworkRoutePolicyState
     private let preferenceLock = NSLock()
@@ -928,6 +929,7 @@ final class NetworkModeController: ObservableObject {
     private static let circuitBreakerKey = "networkCircuitBreakerUntil"
     private static let automaticFallbacksKey = "networkAutomaticFallbacks"
     private static let lastAutomaticReturnKey = "networkLastAutomaticReturnAt"
+    private static let lastMiniReturnFailureKey = "networkLastMiniReturnFailure"
 
     init(
         provider: NetworkModeSystemProviding = LiveNetworkModeSystemProvider(),
@@ -957,6 +959,7 @@ final class NetworkModeController: ObservableObject {
         self.networkChangeObserver = networkChangeObserver
         self.candidateStore = WiFiCandidatePreferenceStore(defaults: userDefaults)
         self.userDefaults = userDefaults
+        self.lastMiniReturnFailure = userDefaults.string(forKey: Self.lastMiniReturnFailureKey)
         self.now = now
         self.sleeper = sleeper
         self.onNetworkChanged = onNetworkChanged
@@ -1361,6 +1364,7 @@ final class NetworkModeController: ObservableObject {
 
                 if outcome.succeeded {
                     self.workQueue.async {
+                        self.lastMiniReturnFailure = nil
                         self.policyState.markMiniActive()
                         self.persistPolicyState()
                     }
@@ -1566,6 +1570,7 @@ final class NetworkModeController: ObservableObject {
             policyState.recordHealthy(at: checkDate)
             lastLoggedFallbackFailureReason = nil
             let previousPhase = policyState.phase
+            lastMiniReturnFailure = nil
             policyState.markMiniActive()
             persistPolicyState()
             if previousPhase != .miniActive {
@@ -1588,7 +1593,7 @@ final class NetworkModeController: ObservableObject {
         if let until = policyState.circuitBreakerUntil, until > checkDate {
             let seconds = Int(ceil(until.timeIntervalSince(checkDate)))
             policyState.phase = .routeFlapping
-            publishPolicy(snapshot: current, message: "Mac mini 上游反复抖动，\(seconds) 秒后重试", remaining: seconds)
+            publishPolicy(snapshot: current, message: "\(lastMiniReturnFailure ?? "近期切回验证失败") · \(seconds) 秒后重试", remaining: seconds)
             return
         }
         // Stability needs both duration and repeated evidence: a slow qualification round
@@ -1601,7 +1606,9 @@ final class NetworkModeController: ObservableObject {
                 detail: "elapsed=\(Int(elapsed))s samples=\(miniQualifyingSamples)",
                 candidateSSID: nil
             )
-            publishPolicy(snapshot: current, message: "Mac mini 已恢复，稳定 \(remaining) 秒后自动切回", remaining: remaining)
+            let message = lastMiniReturnFailure.map { "\($0)；稳定 \(remaining) 秒后重试" }
+                ?? "Mac mini 已恢复，稳定 \(remaining) 秒后自动切回"
+            publishPolicy(snapshot: current, message: message, remaining: remaining)
             return
         }
         let remoteStatus = provider.readMacMiniHelperStatus()
@@ -1680,13 +1687,17 @@ final class NetworkModeController: ObservableObject {
                 ? routeSafetyController.commit().succeeded
                 : false
             if !committed {
+                lastMiniReturnFailure = Self.miniReturnFailureReason(
+                    applied: result.succeeded, verifies: verifiesTarget, probe: finalMiniProbe
+                )
                 eventLogger.record(
                     event: "mini_trial_switch_failed",
-                    detail: "applied=\(result.succeeded) verifies=\(verifiesTarget) dataPlane=\(dataPlaneReady) committed=\(committed) effective=\(verified?.effectiveMode.map(String.init(describing:)) ?? "-") intended=\(verified?.intendedMode.map(String.init(describing:)) ?? "-") rebind=\(rebindResult.map(String.init(describing:)) ?? "-")",
+                    detail: "applied=\(result.succeeded) verifies=\(verifiesTarget) dataPlane=\(dataPlaneReady) committed=\(committed) effective=\(verified?.effectiveMode.map(String.init(describing:)) ?? "-") intended=\(verified?.intendedMode.map(String.init(describing:)) ?? "-") rebind=\(rebindResult.map(String.init(describing:)) ?? "-") controller=\(finalMiniProbe?.clashControllerReachable == true) directHTTPS=\(finalMiniProbe?.directHTTPSReachable == true) systemHTTPS=\(finalMiniProbe?.systemHTTPSReachable == true) proxyHTTPS=\(finalMiniProbe?.clashHTTPSReachable == true) reason=\(lastMiniReturnFailure ?? "-")",
                     candidateSSID: nil
                 )
             }
             if let verified, committed {
+                lastMiniReturnFailure = nil
                 policyState.markMiniActive()
                 policyState.recordAutomaticReturn(at: checkDate)
                 persistPolicyState()
@@ -1699,13 +1710,29 @@ final class NetworkModeController: ObservableObject {
                 policyState.recordFailedAutomaticReturn(at: checkDate)
                 persistPolicyState()
                 let restored = fallbackToVerifiedWiFi(at: checkDate, reason: "自动切回验证失败", automatic: true)
+                let reason = lastMiniReturnFailure ?? "自动切回验证失败"
                 if !restored {
                     let refreshed = (try? provider.readSnapshot()) ?? current
-                    publishPolicy(snapshot: refreshed, message: "自动切回失败，且没有可验证的 Wi-Fi 候选", remaining: nil, helperAvailable: true, isError: true)
+                    publishPolicy(snapshot: refreshed, message: "\(reason)；Wi-Fi 回退尚未完成验证", remaining: nil, helperAvailable: true, isError: true)
+                } else {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.policyMessage = "\(reason)；已回退 Wi-Fi，等待重新验证"
+                    }
                 }
                 Log.network.error("自动切回 Mac mini 失败，Wi-Fi 恢复=\(restored)")
             }
         }
+    }
+
+    static func miniReturnFailureReason(applied: Bool, verifies: Bool, probe: ConnectivityProbeResult?) -> String {
+        guard applied else { return "路由切换未成功" }
+        guard verifies else { return "路由未收敛到 Mac mini" }
+        guard let probe else { return "切回验证未完成" }
+        if !probe.clashControllerReachable && !probe.directHTTPSReachable {
+            return "Clash 控制端不可达，且直连验证失败"
+        }
+        guard probe.routedInternetReady else { return "经 Mac mini 的上网验证失败" }
+        return "路由提交失败"
     }
 
     private func handleUnhealthySnapshot(
@@ -2309,6 +2336,11 @@ final class NetworkModeController: ObservableObject {
     }
 
     private func persistPolicyState() {
+        if let reason = lastMiniReturnFailure {
+            userDefaults.set(reason, forKey: Self.lastMiniReturnFailureKey)
+        } else {
+            userDefaults.removeObject(forKey: Self.lastMiniReturnFailureKey)
+        }
         if let date = policyState.fallbackStartedAt {
             userDefaults.set(date, forKey: Self.fallbackStartedKey)
         } else {

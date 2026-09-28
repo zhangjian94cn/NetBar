@@ -132,9 +132,9 @@ final class NetworkConnectivityTests: XCTestCase {
         let underlay = try String(contentsOf: repo.appendingPathComponent("Sources/NetBar/Monitors/NetworkModeController.swift"))
         let overlay = try String(contentsOf: repo.appendingPathComponent("Sources/NetBar/Monitors/ClashOverlayModeController.swift"))
 
-        XCTAssertTrue(source.contains("-X\", \"DELETE"))
+        XCTAssertTrue(source.contains("write(method: \"DELETE\", path: \"/connections\""))
         XCTAssertTrue(source.contains("/connections"))
-        XCTAssertTrue(source.contains("-X\", \"PATCH"))
+        XCTAssertTrue(source.contains("write(method: \"PATCH\", path: \"/configs\""))
         XCTAssertTrue(source.contains("/configs"))
         XCTAssertFalse(source.contains("/restart"))
         XCTAssertFalse(source.contains("/upgrade"))
