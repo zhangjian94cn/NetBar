@@ -7,6 +7,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusBarController: StatusBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NettopParser.sweepOrphanedNettopProcesses()
         configureMainMenu()
         coordinator.startAll()
 
@@ -17,6 +18,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         coordinator.stopAll()
+        NettopParser.terminateAllRunningChildren()
     }
 
     private func configureMainMenu() {

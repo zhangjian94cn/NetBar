@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// 按应用维度的流量监控器 — 整合 nettop 和 Mihomo 两个数据源
@@ -132,6 +133,7 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
     ]
 
     private var previousStats: [String: (bytesIn: UInt64, bytesOut: UInt64)] = [:]
+    private var hasNettopBaseline = false
     private var previousMihomoSnapshots: [String: MihomoClient.ConnectionSnapshot] = [:]
     private var previousTime: Date = Date()
     private var trafficHistory: [TrafficRecord] = []
@@ -156,11 +158,10 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
     }
 
     func start(interval: TimeInterval) {
-        // 先获取一次基线数据
-        let result = NettopParser.fetch()
-        previousStats = result.stats
+        previousStats = [:]
+        hasNettopBaseline = false
         previousTime = Date()
-        appInterfaces = result.interfaces
+        appInterfaces = [:]
         activeTunnelInterfaces = TunnelRouteDetector.activeTunnelInterfaces()
         previousMihomoSnapshots = MihomoClient.fetchConnectionSnapshots() ?? [:]
 
@@ -210,7 +211,8 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
                 }
             }
 
-            let nettopResult = NettopParser.fetch()
+            let nettopResult = NettopParser.fetchExternalSummary()
+            guard !nettopResult.stats.isEmpty else { return }
             let activeTunnelInterfaces = TunnelRouteDetector.activeTunnelInterfaces()
             let currentMihomoSnapshots = MihomoClient.fetchConnectionSnapshots()
             let now = Date()
@@ -220,30 +222,67 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
             self.appInterfaces = nettopResult.interfaces
             self.activeTunnelInterfaces = activeTunnelInterfaces
 
-            var appDeltas: [String: AppDelta] = [:]
+            guard self.hasNettopBaseline else {
+                self.previousStats = nettopResult.stats
+                self.previousTime = now
+                self.hasNettopBaseline = true
+                if let currentMihomoSnapshots {
+                    self.previousMihomoSnapshots = currentMihomoSnapshots
+                }
+                return
+            }
 
-            // nettop 增量
+            var appDeltas: [String: AppDelta] = [:]
+            var proxyCoreFallbackDeltas: [String: AppDelta] = [:]
+
+            // nettop 只采集 external 接口。代理回环流量由 Mihomo API 按原应用补齐，避免本地 127.0.0.1
+            // 代理连接被浏览器进程汇总成几十 MB/s 的假下载。
             for (key, val) in nettopResult.stats {
-                let appName = NettopParser.extractAppName(from: key)
-                guard !self.isHiddenProcess(appName),
+                let rawAppName = NettopParser.extractAppName(from: key)
+                let appName = self.displayAppName(for: key, fallback: rawAppName)
+                guard !self.isHiddenProcess(appName, includeProxyCore: false),
                       let previous = self.previousStats[key] else { continue }
 
                 let dlBytes = val.bytesIn >= previous.bytesIn ? val.bytesIn - previous.bytesIn : 0
                 let ulBytes = val.bytesOut >= previous.bytesOut ? val.bytesOut - previous.bytesOut : 0
-                self.addDelta(
-                    appName: appName,
-                    bytesIn: dlBytes,
-                    bytesOut: ulBytes,
-                    routeKinds: self.routeKinds(
-                        from: nettopResult.interfaces[appName],
-                        activeTunnelInterfaces: activeTunnelInterfaces
-                    ),
-                    to: &appDeltas
+                let routeKinds = self.routeKinds(
+                    from: nettopResult.interfaces[appName] ?? nettopResult.interfaces[rawAppName],
+                    activeTunnelInterfaces: activeTunnelInterfaces
                 )
+                let externalRouteKinds = routeKinds.isEmpty ? Set([RouteKind.direct]) : routeKinds
+
+                if self.isProxyCoreProcess(appName) || self.isProxyCoreProcess(rawAppName) {
+                    self.addDelta(
+                        appName: self.proxyCoreDisplayName(for: appName),
+                        bytesIn: dlBytes,
+                        bytesOut: ulBytes,
+                        routeKinds: [.proxied],
+                        to: &proxyCoreFallbackDeltas
+                    )
+                } else {
+                    self.addDelta(
+                        appName: appName,
+                        bytesIn: dlBytes,
+                        bytesOut: ulBytes,
+                        routeKinds: externalRouteKinds,
+                        to: &appDeltas
+                    )
+                }
             }
 
             // Mihomo 增量
-            if let currentMihomoSnapshots {
+            if let currentMihomoSnapshots, !currentMihomoSnapshots.isEmpty {
+                let currentRouteKinds = self.currentMihomoRouteKinds(from: currentMihomoSnapshots)
+                for (appName, routeKinds) in currentRouteKinds where appDeltas[appName] != nil {
+                    self.addDelta(
+                        appName: appName,
+                        bytesIn: 0,
+                        bytesOut: 0,
+                        routeKinds: routeKinds,
+                        to: &appDeltas
+                    )
+                }
+
                 let mihomoDeltas = self.computeMihomoDeltas(
                     current: currentMihomoSnapshots,
                     since: self.previousTime
@@ -259,6 +298,16 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
                     )
                 }
                 self.previousMihomoSnapshots = currentMihomoSnapshots
+            } else if appDeltas.isEmpty {
+                for (appName, delta) in proxyCoreFallbackDeltas {
+                    self.addDelta(
+                        appName: appName,
+                        bytesIn: delta.bytesIn,
+                        bytesOut: delta.bytesOut,
+                        routeKinds: delta.routeKinds,
+                        to: &appDeltas
+                    )
+                }
             }
 
             // 构建实时速度列表
@@ -343,7 +392,7 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
 
             let routeKind: RouteKind = snapshot.isDirect ? .direct : .proxied
             addDelta(
-                appName: snapshot.appName,
+                appName: canonicalAppDisplayName(snapshot.appName),
                 bytesIn: dlBytes,
                 bytesOut: ulBytes,
                 routeKind: routeKind,
@@ -538,11 +587,85 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
 
     // MARK: - 辅助方法
 
-    private func isHiddenProcess(_ appName: String) -> Bool {
+    private func currentMihomoRouteKinds(
+        from snapshots: [String: MihomoClient.ConnectionSnapshot]
+    ) -> [String: Set<RouteKind>] {
+        var result: [String: Set<RouteKind>] = [:]
+        for snapshot in snapshots.values {
+            let appName = canonicalAppDisplayName(snapshot.appName)
+            guard !appName.isEmpty else { continue }
+            result[appName, default: []].insert(snapshot.isDirect ? .direct : .proxied)
+        }
+        return result
+    }
+
+    private func displayAppName(for processKey: String, fallback: String) -> String {
+        if let pid = processID(from: processKey),
+           let localizedName = NSRunningApplication(processIdentifier: pid)?
+            .localizedName?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !localizedName.isEmpty {
+            return canonicalAppDisplayName(localizedName)
+        }
+
+        return canonicalAppDisplayName(fallback)
+    }
+
+    private func processID(from processKey: String) -> pid_t? {
+        guard let pidText = processKey.split(separator: ".").last,
+              let pid = Int32(pidText) else {
+            return nil
+        }
+        return pid
+    }
+
+    private func canonicalAppDisplayName(_ name: String) -> String {
+        var result = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffixes = [
+            " Helper (Renderer)",
+            " Helper (Plugin)",
+            " Helper (GPU)",
+            " Helper (Pl",
+            " Helper",
+            " Helpe",
+            " Hel",
+            " H"
+        ]
+
+        for suffix in suffixes where result.hasSuffix(suffix) {
+            result.removeLast(suffix.count)
+            result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+            break
+        }
+
+        switch result.lowercased() {
+        case "codex":
+            return "Codex"
+        case "clash-verge":
+            return "Clash Verge"
+        case "verge-mihomo", "mihomo":
+            return "Mihomo"
+        default:
+            return result
+        }
+    }
+
+    private func isHiddenProcess(_ appName: String, includeProxyCore: Bool = true) -> Bool {
         let name = appName.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowerName = name.lowercased()
-        return hiddenProcesses.contains { $0.lowercased() == lowerName } ||
-            proxyCoreProcesses.contains { $0.lowercased() == lowerName }
+        let isSystemHidden = hiddenProcesses.contains { $0.lowercased() == lowerName }
+        guard includeProxyCore else { return isSystemHidden && !isProxyCoreProcess(name) }
+        return isSystemHidden || isProxyCoreProcess(name)
+    }
+
+    private func isProxyCoreProcess(_ appName: String) -> Bool {
+        let lowerName = appName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return proxyCoreProcesses.contains { $0.lowercased() == lowerName }
+    }
+
+    private func proxyCoreDisplayName(for appName: String) -> String {
+        let trimmed = appName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "代理核心" : "代理核心 \(trimmed)"
     }
 
     private func addDelta(
