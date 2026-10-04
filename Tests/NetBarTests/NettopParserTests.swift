@@ -95,4 +95,19 @@ final class NettopParserTests: XCTestCase {
             activeInterfaces: ["utun9"]
         ).isEmpty)
     }
+
+    // MARK: - 孤儿 nettop 清扫
+
+    func testOrphanedNettopPIDDetected() {
+        XCTAssertEqual(NettopParser.orphanedNettopPID(psLine: " 49520      1 /usr/bin/nettop"), 49520)
+    }
+
+    func testShellParentedNettopNotSwept() {
+        XCTAssertNil(NettopParser.orphanedNettopPID(psLine: " 12345  18917 /usr/bin/nettop"))
+    }
+
+    func testOrphanedNonNettopNotSwept() {
+        XCTAssertNil(NettopParser.orphanedNettopPID(psLine: " 99999      1 /usr/bin/top"))
+        XCTAssertNil(NettopParser.orphanedNettopPID(psLine: "garbage line"))
+    }
 }
