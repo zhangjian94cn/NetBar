@@ -95,7 +95,7 @@ class MonitorCoordinator {
     func scheduleEgressIPRefreshAfterIdentityChange() {
         guard AppConfig.shared.ipCheckEnabled else { return }
         egressIdentityRefreshScheduler.schedule { [weak self] in
-            self?.egressIPMonitor.refresh(force: true)
+            self?.egressIPMonitor.reloadSettingsAndRefresh()
         }
     }
 

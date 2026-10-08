@@ -56,6 +56,7 @@ class NetworkMonitor: ObservableObject, MonitorProtocol {
     }
 
     func start(interval: TimeInterval) {
+        stop()
         // 先获取一次基线数据
         previousStats = fetchInterfaceStats()
         previousTime = Date()
@@ -65,6 +66,7 @@ class NetworkMonitor: ObservableObject, MonitorProtocol {
         }
         // 确保 timer 在 common mode 下运行（避免 UI 阻塞时停止）
         if let timer = timer {
+            timer.tolerance = interval * 0.1
             RunLoop.main.add(timer, forMode: .common)
         }
     }

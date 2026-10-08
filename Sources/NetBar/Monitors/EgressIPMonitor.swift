@@ -9,6 +9,8 @@ final class EgressIPMonitor: ObservableObject, MonitorProtocol {
     private let client: IPIntelligenceClient
     private let minimumCacheTTL: TimeInterval
     private var timer: Timer?
+    private var refreshTask: Task<EgressIPInfo?, Never>?
+    private var generation: UInt64 = 0
 
     init(
         config: AppConfig = .shared,
@@ -41,6 +43,10 @@ final class EgressIPMonitor: ObservableObject, MonitorProtocol {
     func stop() {
         timer?.invalidate()
         timer = nil
+        generation &+= 1
+        refreshTask?.cancel()
+        refreshTask = nil
+        isLoading = false
     }
 
     func reloadSettingsAndRefresh() {
@@ -48,52 +54,56 @@ final class EgressIPMonitor: ObservableObject, MonitorProtocol {
     }
 
     func refresh(force: Bool = false) {
-        Task {
-            await refreshNow(force: force)
+        let requestedGeneration = generation
+        Task { @MainActor [weak self] in
+            guard let self, self.generation == requestedGeneration else { return }
+            _ = await self.refreshNow(force: force)
         }
     }
 
+    @MainActor
     @discardableResult
     func refreshNow(force: Bool = false) async -> EgressIPInfo? {
         guard config.ipCheckEnabled else {
-            await MainActor.run {
-                self.clearDisabledState()
-            }
+            stop()
+            clearDisabledState()
             return nil
         }
-
-        if !force {
-            let cachedInfo = await MainActor.run { self.info }
-            if let cachedInfo, Date().timeIntervalSince(cachedInfo.fetchedAt) < minimumCacheTTL {
-                return cachedInfo
-            }
+        // Manual refreshes and network-change notifications share the current lookup.
+        if let refreshTask { return await refreshTask.value }
+        if !force, let info, Date().timeIntervalSince(info.fetchedAt) < minimumCacheTTL {
+            return info
         }
 
-        await MainActor.run {
-            self.isLoading = true
-            self.errorMessage = nil
-        }
-
-        do {
-            let apiKey = config.ping0APIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            let result = try await client.lookupCurrentIP(
-                version: config.ipCheckVersion,
-                apiKey: apiKey.isEmpty ? nil : apiKey
-            )
-            await MainActor.run {
-                self.info = result
-                self.errorMessage = nil
-                self.isLoading = false
+        isLoading = true
+        errorMessage = nil
+        let requestedGeneration = generation
+        let apiKey = config.ping0APIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let version = config.ipCheckVersion
+        let task = Task { @MainActor [self] () -> EgressIPInfo? in
+            do {
+                try Task.checkCancellation()
+                let result = try await client.lookupCurrentIP(
+                    version: version, apiKey: apiKey.isEmpty ? nil : apiKey
+                )
+                try Task.checkCancellation()
+                guard generation == requestedGeneration, config.ipCheckEnabled else { return nil }
+                info = result
+                errorMessage = nil
+                return result
+            } catch {
+                guard !Task.isCancelled, generation == requestedGeneration else { return nil }
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                return nil
             }
-            return result
-        } catch {
-            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            await MainActor.run {
-                self.errorMessage = message
-                self.isLoading = false
-            }
-            return nil
         }
+        refreshTask = task
+        let result = await task.value
+        if generation == requestedGeneration {
+            refreshTask = nil
+            isLoading = false
+        }
+        return result
     }
 
     private func clearDisabledState() {

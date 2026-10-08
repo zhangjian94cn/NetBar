@@ -49,6 +49,7 @@ class StatusBarView: NSView {
     }
 
     func update(upload: String, download: String) {
+        guard uploadText != upload || downloadText != download else { return }
         self.uploadText = upload
         self.downloadText = download
         self.needsDisplay = true

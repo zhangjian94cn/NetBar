@@ -117,10 +117,15 @@ public enum BoundedCommand {
         var outcome = CommandOutcome.exited
         var stoppedAt: TimeInterval?
         var buffer = [UInt8](repeating: 0, count: 8192)
+        var closedPipes: Set<Int32> = []
         func drain(_ fd: Int32, into data: inout Data) {
+            guard !closedPipes.contains(fd) else { return }
             // Limit work per pass, even if a producer never stops writing.
             for _ in 0..<32 {
                 let count = read(fd, &buffer, buffer.count)
+                if count == 0 || (count < 0 && errno != EAGAIN && errno != EINTR) {
+                    closedPipes.insert(fd)
+                }
                 guard count > 0 else { break }
                 let kept = min(count, max(0, outputLimit - data.count))
                 data.append(contentsOf: buffer.prefix(kept))
@@ -143,7 +148,12 @@ public enum BoundedCommand {
                 drain(outFD[0], into: &out); drain(errFD[0], into: &err)
                 break
             }
-            var pollFDs = [pollfd(fd: outFD[0], events: Int16(POLLIN), revents: 0), pollfd(fd: errFD[0], events: Int16(POLLIN), revents: 0)]
+            // EOF/HUP is level-triggered: polling a closed pipe returns immediately
+            // forever, burning a core until the child exits. Negative fds are ignored;
+            // with both closed, poll still sleeps and keeps cancellation bounded.
+            var pollFDs = [outFD[0], errFD[0]].map {
+                pollfd(fd: closedPipes.contains($0) ? -1 : $0, events: Int16(POLLIN), revents: 0)
+            }
             _ = poll(&pollFDs, 2, 20)
         }
         let code: Int32 = outcome == .cancelled ? -2 : outcome == .timedOut ? -3 : ((status & 0x7f) == 0 ? (status >> 8) & 0xff : 128 + (status & 0x7f))

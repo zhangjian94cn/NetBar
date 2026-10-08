@@ -111,6 +111,7 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
         var routeKinds: Set<RouteKind> = []
     }
 
+    @Published private(set) var samplingMessage: String?
     @Published var appSpeeds: [AppTraffic] = []
     @Published var cumulativeRanking: [AppTraffic] = []
     @Published var selectedPeriod: TimePeriod = .fiveMinutes {
@@ -146,7 +147,7 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
 
     private var timer: Timer?
     private let updateQueue = DispatchQueue(label: "com.zjah.NetBar.processTrafficMonitor", qos: .utility)
-    private var updateInProgress = false
+    private var sampling = ProcessSamplingSchedule()
 
     /// 持久化存储器
     var trafficStore: TrafficStore?
@@ -158,29 +159,50 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
     }
 
     func start(interval: TimeInterval) {
-        previousStats = [:]
-        hasNettopBaseline = false
-        previousTime = Date()
-        appInterfaces = [:]
-        activeTunnelInterfaces = TunnelRouteDetector.activeTunnelInterfaces()
-        previousMihomoSnapshots = MihomoClient.fetchConnectionSnapshots() ?? [:]
-
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            self?.update()
+        sampling.requestedInterval = interval
+        guard !sampling.isRunning else { scheduleNextSample(); return }
+        sampling.start()
+        // Baselines belong to the worker queue, never reset them under an active sample.
+        updateQueue.async { [weak self] in
+            guard let self else { return }
+            self.previousStats = [:]
+            self.hasNettopBaseline = false
+            self.previousTime = Date()
+            self.appInterfaces = [:]
+            self.activeTunnelInterfaces = []
+            self.previousMihomoSnapshots = [:]
         }
-        if let timer = timer {
-            RunLoop.main.add(timer, forMode: .common)
-        }
+        scheduleNextSample()
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
+        sampling.stop()
     }
 
     func restart(interval: TimeInterval) {
-        stop()
-        start(interval: interval)
+        // Changing cadence does not discard cumulative counter baselines.
+        if !sampling.isRunning { start(interval: interval); return }
+        sampling.requestedInterval = interval
+        scheduleNextSample()
+    }
+
+    func setDetailVisible(_ visible: Bool) {
+        guard sampling.isVisible != visible else { return }
+        sampling.isVisible = visible
+        scheduleNextSample()
+    }
+
+    private func scheduleNextSample() {
+        timer?.invalidate()
+        timer = nil
+        guard sampling.isRunning, !sampling.isSampling else { return }
+        let delay = max(0.01, sampling.waitTime(now: ProcessInfo.processInfo.systemUptime))
+        let next = Timer(timeInterval: delay, repeats: false) { [weak self] _ in self?.update() }
+        next.tolerance = min(1, delay * 0.1)
+        timer = next
+        RunLoop.main.add(next, forMode: .common)
     }
 
     /// 手动触发累计排行刷新（供 UI 刷新按钮调用）
@@ -199,20 +221,30 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
     // MARK: - 采样更新
 
     private func update() {
-        guard !updateInProgress else { return }
-        updateInProgress = true
+        guard let generation = sampling.begin(now: ProcessInfo.processInfo.systemUptime) else {
+            scheduleNextSample()
+            return
+        }
         let selectedPeriod = selectedPeriod
 
         updateQueue.async { [weak self] in
             guard let self = self else { return }
+            var succeeded = false
             defer {
+                let sampleSucceeded = succeeded
                 DispatchQueue.main.async {
-                    self.updateInProgress = false
+                    if self.sampling.complete(generation: generation, succeeded: sampleSucceeded,
+                                              now: ProcessInfo.processInfo.systemUptime) {
+                        self.samplingMessage = sampleSucceeded ? nil : "应用流量采集暂时不可用，稍后自动重试"
+                        if !sampleSucceeded { self.appSpeeds = [] }
+                    }
+                    self.scheduleNextSample()
                 }
             }
 
             let nettopResult = NettopParser.fetchExternalSummary()
             guard !nettopResult.stats.isEmpty else { return }
+            succeeded = true
             let activeTunnelInterfaces = TunnelRouteDetector.activeTunnelInterfaces()
             let currentMihomoSnapshots = MihomoClient.fetchConnectionSnapshots()
             let now = Date()
@@ -357,6 +389,7 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
             let cumulative = self.refreshCumulativeRankingIfNeeded(period: selectedPeriod, now: now)
 
             DispatchQueue.main.async {
+                guard self.sampling.isRunning, self.sampling.generation == generation else { return }
                 self.appSpeeds = speeds
                 if let cumulative, self.selectedPeriod == selectedPeriod {
                     self.cumulativeRanking = cumulative

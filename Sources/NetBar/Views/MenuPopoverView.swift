@@ -312,8 +312,10 @@ private struct ApplicationsTabView: View {
             if selectedTrafficTab == 0 {
                 TrafficTable(
                     isEmpty: processTrafficMonitor.appSpeeds.isEmpty,
-                    emptyText: L10n.Table.noActiveApps,
-                    emptyDetail: "打开应用并产生网络请求后，实时流量会显示在这里。"
+                    emptyText: processTrafficMonitor.samplingMessage ?? L10n.Table.noActiveApps,
+                    emptyDetail: processTrafficMonitor.samplingMessage == nil
+                        ? "打开应用并产生网络请求后，实时流量会显示在这里。"
+                        : "菜单栏总网速仍正常更新，历史流量记录保留。"
                 ) {
                     ForEach(Array(processTrafficMonitor.appSpeeds.prefix(maxTableApps))) { app in
                         TrafficTableRow(
