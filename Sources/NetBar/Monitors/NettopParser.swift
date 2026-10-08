@@ -111,7 +111,7 @@ enum NettopParser {
         let pipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
-        var arguments = ["-n", "-x"]
+        var arguments = ["-n", "-x", "-c"]
         if let interfaceType {
             arguments += ["-t", interfaceType]
         }
@@ -154,7 +154,7 @@ enum NettopParser {
         timeoutLock.lock()
         let timedOut = didTimeOut
         timeoutLock.unlock()
-        guard !timedOut else { return Result(stats: [:], interfaces: [:]) }
+        guard !timedOut, process.terminationStatus == 0 else { return Result(stats: [:], interfaces: [:]) }
 
         guard let output = String(data: data, encoding: .utf8) else {
             return Result(stats: [:], interfaces: [:])

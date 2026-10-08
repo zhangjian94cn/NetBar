@@ -34,64 +34,59 @@ final class Ping0WebClient: IPIntelligenceClient {
         try await lookupViaPage(urlString: "https://ping0.cc/ip/\(ip)")
     }
 
+    @MainActor
     private func lookupViaPage(urlString: String) async throws -> EgressIPInfo {
-        guard let url = URL(string: urlString) else {
-            throw EgressIPError.invalidEndpoint
-        }
-
-        let webView = await MainActor.run { self.loadOrCreateWebView(url: url) }
-
-        guard try await waitUntilReady(webView) else {
-            throw EgressIPError.webpageNotReady
-        }
-
-        // 抽取脚本含大模型检测等待，全程最坏 ≈ pageReadyTimeout + aiDetectionTimeout
-        let script = Self.extractionScript(aiTimeoutMs: Int(aiDetectionTimeout * 1000))
-        var lastError: Error = EgressIPError.invalidJSONResponse
-        for _ in 0..<3 {
-            do {
-                guard let raw = try await evaluate(script, on: webView) as? String else {
-                    throw EgressIPError.invalidJSONResponse
+        try Task.checkCancellation()
+        guard let url = URL(string: urlString) else { throw EgressIPError.invalidEndpoint }
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1280, height: 720), configuration: configuration)
+        // Query ownership ends here, on success, error, or cancellation. Keeping a
+        // loaded challenge page alive also keeps its timers and WebKit work alive.
+        defer { Self.releasePage(webView) }
+        return try await withTaskCancellationHandler {
+            webView.load(URLRequest(url: url))
+            guard try await waitUntilReady(webView) else { throw EgressIPError.webpageNotReady }
+            let script = Self.extractionScript(aiTimeoutMs: Int(aiDetectionTimeout * 1000))
+            var lastError: Error = EgressIPError.invalidJSONResponse
+            for _ in 0..<3 {
+                try Task.checkCancellation()
+                do {
+                    guard let raw = try await evaluate(script, on: webView) as? String else {
+                        throw EgressIPError.invalidJSONResponse
+                    }
+                    try Task.checkCancellation()
+                    return try Ping0PageParser.parse(extractionJSON: raw)
+                } catch let error as EgressIPError {
+                    throw error
+                } catch {
+                    try Task.checkCancellation()
+                    lastError = error
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
                 }
-                return try Ping0PageParser.parse(extractionJSON: raw)
-            } catch let error as EgressIPError {
-                throw error
-            } catch {
-                // 挑战通过后的 location.reload() 与抽取并发时会抛 WKError，退避重试
-                lastError = error
-                try await Task.sleep(nanoseconds: 1_000_000_000)
             }
+            throw lastError
+        } onCancel: {
+            Task { @MainActor in Self.releasePage(webView) }
         }
-        throw lastError
-    }
-
-    // MARK: - WKWebView 生命周期（全部主线程）
-
-    private var storedWebView: WKWebView?
-
-    @MainActor
-    private func loadOrCreateWebView(url: URL) -> WKWebView {
-        let webView: WKWebView
-        if let storedWebView {
-            webView = storedWebView
-        } else {
-            let configuration = WKWebViewConfiguration()
-            configuration.websiteDataStore = .default()
-            webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1280, height: 720), configuration: configuration)
-            storedWebView = webView
-        }
-        webView.load(URLRequest(url: url))
-        return webView
     }
 
     @MainActor
-    private func evaluate(_ script: String, on webView: WKWebView) async throws -> Any {
+    private static func releasePage(_ webView: WKWebView) {
+        webView.stopLoading()
+        // stopLoading alone does not stop JavaScript in an already loaded page.
+        webView.loadHTMLString("", baseURL: nil)
+    }
+
+    @MainActor
+    private func evaluate(_ script: String, on webView: WKWebView) async throws -> Any? {
         try await webView.evaluateJavaScript(script)
     }
 
     private func waitUntilReady(_ webView: WKWebView) async throws -> Bool {
         let deadline = Date().addingTimeInterval(pageReadyTimeout)
         while Date() < deadline {
+            try Task.checkCancellation()
             let ready = (try? await evaluate(Self.readinessScript, on: webView) as? Bool) ?? false
             if ready { return true }
             try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
@@ -173,6 +168,8 @@ final class EgressIPClientRouter: IPIntelligenceClient {
         do {
             return try await webClient.lookupCurrentIP(version: version, apiKey: nil)
         } catch {
+            try Task.checkCancellation()
+            if error is CancellationError { throw error }
             Log.network.error("ping0 网页链路失败，降级基础归属地: \(error.localizedDescription)")
             return try await apiClient.lookupCurrentIP(version: version, apiKey: nil)
         }

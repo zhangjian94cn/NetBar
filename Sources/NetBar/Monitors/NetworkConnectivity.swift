@@ -992,66 +992,104 @@ protocol NetworkEventLogging {
 
 final class NetworkEventLogger: NetworkEventLogging {
     static let shared = NetworkEventLogger()
-    private let queue = DispatchQueue(label: "com.zjah.NetBar.network-event-log")
+    private let queue = DispatchQueue(label: "com.zjah.NetBar.network-event-log", qos: .utility)
     private let fileURL: URL
-    private let maxBytes: UInt64 = 2 * 1024 * 1024
+    private let maxBytes: Int
+    private let now: () -> Date
+    private let formatter = ISO8601DateFormatter() // Owned exclusively by queue.
     private let duplicateSuppressionWindow: TimeInterval = 300
     private var lastRecordedByFingerprint: [String: Date] = [:]
+    private var lastCompactedAt: Date?
 
-    init(fileURL: URL? = nil) {
+    init(fileURL: URL? = nil, maxBytes: Int = 2 * 1024 * 1024, now: @escaping () -> Date = Date.init) {
+        precondition(maxBytes > 0)
         self.fileURL = fileURL ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/NetBar/network-events.jsonl")
+        self.maxBytes = maxBytes
+        self.now = now
     }
 
     func record(event: String, detail: String, candidateSSID: String? = nil) {
-        queue.async { [weak self, fileURL, maxBytes] in
+        queue.async { [weak self] in
             guard let self else { return }
-            let fm = FileManager.default
-            let directory = fileURL.deletingLastPathComponent()
-            try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
             let candidateID = candidateSSID.map(WiFiCandidateSelector.candidateID(for:))
             let safeDetail = candidateSSID.map { detail.replacingOccurrences(of: $0, with: "<candidate>") } ?? detail
-            let now = Date()
+            let now = self.now()
             let fingerprint = [event, safeDetail, candidateID ?? "-"].joined(separator: "\u{1f}")
             if let last = self.lastRecordedByFingerprint[fingerprint],
-               now.timeIntervalSince(last) < self.duplicateSuppressionWindow {
-                return
-            }
-            self.lastRecordedByFingerprint[fingerprint] = now
-            self.lastRecordedByFingerprint = self.lastRecordedByFingerprint.filter {
-                now.timeIntervalSince($0.value) < self.duplicateSuppressionWindow
-            }
+               now.timeIntervalSince(last) < self.duplicateSuppressionWindow { return }
             let payload: [String: String] = [
-                "timestamp": ISO8601DateFormatter().string(from: now),
-                "event": event,
-                "detail": safeDetail,
-                "candidate": candidateID ?? "-"
+                "timestamp": self.formatter.string(from: now),
+                "event": event, "detail": safeDetail, "candidate": candidateID ?? "-"
             ]
-            guard let data = try? JSONSerialization.data(withJSONObject: payload),
-                  var line = String(data: data, encoding: .utf8)?.data(using: .utf8) else { return }
-            line.append(0x0A)
-            let cutoff = Date().addingTimeInterval(-7 * 24 * 3600)
-            let existing = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
-            var retained = existing.components(separatedBy: .newlines).compactMap { raw -> String? in
-                guard !raw.isEmpty,
-                      let rawData = raw.data(using: .utf8),
-                      let object = try? JSONSerialization.jsonObject(with: rawData) as? [String: String],
-                      let timestamp = object["timestamp"],
-                      let date = ISO8601DateFormatter().date(from: timestamp),
-                      date >= cutoff else { return nil }
-                return raw
-            }
-            retained.append(String(decoding: line.dropLast(), as: UTF8.self))
-            var output = Data((retained.joined(separator: "\n") + "\n").utf8)
-            if UInt64(output.count) > maxBytes {
-                let suffix = output.suffix(Int(maxBytes))
-                if let newline = suffix.firstIndex(of: 0x0A) {
-                    output = Data(suffix[suffix.index(after: newline)...])
-                } else {
-                    output = Data(suffix)
+            do {
+                var line = try JSONSerialization.data(withJSONObject: payload)
+                line.append(0x0A)
+                // Never produce partial JSON records, even for a pathological detail.
+                guard line.count <= self.maxBytes else { return }
+                try self.append(line, at: now)
+                self.lastRecordedByFingerprint[fingerprint] = now
+                self.lastRecordedByFingerprint = self.lastRecordedByFingerprint.filter {
+                    now.timeIntervalSince($0.value) < self.duplicateSuppressionWindow
                 }
+            } catch {
+                Log.network.error("网络事件日志写入失败: \(error.localizedDescription)")
             }
-            try? output.write(to: fileURL, options: .atomic)
         }
+    }
+
+    /// Deterministic drain for shutdown and tests; never call from the logger queue.
+    func flush() { queue.sync {} }
+
+    private func append(_ line: Data, at now: Date) throws {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: fileURL.path) {
+            try fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try line.write(to: fileURL, options: .atomic)
+            lastCompactedAt = now
+            return
+        }
+        let size = (try fm.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
+        let overBudget = size + UInt64(line.count) > UInt64(maxBytes)
+        let maintenanceDue = lastCompactedAt.map { now.timeIntervalSince($0) >= 3600 } ?? true
+        if overBudget || maintenanceDue {
+            try compact(appending: line, size: size, at: now, overBudget: overBudget)
+            lastCompactedAt = now
+        } else {
+            let handle = try FileHandle(forWritingTo: fileURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: line)
+        }
+    }
+
+    private func compact(appending line: Data, size: UInt64, at now: Date, overBudget: Bool) throws {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        // A damaged/externally enlarged file must not cause unbounded reads.
+        let offset = size > UInt64(maxBytes) ? size - UInt64(maxBytes) : 0
+        try handle.seek(toOffset: offset)
+        var data = try handle.read(upToCount: maxBytes) ?? Data()
+        if offset > 0 {
+            data = data.firstIndex(of: 0x0A).map { Data(data[data.index(after: $0)...]) } ?? Data()
+        }
+        let cutoff = now.addingTimeInterval(-7 * 24 * 3600)
+        var output = Data()
+        for raw in data.split(separator: 0x0A) {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(raw)) as? [String: String],
+                  let timestamp = object["timestamp"],
+                  let date = formatter.date(from: timestamp), date >= cutoff else { continue }
+            output.append(contentsOf: raw)
+            output.append(0x0A)
+        }
+        // Leave rotation headroom, otherwise a full log would compact on EVERY append.
+        let target = overBudget ? maxBytes * 3 / 4 : maxBytes
+        let retainedLimit = max(0, target - line.count)
+        if output.count > retainedLimit {
+            let suffix = output.suffix(retainedLimit)
+            output = suffix.firstIndex(of: 0x0A).map { Data(suffix[suffix.index(after: $0)...]) } ?? Data()
+        }
+        output.append(line)
+        try output.write(to: fileURL, options: .atomic)
     }
 }

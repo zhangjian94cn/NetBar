@@ -1,5 +1,6 @@
 import Cocoa
 import SwiftUI
+import Combine
 
 // MARK: - 菜单栏控制器
 
@@ -16,7 +17,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
     private var statusBarView: StatusBarView!
     private var panel: NSPanel?
     private let coordinator: MonitorCoordinator
-    private var updateTimer: Timer?
+    private var titleSubscription: AnyCancellable?
     private var globalEventMonitor: Any?
     private var localEventMonitor: Any?
 
@@ -128,23 +129,11 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
 
     private func startUpdatingTitle() {
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            DispatchQueue.main.async {
-                self.updateTitle()
-            }
+        // The speed sampler already owns the clock; an extra 1 Hz UI timer only
+        // redraws the previous reading and wakes an otherwise idle app.
+        titleSubscription = coordinator.networkMonitor.$currentSpeed.sink { [weak self] speed in
+            self?.statusBarView.update(upload: speed.compactUpload, download: speed.compactDownload)
         }
-        if let timer = updateTimer {
-            RunLoop.main.add(timer, forMode: .common)
-        }
-    }
-
-    private func updateTitle() {
-        let speed = coordinator.networkMonitor.currentSpeed
-        statusBarView.update(
-            upload: speed.compactUpload,
-            download: speed.compactDownload
-        )
     }
 
     @objc private func togglePopover(_ sender: AnyObject?) {
@@ -183,6 +172,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
             panel.isReleasedWhenClosed = false
 
             self.panel = panel
+            self.coordinator.processTrafficMonitor.setDetailVisible(true)
             self.setStatusItemHighlighted(true)
             panel.orderFrontRegardless()
             #if DEBUG
@@ -216,6 +206,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
     #endif
 
     private func closePanel() {
+        coordinator.processTrafficMonitor.setDetailVisible(false)
         panel?.close()
         panel = nil
         setStatusItemHighlighted(false)
@@ -223,6 +214,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         if notification.object as? NSPanel === panel {
+            coordinator.processTrafficMonitor.setDetailVisible(false)
             panel = nil
             setStatusItemHighlighted(false)
         }
@@ -274,7 +266,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
 
     deinit {
-        updateTimer?.invalidate()
+        titleSubscription?.cancel()
         if let monitor = globalEventMonitor {
             NSEvent.removeMonitor(monitor)
         }
