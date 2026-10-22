@@ -65,8 +65,10 @@ Wi-Fi 是当前出口时，Mini Helper 的 `ready` 只允许进入 30 秒资格�
 
 [ClashNetworkModeController](Sources/NetBar/Monitors/ClashNetworkModeController.swift) 编排公司共存、统一出口、原网络；[受限原生适配器](Sources/NetBar/Monitors/LiveClashNetworkModeBackend.swift)只支持经验证的Clash版本。未知状态失败关闭；公司VPN必须用户手动断开，NetBar不代为断开或重连。
 
-Route Safety Helper新增固定dns-status/acquire/release/reconcile协议6；[DNS恢复组件](Sources/NetBarDNSGuardian/main.swift)只管理本机物理服务DNS lease，保存服务UUID、原字典/自动来源、applied值、PID启动身份和私有检查和。模式互切不能覆盖首次基线。外部DNS改动保留，冲突manual_pending。恢复组件无Clash、VPN、物理路由或Mini写权限，无lease退出，不做周期网络probe。
+Route Safety Helper新增固定dns-status/prepare/acquire/release/reconcile协议7；[DNS恢复组件](Sources/NetBarDNSGuardian/main.swift)只管理本机物理服务DNS lease，保存服务UUID、原字典/自动来源、applied值、PID启动身份和私有检查和。模式互切不能覆盖首次基线。外部DNS改动保留，冲突manual_pending。恢复组件无Clash、VPN、物理路由或Mini写权限，无lease退出，不做周期网络probe。
 
 **退出NetBar只恢复仍拥有的DNS，Clash配置、节点、TUN与系统代理全部保持。** 正常退出等待有界释放，强退/Clash退出由独立组件恢复；重开只读，绝不自动接管。统一配置仍运行但DNS未托管时明确“DNS保障已解除”。选择原网络才关闭TUN及系统代理。退出路径不能调用普通切换回滚。
 
 DNS Helper protocol7 先在原生激活/TUN之前prepare保存原自动/手动来源（不写DNS、120秒预算），之后真实TUN UDP/TCP53劫持核验通过才获取。与Verge2.5.8共用114.114.114.114占位，不能另写地址触发两个写入方竞争。模式互切保留首次原件；普通失败先回滚Clash、准备记录等待6秒原生脚本宽限再CAS释放；进程退出仍只恢复DNS。公网统一出口需同一真实节点、无DIRECTfallback；公网IPv6经代理或失败，系统IPv6设置不动。内网/OA、浏览器自带DoH、真实DNS与流量、退出/强退/换网、Direct Full/Lite和能耗分别验收，不用文件/单测/菜单点击代替。
+
+Guardian 启动保留 launchd 30 秒限速，固定 `kickstart -p` 请求最多 35 秒，App prepare/acquire 最多 45 秒；核对实际 root PID 和 executable，不能仅以已登记视为运行。租约替换事件刷新已有 watcher 的进程与期限，忽略自身最终值；不在每次获取时强制重启。启动失败保留原件日志，普通事务先回滚 Clash 再释放 DNS。

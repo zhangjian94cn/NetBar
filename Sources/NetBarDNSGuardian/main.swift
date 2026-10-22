@@ -259,13 +259,22 @@ private func consoleProcesses() throws -> (DNSProcessIdentity, DNSProcessIdentit
 }
 
 private func launchctl(_ args: [String]) throws {
-    let task = Process(); task.executableURL = URL(fileURLWithPath: "/bin/launchctl"); task.arguments = args
-    task.standardOutput = FileHandle.nullDevice; task.standardError = FileHandle.nullDevice
-    try task.run()
-    let deadline = Date().addingTimeInterval(3)
-    while task.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
-    if task.isRunning { task.terminate(); throw DNSLeaseError.invalidState("DNS recovery launchd request timed out") }
-    guard task.terminationStatus == 0 else { throw DNSLeaseError.invalidState("Install/update DNS recovery component first") }
+    // launchd may honor the job's 30-second throttle after an idle exit. A
+    // three-second client deadline mistakes that valid delay for a bad install.
+    let starting = args.first == "kickstart"
+    let result = BoundedCommand.run("/bin/launchctl", args, timeout: starting ? 35 : 3, outputLimit: 16_384)
+    guard result.exitCode == 0, !result.outputTruncated else {
+        throw DNSLeaseError.invalidState(result.outcome == .timedOut
+            ? "DNS recovery launchd request timed out; network changes were not committed"
+            : "DNS recovery launchd request failed; verify the installed recovery component")
+    }
+    if starting {
+        guard let pid = Int32(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let identity = processIdentity(pid), identity.uid == 0,
+              identity.executable == "/Library/PrivilegedHelperTools/com.zjah.NetBarDNSGuardian" else {
+            throw DNSLeaseError.invalidState("DNS recovery process did not match the installed component")
+        }
+    }
 }
 
 private func printStatus(_ status: DNSLeaseStatus) throws {
@@ -281,21 +290,19 @@ private final class Watcher {
     private var fileSources: [String: DispatchSourceFileSystemObject] = [:]
     private var filePaths: [String] = []
     private var preparationTimer: DispatchWorkItem?
+    private var observedLease: DNSLease?
+    private let leasePath = stateRoot.appendingPathComponent("dns-lease.json").path
 
     func start() throws -> Never {
         let store = LeaseStore()
         guard let lease = try store.load() else { exit(0) }
-        schedulePreparationDeadline(lease)
+        refreshObservation(lease)
         if let account = getpwuid(lease.owner.uid) {
             let config = String(cString: account.pointee.pw_dir) + "/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/"
             filePaths = ["verge.yaml", "config.yaml", "clash-verge.yaml"].map { config + $0 }
             for path in filePaths { watchFile(path) }
         }
-        for identity in [lease.owner, lease.clash] + (lease.core.map { [$0] } ?? []) {
-            if let source = DispatchSource.makeProcessSource(identifier: identity.pid, eventMask: .exit, queue: queue) as DispatchSourceProcess? {
-                source.setEventHandler { [weak self] in self?.schedule() }; source.resume(); sources.append(source)
-            }
-        }
+        watchFile(leasePath)
         var context = SCDynamicStoreContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil)
         dynamic = SCDynamicStoreCreate(nil, "NetBar DNS recovery" as CFString, { _, _, context in
             guard let context else { return }
@@ -323,6 +330,15 @@ private final class Watcher {
             if let source, !source.data.intersection([.delete, .rename]).isEmpty {
                 self.fileSources.removeValue(forKey: path)?.cancel()
             }
+            if path == self.leasePath {
+                self.watchFile(path)
+                // Reconcile writes the journal too. Ignore our own final value
+                // rather than turn an atomic write into a perpetual event loop.
+                do {
+                    let current = try LeaseStore().load()
+                    if current == self.observedLease { return }
+                } catch { /* A real journal error still needs bounded recovery. */ }
+            }
             self.schedule()
         }
         fileSources[path] = source; source.resume()
@@ -342,18 +358,31 @@ private final class Watcher {
         preparationTimer = timer
         queue.asyncAfter(deadline: .now() + max(0, deadline.timeIntervalSinceNow), execute: timer)
     }
+    private func refreshObservation(_ lease: DNSLease) {
+        if observedLease?.owner != lease.owner || observedLease?.clash != lease.clash || observedLease?.core != lease.core {
+            sources.forEach { $0.cancel() }; sources.removeAll()
+            for identity in [lease.owner, lease.clash] + (lease.core.map { [$0] } ?? []) {
+                if let source = DispatchSource.makeProcessSource(identifier: identity.pid, eventMask: .exit, queue: queue) as DispatchSourceProcess? {
+                    source.setEventHandler { [weak self] in self?.schedule() }; source.resume(); sources.append(source)
+                }
+            }
+        }
+        observedLease = lease
+        schedulePreparationDeadline(lease)
+    }
     private func reconcile() {
         do {
             let lock = try PrivilegedLock()
             defer { withExtendedLifetime(lock) {} }
             let store = LeaseStore()
             guard try store.load() != nil else { exit(0) }
+            watchFile(leasePath)
             for path in filePaths { watchFile(path) }
             let result = try DNSLeaseEngine(backend: MacDNSBackend(), store: store).reconcile()
             retries = 0
             try printStatus(result)
             guard let remaining = try store.load() else { exit(0) }
-            schedulePreparationDeadline(remaining)
+            refreshObservation(remaining)
         } catch {
             // Bounded contention retry, never a network-probe loop. Future network events
             // can retry unresolved services; a writer lock may still be finishing acquire.
@@ -394,9 +423,13 @@ do {
         }
         try launchctl(["print", "system/\(guardianLabel)"])
         let (owner, clash, core) = try consoleProcesses()
-        let result = action == "dns-prepare" ? try engine.prepare(owner: owner, clash: clash, core: core) : try engine.acquire(owner: owner, clash: clash, core: core)
-        do { try launchctl(["kickstart", "-k", "system/\(guardianLabel)"]) }
-        catch { _ = try engine.release(reason: "Recovery component failed to start"); throw error }
+        let prepared = action == "dns-prepare" ? try engine.prepare(owner: owner, clash: clash, core: core) : nil
+        // An existing watcher observes atomic lease updates itself. Do not kill
+        // the recovery safety net on every prepare/acquire operation.
+        // A launch failure retains the original journal. The app must roll back
+        // native Clash first, then release DNS; launchd also still sees the lease.
+        try launchctl(["kickstart", "-p", "system/\(guardianLabel)"])
+        let result = try prepared ?? engine.acquire(owner: owner, clash: clash, core: core)
         try printStatus(result)
     default: break
     }

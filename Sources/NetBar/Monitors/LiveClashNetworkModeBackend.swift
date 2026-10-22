@@ -524,11 +524,12 @@ final class LiveClashNetworkModeBackend: ClashNetworkModeBackend {
     }
 
     private func dnsAction(_ action: String) throws -> ClashDNSLeaseStatus {
-        let result = BoundedCommand.run("/usr/bin/sudo", ["-n", helper, action], timeout: action == "dns-acquire" ? 22 : (action == "dns-release" ? 15 : 8))
-        guard result.exitCode == 0, let data = result.stdout.data(using: .utf8),
+        let result = BoundedCommand.run("/usr/bin/sudo", ["-n", helper, action], timeout: ["dns-prepare", "dns-acquire"].contains(action) ? 45 : (action == "dns-release" ? 15 : 8))
+        guard let data = result.stdout.data(using: .utf8),
               let value = try? JSONDecoder().decode(ClashDNSLeaseStatus.self, from: data), value.protocolVersion >= 7 else {
             throw ClashModeFailure("DNS 恢复组件未安装、需更新或无授权；请先安装/更新 Route Safety Helper")
         }
+        guard result.exitCode == 0 else { throw ClashModeFailure(value.reason ?? "DNS 恢复组件执行失败，未提交切换") }
         return value
     }
 
