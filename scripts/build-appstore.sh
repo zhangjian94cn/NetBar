@@ -19,20 +19,23 @@ cp "$ROOT_DIR/.build/release/NetBar" "$BIN_DIR/NetBar"
 cp "$ROOT_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$RES_DIR/AppIcon.icns"
 
-if find "$APP_DIR" \( -name 'netbar-mini-link-helper' -o -name 'install-netbar-mini-link-helper.command' -o -name 'NetBarMiniNetworkGuardian' -o -name 'netbar-route-safety-helper' \) | grep -q .; then
+if [[ -n "$(find "$APP_DIR" \( -name 'netbar-mini-link-helper' -o -name 'install-netbar-mini-link-helper.command' -o -name 'NetBarMiniNetworkGuardian' -o -name 'NetBarDNSGuardian' -o -name 'netbar-route-safety-helper' \) -print -quit)" ]]; then
     echo "App Store Lite artifact must not contain network Helper or Guardian resources" >&2
     exit 1
 fi
-if strings "$BIN_DIR/NetBar" | grep -Fq '/usr/bin/ssh'; then
+strings_file="$(mktemp "$DIST_DIR/netbar-strings.XXXXXX")"
+trap 'rm -f "$strings_file"' EXIT
+strings "$BIN_DIR/NetBar" > "$strings_file"
+if grep -Fq '/usr/bin/ssh' "$strings_file"; then
     echo "App Store Lite binary must not contain SSH provisioning capability" >&2
     exit 1
 fi
-if strings "$BIN_DIR/NetBar" | grep -Eq 'OverlayTransactions|Mihomo 拒绝切换 TUN|模式验证失败'; then
+if grep -Eq 'OverlayTransactions|Mihomo 拒绝切换 TUN|模式验证失败|dns-acquire|dns-release|ClashModes/manifest' "$strings_file"; then
     echo "App Store Lite binary must not contain Clash mode write capability" >&2
     exit 1
 fi
 
-if strings "$BIN_DIR/NetBar" | grep -Fq 'recover-coexistence'; then
+if grep -Fq 'recover-coexistence' "$strings_file"; then
     echo "App Store Lite binary must not contain company VPN coexistence recovery" >&2
     exit 1
 fi

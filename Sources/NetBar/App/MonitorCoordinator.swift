@@ -15,6 +15,7 @@ class MonitorCoordinator {
     let companyVPNDiagnosticMonitor = CompanyVPNDiagnosticMonitor()
     private let egressIdentityRefreshScheduler = DebouncedRefreshScheduler(delay: 3)
     lazy var clashOverlayModeController = ClashOverlayModeController()
+    lazy var clashNetworkModeController = ClashNetworkModeController()
     lazy var networkModeController = NetworkModeController(
         onNetworkChanged: { [weak self] in
             self?.refreshAfterNetworkModeChange()
@@ -103,6 +104,7 @@ class MonitorCoordinator {
         proxyDetector.checkProxySettings()
         networkInfoProvider.refresh()
         clashOverlayModeController.refresh()
+        clashNetworkModeController.refresh()
         scheduleEgressIPRefreshAfterIdentityChange()
     }
 }

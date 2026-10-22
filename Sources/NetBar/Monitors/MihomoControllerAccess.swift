@@ -61,7 +61,10 @@ final class MihomoControllerAccess {
                  controllerURL: AppConfig.shared.mihomoControllerURL,
                  secret: AppConfig.shared.mihomoSecret)
     }, userID: UInt32 = getuid(), run: @escaping CommandRunner = { arguments in
-        let result = BoundedCommand.run("/usr/bin/curl", arguments, timeout: 2)
+        // A complete installed rule set can exceed 1 MiB. Keep ordinary polling
+        // bounded at the smaller limit; explicit rule verification needs all rules.
+        let limit = URL(string: arguments.last ?? "")?.path == "/rules" ? 8_388_608 : 1_048_576
+        let result = BoundedCommand.run("/usr/bin/curl", arguments, timeout: 2, outputLimit: limit)
         return (result.exitCode, result.stdout)
     }) {
         self.settings = settings
@@ -133,6 +136,43 @@ final class MihomoControllerAccess {
         guard case .success(let session) = resolve() else { return nil }
         return try? request(endpoint: session.endpoint, path: path, secret: settings().secret).get()
     }
+
+    #if !APP_STORE
+    /// A bounded, in-memory observer for one explicit verification. Debug subscription
+    /// does not change Mihomo's global log level and never writes raw logs to disk.
+    func captureDebugLogs(during probe: () throws -> Void) throws -> String {
+        guard case .success(let session) = resolve(), case .unixSocket(let socket) = session.endpoint else {
+            throw ClashModeFailure("DNS 路径核验需要已验证的本机 Clash Socket")
+        }
+        var arguments = ["-sS", "--no-buffer", "--noproxy", "*", "--max-time", "8", "--unix-socket", socket]
+        let secret = settings().secret
+        if !secret.isEmpty { arguments += ["-H", "Authorization: Bearer " + secret] }
+        arguments.append("http://unix/logs?level=debug")
+        let context = ProbeContext(timeout: 8)
+        let finished = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var captured: BoundedCommandResult?
+        DispatchQueue.global(qos: .utility).async {
+            let result = BoundedCommand.run("/usr/bin/curl", arguments, timeout: 8, context: context, outputLimit: 1_048_576)
+            lock.lock(); captured = result; lock.unlock()
+            finished.signal()
+        }
+        // This is an explicit operation, not a standing polling observer. Missing
+        // subscription evidence fails the verification rather than claiming success.
+        Thread.sleep(forTimeInterval: 0.15)
+        var probeError: Error?
+        do { try probe() } catch { probeError = error }
+        Thread.sleep(forTimeInterval: 0.15)
+        context.cancel()
+        guard finished.wait(timeout: .now() + 2) == .success else { throw ClashModeFailure("DNS 日志观察器未按时退出") }
+        if let probeError { throw probeError }
+        lock.lock(); let result = captured; lock.unlock()
+        guard let result, !result.outputTruncated, [.cancelled, .exited].contains(result.outcome), !result.stdout.isEmpty else {
+            throw ClashModeFailure("未取得本轮 DNS 日志证据")
+        }
+        return result.stdout
+    }
+    #endif
 
     func write(method: String, path: String, body: String? = nil) -> Bool {
         #if APP_STORE

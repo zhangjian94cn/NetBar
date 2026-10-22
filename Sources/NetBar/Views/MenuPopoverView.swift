@@ -13,6 +13,7 @@ struct MenuPopoverView: View {
     @ObservedObject var appIconResolver: AppIconResolver
     @ObservedObject var networkModeController: NetworkModeController
     @ObservedObject var clashOverlayModeController: ClashOverlayModeController
+    @ObservedObject var clashNetworkModeController: ClashNetworkModeController
     @ObservedObject private var appConfig = AppConfig.shared
     let coordinator: MonitorCoordinator
 
@@ -27,7 +28,7 @@ struct MenuPopoverView: View {
         PopoverStatusPresentation(
             proofLevel: networkModeController.connectivityProofLevel,
             effectiveMode: networkModeController.snapshot?.effectiveMode,
-            overlay: clashOverlayModeController.snapshot,
+            overlay: clashNetworkModeController.overlaySummary,
             dnsFacts: networkModeController.dnsPathFacts,
             primaryReason: primaryReason,
             outletFault: networkModeController.requiresManualRecovery ||
@@ -40,7 +41,7 @@ struct MenuPopoverView: View {
             return networkModeController.errorMessage ?? "需要手动恢复网络路由"
         }
         return networkModeController.errorMessage ??
-            clashOverlayModeController.snapshot.reason ??
+            clashNetworkModeController.snapshot.reason ??
             networkModeController.policyMessage
     }
 
@@ -83,7 +84,7 @@ struct MenuPopoverView: View {
                 networkModeController.refresh()
             }
             if DistributionFlavor.current.supportsClashModeSwitch {
-                clashOverlayModeController.refresh()
+                clashNetworkModeController.refresh()
             }
         }
         .onDisappear {
@@ -167,7 +168,7 @@ struct MenuPopoverView: View {
             NetworkModeCard(controller: networkModeController)
         case .clash:
             ClashModeTabView(
-                controller: clashOverlayModeController,
+                controller: clashNetworkModeController,
                 applicationFacts: networkModeController.applicationPathFacts
             )
         case .applications:
@@ -258,7 +259,7 @@ struct MenuPopoverView: View {
         case .outlet:
             networkModeController.refresh()
         case .clash:
-            clashOverlayModeController.refresh()
+            clashNetworkModeController.refresh()
         case .applications where selectedTrafficTab == 1:
             processTrafficMonitor.requestCumulativeRefresh()
         case .applications, .monitoring:
@@ -273,7 +274,7 @@ struct MenuPopoverView: View {
             networkModeController.refresh()
         }
         if DistributionFlavor.current.supportsClashModeSwitch {
-            clashOverlayModeController.refresh()
+            clashNetworkModeController.refresh()
         }
 
         switch selectedSection {

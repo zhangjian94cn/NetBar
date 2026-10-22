@@ -110,6 +110,25 @@ final class RouteSafetyHelperBehaviourTests: XCTestCase {
         XCTAssertNotEqual(run(["status", "extra"]).status, 0)
     }
 
+    func testLegacyWiFiRepairCannotOverwriteActiveDNSLease() throws {
+        try fake("networksetup", body: """
+        if [ "$1" = "-listnetworkserviceorder" ]; then
+          printf '(1) Wi-Fi\\n(Hardware Port: Wi-Fi, Device: en0)\\n'
+          printf '(2) Thunderbolt Bridge\\n(Hardware Port: Thunderbolt Bridge, Device: bridge0)\\n'
+        elif [ "$1" = "-getdnsservers" ]; then
+          printf '192.168.2.1\\n'
+        elif [ "$1" = "-setdnsservers" ]; then
+          touch '\(sandbox.appendingPathComponent("unexpected-write").path)'
+        fi
+        """)
+        let lease = stateDir.appendingPathComponent("dns-lease.json")
+        try Data("lease-present".utf8).write(to: lease)
+        let result = run(["repair-wifi-dns"])
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.err.contains("release NetBar managed DNS"), result.err)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.appendingPathComponent("unexpected-write").path))
+    }
+
     // status 必须保持无锁：特权写超时后 root 子进程仍持锁，此时若 status 也被锁住，
     // 上层就无法核对未决事务，只能把「helper 忙」误判成「helper 未安装」。
     func testStatusStaysReadableWhileTheWriteLockIsHeld() throws {

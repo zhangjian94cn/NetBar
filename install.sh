@@ -16,8 +16,28 @@ cd "$SCRIPT_DIR"
 swift build -c release -Xswiftc -DDIRECT_FULL
 
 echo "📦 打包 NetBar.app 到 $HOME/Applications ..."
-# 先杀死正在运行的 NetBar，确保新编译的二进制能正确被打包并替换
-pkill NetBar || true
+# Stop the owner first so KeepAlive cannot restart the old app during replacement.
+launchctl unload "$PLIST_DST" 2>/dev/null || true
+if pgrep -x NetBar >/dev/null; then
+    # Normal app termination waits for its bounded DNS release. The independent root
+    # Guardian still covers a stuck app that needs the exact-name TERM fallback.
+    /usr/bin/osascript -e 'tell application "NetBar" to quit' >/dev/null 2>&1 &
+    quit_request=$!
+    for attempt in 1 2 3 4 5 6; do
+        pgrep -x NetBar >/dev/null || break
+        sleep 1
+    done
+    kill "$quit_request" 2>/dev/null || true
+    pkill -x NetBar || true
+fi
+for attempt in 1 2 3 4 5; do
+    pgrep -x NetBar >/dev/null || break
+    sleep 1
+done
+if pgrep -x NetBar >/dev/null; then
+    echo "NetBar 未退出，保留当前安装文件；请关闭后重试。"
+    exit 1
+fi
 # 清理旧的应用
 rm -rf "$APP_DIR"
 # 创建目录结构
@@ -29,6 +49,8 @@ cp .build/release/NetBar "$BIN_DIR/"
 cp -R .build/release/NetBar_NetBar.bundle "$RES_DIR/NetBar_NetBar.bundle"
 cp .build/release/NetBarMiniNetworkGuardian "$RES_DIR/NetBar_NetBar.bundle/MiniLinkHelper/NetBarMiniNetworkGuardian"
 chmod 0755 "$RES_DIR/NetBar_NetBar.bundle/MiniLinkHelper/NetBarMiniNetworkGuardian"
+cp .build/release/NetBarDNSGuardian "$RES_DIR/NetBar_NetBar.bundle/RouteSafetyHelper/NetBarDNSGuardian"
+chmod 0755 "$RES_DIR/NetBar_NetBar.bundle/RouteSafetyHelper/NetBarDNSGuardian"
 if [ -f "Info.plist" ]; then
     cp Info.plist "$APP_DIR/Contents/"
 else

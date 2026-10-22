@@ -16,6 +16,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Opening the installed app again exposes its current facts, without
+        // selecting a mode or acquiring DNS on the user's behalf.
+        statusBarController?.showPanel()
+        return false
+    }
+
+    private var terminationPending = false
+    private var terminationReplied = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminationPending else { return .terminateLater }
+        terminationPending = true
+        coordinator.clashNetworkModeController.releaseDNSForTermination {
+            self.finishTermination(sender)
+        }
+        // A stalled UI/backend cannot prevent quitting forever. The independent DNS
+        // guardian owns recovery after process exit and never changes Clash state.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            self.finishTermination(sender)
+        }
+        return .terminateLater
+    }
+
+    private func finishTermination(_ sender: NSApplication) {
+        guard !terminationReplied else { return }
+        terminationReplied = true
+        sender.reply(toApplicationShouldTerminate: true)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         coordinator.stopAll()
         NettopParser.terminateAllRunningChildren()
