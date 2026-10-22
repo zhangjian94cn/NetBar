@@ -25,6 +25,13 @@ enum ClashDNSPathEvidence {
     static let upstreamIPs: Set<String> = ["1.1.1.1", "1.0.0.1"]
     static let managedGroups: Set<String> = ["🧲 Claude", "🌐 统一出口"]
 
+    static func connections(in payload: [String: Any]) -> [[String: Any]]? {
+        // Mihomo serializes the empty tracker slice as null, including immediately
+        // after disabling system proxy. Missing/malformed data still fails closed.
+        guard let value = payload["connections"] else { return nil }
+        return value is NSNull ? [] : value as? [[String: Any]]
+    }
+
     static func ruleConfiguration(_ rules: [[String: Any]]) -> [[String: Any]] {
         rules.map { rule in
             var projection = rule.filter { ["type", "payload", "proxy", "size"].contains($0.key) }
@@ -119,7 +126,7 @@ enum ClashDNSPathEvidence {
 }
 
 /// Fixed native AX surface for Clash Verge Rev. No generic script execution, file
-/// current-UID edits, synthesized shortcuts or configuration mutation via HTTP.
+/// current-UID edits, generic shortcuts or configuration mutation via HTTP.
 enum ClashNativeControlMatching {
     struct Element {
         let title: String
@@ -203,12 +210,13 @@ final class ClashNativeProfileAdapter {
         try setFollowingLabel("自动设置全局路由", root: app, role: "AXSwitch", value: NSNumber(value: policy.autoRoute))
         try setFollowingLabel("严格路由", root: app, role: "AXSwitch", value: NSNumber(value: policy.strictRoute))
         try setFollowingLabel("自动选择流量出口接口", root: app, role: "AXSwitch", value: NSNumber(value: policy.autoDetectInterface))
-        try setFollowingLabel("DNS 劫持", root: app, role: kAXTextFieldRole as String, value: policy.dnsHijack.joined(separator: ",") as NSString)
         if followingControl("排除自定义网段", root: app, role: kAXTextAreaRole as String) == nil {
             guard let toggle = find(in: app, matching: { title($0) == "排除自定义网段" && role($0) == kAXButtonRole as String }) else { throw ClashModeFailure("排除网段编辑入口不可用") }
             try press(toggle)
         }
         try setFollowingLabel("排除自定义网段", root: app, role: kAXTextAreaRole as String, value: policy.routeExcludeAddress.joined(separator: ",") as NSString)
+        // Expand/toggle editors first; React may replace text controls during those renders.
+        try setFollowingLabel("DNS 劫持", root: app, role: kAXTextFieldRole as String, value: policy.dnsHijack.joined(separator: ",") as NSString)
         guard let save = find(in: app, matching: { title($0) == "保存" && role($0) == kAXButtonRole as String }) else { throw ClashModeFailure("原生 TUN 保存按钮不可用") }
         try press(save)
         saved = true
@@ -221,8 +229,49 @@ final class ClashNativeProfileAdapter {
             if current == boolean.boolValue { return }
             try press(control)
         } else {
-            guard AXUIElementSetAttributeValue(control, kAXValueAttribute as CFString, value) == .success else { throw ClashModeFailure("无法填写原生字段：" + label) }
+            guard ["DNS 劫持", "排除自定义网段"].contains(label), let text = value as? String else { throw ClashModeFailure("原生文本字段不在白名单") }
+            try typeReviewedText(text, into: control, label: label)
         }
+    }
+
+    /// Chromium controlled inputs need real input events. Target only the reviewed
+    /// Clash PID and selected field; no clipboard, global shortcut or arbitrary script.
+    private func typeReviewedText(_ text: String, into control: AXUIElement, label: String) throws {
+        if attribute(control, kAXValueAttribute as String) as? String == text { return }
+        var pid: pid_t = 0
+        let app = try application()
+        var appPID: pid_t = 0
+        guard text.utf16.count <= 8192,
+              AXUIElementGetPid(control, &pid) == .success,
+              AXUIElementGetPid(app, &appPID) == .success, pid == appPID,
+              AXUIElementSetAttributeValue(control, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success,
+              let current = attribute(control, kAXValueAttribute as String) as? String else {
+            throw ClashModeFailure("无法聚焦已核验原生字段：" + label)
+        }
+        var selected = CFRange(location: 0, length: current.utf16.count)
+        guard let range = AXValueCreate(.cfRange, &selected),
+              AXUIElementSetAttributeValue(control, kAXSelectedTextRangeAttribute as CFString, range) == .success else {
+            throw ClashModeFailure("无法选中原生文本：" + label)
+        }
+        let characters = Array(text.utf16)
+        guard !characters.isEmpty else { throw ClashModeFailure("原生策略文本不能为空") }
+        for offset in stride(from: 0, to: characters.count, by: 20) {
+            guard (attribute(control, kAXFocusedAttribute as String) as? NSNumber)?.boolValue == true,
+                  let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
+                throw ClashModeFailure("原生字段焦点已变化，停止输入：" + label)
+            }
+            let chunk = Array(characters[offset..<min(offset + 20, characters.count)])
+            down.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+            up.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+            down.postToPid(pid); up.postToPid(pid)
+            Thread.sleep(forTimeInterval: 0.03)
+        }
+        for attempt in 0..<10 {
+            if attribute(control, kAXValueAttribute as String) as? String == text { return }
+            if attempt < 9 { Thread.sleep(forTimeInterval: 0.05) }
+        }
+        throw ClashModeFailure("原生文本回读不匹配：" + label)
     }
 
     private func followingControl(_ label: String, root: AXUIElement, role wantedRole: String) -> AXUIElement? {
@@ -462,6 +511,12 @@ final class LiveClashNetworkModeBackend: ClashNetworkModeBackend {
     }
 
     func dnsStatus() throws -> ClashDNSLeaseStatus { try dnsAction("dns-status") }
+    func prepareDNS() throws {
+        let value = try dnsAction("dns-prepare")
+        guard value.managedByThisProcess, ["preparing", "owned"].contains(value.dnsLeaseState) else {
+            throw ClashModeFailure(value.reason ?? "DNS 原件未在开启 TUN 前保存")
+        }
+    }
     func acquireDNS() throws { let value = try dnsAction("dns-acquire"); guard value.ownedByThisProcess else { throw ClashModeFailure(value.reason ?? "DNS 未由本进程持有") } }
     func releaseDNS() throws {
         let value = try dnsAction("dns-release")
@@ -469,9 +524,9 @@ final class LiveClashNetworkModeBackend: ClashNetworkModeBackend {
     }
 
     private func dnsAction(_ action: String) throws -> ClashDNSLeaseStatus {
-        let result = BoundedCommand.run("/usr/bin/sudo", ["-n", helper, action], timeout: action == "dns-acquire" ? 22 : 8)
+        let result = BoundedCommand.run("/usr/bin/sudo", ["-n", helper, action], timeout: action == "dns-acquire" ? 22 : (action == "dns-release" ? 15 : 8))
         guard result.exitCode == 0, let data = result.stdout.data(using: .utf8),
-              let value = try? JSONDecoder().decode(ClashDNSLeaseStatus.self, from: data), value.protocolVersion >= 6 else {
+              let value = try? JSONDecoder().decode(ClashDNSLeaseStatus.self, from: data), value.protocolVersion >= 7 else {
             throw ClashModeFailure("DNS 恢复组件未安装、需更新或无授权；请先安装/更新 Route Safety Helper")
         }
         return value
@@ -547,12 +602,12 @@ final class LiveClashNetworkModeBackend: ClashNetworkModeBackend {
         guard try manifest().entry(for: mode) == entry else { throw ClashModeFailure("双配置登记在切换期间变化") }
         let current = try runtime()
         guard current.tunEnabled, current.hijacksUDPAndTCP, current.rulesSHA256 == entry.expectedRulesSHA256, current.leaf(for: entry.targetGroup) == leaf else { throw ClashModeFailure("DNS 劫持配置未核验") }
-        let route = BoundedCommand.run("/sbin/route", ["-n", "get", "223.5.5.5"], timeout: 2)
+        let route = BoundedCommand.run("/sbin/route", ["-n", "get", "114.114.114.114"], timeout: 2)
         guard route.exitCode == 0, route.stdout.split(separator: "\n").contains(where: { $0.contains("interface: utun") }) else { throw ClashModeFailure("DNS 目标路由未进入 TUN，未接管系统 DNS") }
         let suffix = mode == .companyCoexistence ? ".claude.ai" : ".cloudflare.com"
         // A reused DoH connection can retain the previous node after a selector change.
         // Close only fixed Cloudflare DNS connections belonging to our two groups.
-        guard let before = json(access.read(path: "/connections")), let oldConnections = before["connections"] as? [[String: Any]] else { throw ClashModeFailure("无法读取 DNS 上游连接") }
+        guard let before = json(access.read(path: "/connections")), let oldConnections = ClashDNSPathEvidence.connections(in: before) else { throw ClashModeFailure("无法读取 DNS 上游连接") }
         for connection in oldConnections where ClashDNSPathEvidence.isManagedDoH(connection) {
             guard let id = connection["id"] as? String, id.range(of: "^[0-9a-fA-F-]{36}$", options: .regularExpression) != nil,
                   access.write(method: "DELETE", path: "/connections/" + id) else { throw ClashModeFailure("旧 DNS 上游连接未安全释放") }
@@ -560,12 +615,12 @@ final class LiveClashNetworkModeBackend: ClashNetworkModeBackend {
         let names = (0..<2).map { _ in "netbar-" + UUID().uuidString.lowercased() + suffix }
         let logs = try access.captureDebugLogs {
             for (index, transport) in ["+notcp", "+tcp"].enumerated() {
-                let result = BoundedCommand.run("/usr/bin/dig", ["@223.5.5.5", names[index], "TXT", transport, "+time=2", "+tries=1", "+comments", "+noquestion", "+noanswer", "+noauthority", "+noadditional"], timeout: 3)
+                let result = BoundedCommand.run("/usr/bin/dig", ["@114.114.114.114", names[index], "TXT", transport, "+time=2", "+tries=1", "+comments", "+noquestion", "+noanswer", "+noauthority", "+noadditional"], timeout: 3)
                 guard result.exitCode == 0, result.stdout.contains("status: NOERROR") || result.stdout.contains("status: NXDOMAIN") else { throw ClashModeFailure("\(transport == "+tcp" ? "TCP" : "UDP") DNS 劫持查询未通过") }
             }
         }
         guard let upstreams = ClashDNSPathEvidence.freshUpstreams(logs: logs, names: names),
-              let payload = json(access.read(path: "/connections")), let connections = payload["connections"] as? [[String: Any]],
+              let payload = json(access.read(path: "/connections")), let connections = ClashDNSPathEvidence.connections(in: payload),
               ClashDNSPathEvidence.confirmsChains(connections, upstreams: upstreams, group: entry.targetGroup, leaf: leaf) else {
             throw ClashModeFailure("未取得本轮随机 DNS 查询经 Cloudflare DoH 与选定节点的关联证据，DNS 保障未核验")
         }
@@ -578,7 +633,7 @@ final class LiveClashNetworkModeBackend: ClashNetworkModeBackend {
         guard https.exitCode == 0, https.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "204" else { throw ClashModeFailure("不带显式代理的系统 HTTPS 未通过") }
     }
     func closeConnections() throws {
-        guard let payload = json(access.read(path: "/connections")), let connections = payload["connections"] as? [[String: Any]] else { throw ClashModeFailure("旧公网连接清理状态未知") }
+        guard let payload = json(access.read(path: "/connections")), let connections = ClashDNSPathEvidence.connections(in: payload) else { throw ClashModeFailure("旧公网连接清理状态未知") }
         let context = ProbeContext(timeout: 6)
         let generated = try runtimeGeneratedPolicy(root: readOnlyConfigRoot())
         let protectedCIDRs = ["route-exclude-address", "inet4-route-exclude-address", "inet6-route-exclude-address"].flatMap { generated.tun[$0] as? [String] ?? [] }

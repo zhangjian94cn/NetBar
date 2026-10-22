@@ -32,14 +32,14 @@ fail() {
 
 [[ "$#" -eq 1 ]] || fail "usage: netbar-route-safety-helper status|prefer-wifi|prefer-mini|ensure-management-alias|remove-legacy-mini-dns|repair-wifi-dns|commit|rollback"
 case "$1" in
-    status|prefer-wifi|prefer-mini|ensure-management-alias|remove-legacy-mini-dns|repair-wifi-dns|commit|rollback|dns-status|dns-acquire|dns-release|dns-reconcile) ACTION="$1" ;;
+    status|prefer-wifi|prefer-mini|ensure-management-alias|remove-legacy-mini-dns|repair-wifi-dns|commit|rollback|dns-status|dns-prepare|dns-acquire|dns-release|dns-reconcile) ACTION="$1" ;;
     *) fail "unsupported command" ;;
 esac
 
 # DNS lease actions share this helper's execution.lock inside the root-owned compiled
 # component. No paths, servers, service names, process IDs or commands come from argv.
 case "$ACTION" in
-    dns-status|dns-acquire|dns-release|dns-reconcile)
+    dns-status|dns-prepare|dns-acquire|dns-release|dns-reconcile)
         exec /Library/PrivilegedHelperTools/com.zjah.NetBarDNSGuardian "$ACTION"
         ;;
 esac

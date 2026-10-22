@@ -69,4 +69,4 @@ Route Safety Helper新增固定dns-status/acquire/release/reconcile协议6；[DN
 
 **退出NetBar只恢复仍拥有的DNS，Clash配置、节点、TUN与系统代理全部保持。** 正常退出等待有界释放，强退/Clash退出由独立组件恢复；重开只读，绝不自动接管。统一配置仍运行但DNS未托管时明确“DNS保障已解除”。选择原网络才关闭TUN及系统代理。退出路径不能调用普通切换回滚。
 
-临时DNS仅在真实TUN UDP/TCP53劫持核验后获取。公网统一出口需同一真实节点、无DIRECTfallback；公网IPv6经代理或失败，系统IPv6设置不动。内网/OA、浏览器自带DoH、真实DNS与流量、退出/强退/换网、Direct Full/Lite和能耗分别验收，不用文件/单测/菜单点击代替。
+DNS Helper protocol7 先在原生激活/TUN之前prepare保存原自动/手动来源（不写DNS、120秒预算），之后真实TUN UDP/TCP53劫持核验通过才获取。与Verge2.5.8共用114.114.114.114占位，不能另写地址触发两个写入方竞争。模式互切保留首次原件；普通失败先回滚Clash、准备记录等待6秒原生脚本宽限再CAS释放；进程退出仍只恢复DNS。公网统一出口需同一真实节点、无DIRECTfallback；公网IPv6经代理或失败，系统IPv6设置不动。内网/OA、浏览器自带DoH、真实DNS与流量、退出/强退/换网、Direct Full/Lite和能耗分别验收，不用文件/单测/菜单点击代替。

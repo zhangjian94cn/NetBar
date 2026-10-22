@@ -66,7 +66,9 @@ public struct DNSInterceptionIdentity: Codable, Equatable {
 }
 
 public struct DNSLease: Codable, Equatable {
-    public static let managedServers = ["223.5.5.5", "223.6.6.6"]
+    // Match Verge 2.5.8's own Fake-IP TUN placeholder. A second placeholder
+    // writer would cause Verge to replace its original DNS backup with ours.
+    public static let managedServers = ["114.114.114.114"]
     public static let schemaVersion = 1
     public struct Record: Codable, Equatable {
         public let serviceID: String
@@ -86,6 +88,8 @@ public struct DNSLease: Codable, Equatable {
     public let createdAt: Date
     public var records: [Record]
     public var interception: DNSInterceptionIdentity?
+    public var activationDeadline: Date?
+    public var recoveryNotBefore: Date?
 
     public init(owner: DNSProcessIdentity, clash: DNSProcessIdentity, core: DNSProcessIdentity? = nil) {
         schemaVersion = Self.schemaVersion
@@ -102,7 +106,7 @@ public struct DNSLeaseStatus: Codable, Equatable {
     public let reason: String?
 
     public init(state: String, owner: Int32? = nil, services: Int = 0, reason: String? = nil) {
-        protocolVersion = 6
+        protocolVersion = 7
         dnsLeaseState = state; dnsLeaseOwnerPID = owner; dnsLeaseServices = services; self.reason = reason
     }
 }
@@ -147,14 +151,30 @@ public protocol DNSLeaseStoring: AnyObject {
 public final class DNSLeaseEngine {
     private let backend: DNSLeaseBackend
     private let store: DNSLeaseStoring
+    private let now: () -> Date
 
-    public init(backend: DNSLeaseBackend, store: DNSLeaseStoring) { self.backend = backend; self.store = store }
+    public init(backend: DNSLeaseBackend, store: DNSLeaseStoring, now: @escaping () -> Date = Date.init) {
+        self.backend = backend; self.store = store; self.now = now
+    }
 
     public func status() throws -> DNSLeaseStatus {
         guard let lease = try store.load() else {
-            return try store.previousStatus() ?? .init(state: "inactive")
+            guard let previous = try store.previousStatus() else { return .init(state: "inactive") }
+            // The receipt's protocol describes its old writer, not this installed
+            // component. Keep its facts/reason while advertising our current API.
+            return .init(state: previous.dnsLeaseState, owner: previous.dnsLeaseOwnerPID,
+                         services: previous.dnsLeaseServices, reason: previous.reason)
         }
         let services = try backend.services()
+        if let deadline = lease.activationDeadline {
+            let valid = now() < deadline && backend.isAlive(lease.owner) && backend.isAlive(lease.clash) &&
+                lease.core.map({ backend.isAlive($0) }) != false && lease.records.filter({ $0.disposition != .restored }).allSatisfy { record in
+                    guard record.disposition == .prepared, let current = services.first(where: { $0.id == record.serviceID }) else { return false }
+                    return current.settings == record.original || current.settings == record.applied
+                }
+            return .init(state: valid ? "preparing" : "conflict", owner: lease.owner.pid, services: 0,
+                         reason: valid ? "Original DNS saved before native TUN activation; protection not yet verified" : "DNS preparation expired or changed; recovery required")
+        }
         let owned = lease.records.filter { record in
             (record.disposition == .owned || record.disposition == .prepared) &&
                 services.first(where: { $0.id == record.serviceID })?.settings == record.applied
@@ -184,17 +204,51 @@ public final class DNSLeaseEngine {
                      reason: reason)
     }
 
-    public func acquire(owner: DNSProcessIdentity, clash: DNSProcessIdentity, core: DNSProcessIdentity? = nil) throws -> DNSLeaseStatus {
+    /// Journal originals before Verge can write its own TUN placeholder. This action
+    /// never edits system DNS; repeated preparation never replaces the first originals.
+    public func prepare(owner: DNSProcessIdentity, clash: DNSProcessIdentity, core: DNSProcessIdentity? = nil) throws -> DNSLeaseStatus {
         let prior = try store.load()
         if prior == nil, try store.previousStatus()?.dnsLeaseState == "conflict" {
             throw DNSLeaseError.invalidState("Acknowledge the previous DNS conflict with explicit release before reacquisition")
         }
         if let prior, prior.owner != owner || prior.clash != clash || prior.core != core { throw DNSLeaseError.ownerChanged }
         guard backend.isAlive(owner), backend.isAlive(clash), core.map({ backend.isAlive($0) }) != false else { throw DNSLeaseError.ownerChanged }
-        var lease = prior ?? DNSLease(owner: owner, clash: clash, core: core)
+        if var prior {
+            let current = try status()
+            guard ["preparing", "owned"].contains(current.dnsLeaseState) else { throw DNSLeaseError.invalidState("Existing DNS lease requires recovery") }
+            if current.dnsLeaseState == "preparing" { return current }
+            prior.activationDeadline = now().addingTimeInterval(120)
+            prior.interception = nil
+            for index in prior.records.indices where prior.records[index].disposition == .owned {
+                prior.records[index].disposition = .prepared
+            }
+            try store.save(prior)
+            return try status()
+        }
+        let services = try backend.services().filter(\.active)
+        guard !services.isEmpty else { throw DNSLeaseError.noPhysicalService }
+        guard try services.allSatisfy({ try $0.settings.configuration()?["ServerAddresses"] as? [String] != DNSLease.managedServers }) else {
+            throw DNSLeaseError.invalidState("Clash placeholder already active without original DNS journal; select original network first")
+        }
+        var lease = DNSLease(owner: owner, clash: clash, core: core)
+        lease.activationDeadline = now().addingTimeInterval(120)
+        lease.records = try services.map {
+            .init(serviceID: $0.id, device: $0.device, original: $0.settings, applied: try $0.settings.managed(), disposition: .prepared)
+        }
+        try store.save(lease)
+        return try status()
+    }
+
+    public func acquire(owner: DNSProcessIdentity, clash: DNSProcessIdentity, core: DNSProcessIdentity? = nil) throws -> DNSLeaseStatus {
+        guard var lease = try store.load() else { throw DNSLeaseError.invalidState("Prepare original DNS before native TUN activation") }
+        guard lease.owner == owner, lease.clash == clash, lease.core == core,
+              backend.isAlive(owner), backend.isAlive(clash), core.map({ backend.isAlive($0) }) != false else { throw DNSLeaseError.ownerChanged }
+        let preparing = lease.activationDeadline != nil
+        if let deadline = lease.activationDeadline, now() >= deadline {
+            throw DNSLeaseError.invalidState("DNS preparation expired; select the mode again")
+        }
         guard let interception = backend.interceptionIdentity(for: lease),
               lease.interception == nil || lease.interception == interception else {
-            if prior != nil { _ = try? release(reason: "TUN DNS interception ended; DNS restored") }
             throw DNSLeaseError.invalidState("TUN DNS interception is unavailable; temporary DNS was not acquired")
         }
         lease.interception = interception
@@ -203,17 +257,29 @@ public final class DNSLeaseEngine {
         }
         let services = try backend.services()
         guard services.contains(where: { $0.active }) else { throw DNSLeaseError.noPhysicalService }
+        if preparing, Set(services.filter(\.active).map(\.id)) != Set(lease.records.filter({ $0.disposition == .prepared }).map(\.serviceID)) {
+            throw DNSLeaseError.invalidState("Physical services changed during preparation; restore and select the mode again")
+        }
         // Save the lease before touching any service. Repeated mode clicks retain first originals.
         try store.save(lease)
         do {
             for service in services where service.active {
                 if let index = lease.records.firstIndex(where: { $0.serviceID == service.id && $0.disposition != .restored }) {
-                    guard lease.records[index].applied == service.settings else {
+                    let record = lease.records[index]
+                    guard record.applied == service.settings || (preparing && record.original == service.settings) else {
                         lease.records[index].disposition = .conflict
                         try store.save(lease)
                         throw DNSLeaseError.externalChange(service.id)
                     }
+                    if record.applied != service.settings {
+                        try backend.replace(serviceID: service.id, expected: record.original, with: record.applied)
+                    }
+                    lease.records[index].disposition = .owned
+                    try store.save(lease)
                     continue
+                }
+                guard try service.settings.configuration()?["ServerAddresses"] as? [String] != DNSLease.managedServers else {
+                    throw DNSLeaseError.invalidState("New service already has Clash placeholder DNS; original settings are unknown, manual recovery required")
                 }
                 let applied = try service.settings.managed()
                 let record = DNSLease.Record(serviceID: service.id, device: service.device, original: service.settings,
@@ -229,11 +295,12 @@ public final class DNSLeaseEngine {
                 lease.records[index].disposition = .owned
                 try store.save(lease)
             }
+            lease.activationDeadline = nil
+            try store.save(lease)
             return try status()
         } catch {
-            // Existing lease is left for the caller's ordinary rollback, which may keep the
-            // previous mode. New acquisition failure must restore all changes made so far.
-            if prior == nil { _ = try? release(reason: "Acquisition failed; restored DNS owned by this attempt") }
+            // Keep originals journaled until the app finishes its native rollback, then
+            // releases DNS. The already-running Guardian covers crash/deadline recovery.
             throw error
         }
     }
@@ -242,9 +309,28 @@ public final class DNSLeaseEngine {
     /// services. A network event never changes the owner's mode, Clash state, or VPN.
     public func reconcile() throws -> DNSLeaseStatus {
         guard var lease = try store.load() else { return try status() }
-        guard backend.isAlive(lease.owner), backend.isAlive(lease.clash),
-              lease.core.map({ backend.isAlive($0) }) != false else {
+        let processesAlive = backend.isAlive(lease.owner) && backend.isAlive(lease.clash) && lease.core.map({ backend.isAlive($0) }) != false
+        if !processesAlive, lease.activationDeadline != nil {
+            // Verge bounds its native DNS script at five seconds. Let an already
+            // dispatched script settle before restoring after a mid-switch crash.
+            if lease.recoveryNotBefore == nil {
+                lease.recoveryNotBefore = now().addingTimeInterval(6)
+                try store.save(lease)
+            }
+            if now() < lease.recoveryNotBefore! { return try status() }
+        }
+        guard processesAlive else {
             return try release(reason: "NetBar, Clash or its core exited; DNS restored")
+        }
+        if let deadline = lease.activationDeadline {
+            if now() >= deadline {
+                if lease.recoveryNotBefore == nil {
+                    lease.recoveryNotBefore = now().addingTimeInterval(6)
+                    try store.save(lease)
+                }
+                if now() >= lease.recoveryNotBefore! { return try release(reason: "DNS preparation expired; originals restored") }
+            }
+            return try status()
         }
         guard let interception = backend.interceptionIdentity(for: lease), lease.interception == interception else {
             return try release(reason: "TUN DNS interception ended; DNS restored")

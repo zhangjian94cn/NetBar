@@ -1,8 +1,32 @@
 import XCTest
+import Combine
 @testable import NetBar
 
 #if !APP_STORE
 final class ClashNetworkModeTests: XCTestCase {
+    func testRefreshPublishesBusyStateAndPreventsAnOverlappingSwitch() {
+        let backend = ModeBackend()
+        let controller = ClashNetworkModeController(backend: backend)
+        let finished = expectation(description: "readback finished")
+        let token = controller.$isRefreshing.dropFirst().filter { !$0 }.sink { _ in finished.fulfill() }
+        controller.refresh()
+        XCTAssertTrue(controller.isRefreshing)
+        controller.switchMode(to: .companyCoexistence)
+        XCTAssertFalse(controller.isSwitching)
+        wait(for: [finished], timeout: 2)
+        withExtendedLifetime(token) {}
+        XCTAssertFalse(backend.events.contains("dns-prepare"))
+    }
+
+    func testMihomoEmptyConnectionsAreValidButMissingAndMalformedAreNot() throws {
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(#"{"connections":null}"#.utf8)) as? [String: Any])
+        XCTAssertEqual(ClashDNSPathEvidence.connections(in: payload)?.count, 0)
+        XCTAssertEqual(ClashDNSPathEvidence.connections(in: ["connections": [["id": "example"]]])?.count, 1)
+        XCTAssertNil(ClashDNSPathEvidence.connections(in: [:]))
+        XCTAssertNil(ClashDNSPathEvidence.connections(in: ["connections": "invalid"]))
+        XCTAssertNil(ClashDNSPathEvidence.connections(in: ["connections": [42]]))
+    }
+
     func testNativeSwitchMatchesChromiumCheckboxBeyondPresentationWrappers() {
         typealias Element = ClashNativeControlMatching.Element
         let elements = [Element(title: "系统代理", role: "AXHeading")] +
@@ -70,6 +94,15 @@ final class ClashNetworkModeTests: XCTestCase {
         XCTAssertLessThan(backend.events.firstIndex(of: "verify-dns")!, backend.events.firstIndex(of: "dns-acquire")!)
         XCTAssertEqual(backend.events.filter { $0 == "verify-dns" }.count, 2)
         XCTAssertTrue(backend.lease.ownedByThisProcess)
+        XCTAssertLessThan(backend.events.firstIndex(of: "dns-prepare")!, backend.events.firstIndex(of: "activate:unified")!)
+    }
+
+    func testOldHelperCannotStartNativeMutation() {
+        let backend = ModeBackend()
+        backend.lease = .init(protocolVersion: 6, dnsLeaseState: "inactive", dnsLeaseOwnerPID: nil, dnsLeaseServices: 0, reason: nil)
+        XCTAssertFalse(ClashModeTransactionEngine(backend: backend).apply(.companyCoexistence).verified)
+        XCTAssertFalse(backend.events.contains("dns-prepare"))
+        XCTAssertFalse(backend.events.contains(where: { $0.hasPrefix("activate:") }))
     }
 
     func testCompanyGateFailureDoesNotMutate() {
@@ -90,6 +123,7 @@ final class ClashNetworkModeTests: XCTestCase {
         XCTAssertEqual(backend.state.controlFingerprint, original.controlFingerprint)
         XCTAssertEqual(backend.lease.dnsLeaseState, "inactive")
         XCTAssertTrue(backend.events.contains("restore-profile:original"))
+        XCTAssertLessThan(backend.events.lastIndex(of: "switches")!, backend.events.lastIndex(of: "dns-release")!)
     }
 
     func testExternalConcurrentChangeIsNeverOverwritten() {
@@ -124,7 +158,7 @@ final class ClashNetworkModeTests: XCTestCase {
 
     func testExternalDNSOwnershipBlocksSwitch() {
         let backend = ModeBackend()
-        backend.lease = .init(protocolVersion: 6, dnsLeaseState: "conflict", dnsLeaseOwnerPID: nil, dnsLeaseServices: 1, reason: "external DNS edit")
+        backend.lease = .init(protocolVersion: 7, dnsLeaseState: "conflict", dnsLeaseOwnerPID: nil, dnsLeaseServices: 1, reason: "external DNS edit")
         let result = ClashModeTransactionEngine(backend: backend).apply(.companyCoexistence)
         XCTAssertFalse(result.verified)
         XCTAssertFalse(backend.events.contains("dns-acquire"))
@@ -185,20 +219,19 @@ final class ClashNetworkModeTests: XCTestCase {
         XCTAssertTrue(backend.events.contains("dns-release"))
     }
 
-    func testOriginalOwnedLeaseIsReacquiredAfterGuardianReleaseAndRollback() {
+    func testLostOriginalOwnedJournalCannotBeRecapturedDuringRollback() {
         let backend = ModeBackend(); backend.lease = ModeBackend.owned; backend.failSystemHTTPS = true
-        backend.didActivate = { backend.lease = .init(protocolVersion: 6, dnsLeaseState: "inactive", dnsLeaseOwnerPID: nil, dnsLeaseServices: 0, reason: nil) }
+        backend.didActivate = { backend.lease = .init(protocolVersion: 7, dnsLeaseState: "inactive", dnsLeaseOwnerPID: nil, dnsLeaseServices: 0, reason: nil) }
         let original = backend.state
         let result = ClashModeTransactionEngine(backend: backend).apply(.unifiedEgress)
-        XCTAssertFalse(result.verified); XCTAssertFalse(result.manualPending, result.reason ?? "")
-        XCTAssertTrue(backend.lease.ownedByThisProcess)
+        XCTAssertFalse(result.verified); XCTAssertTrue(result.manualPending)
         XCTAssertEqual(backend.state.controlFingerprint, original.controlFingerprint)
-        XCTAssertEqual(backend.events.filter { $0 == "dns-acquire" }.count, 2)
+        XCTAssertEqual(backend.events.filter { $0 == "dns-prepare" }.count, 1)
     }
 
     func testConflictCanBeAcknowledgedByExplicitOriginalNetworkOnly() {
         let backend = ModeBackend(); backend.state = ModeBackend.runtime(uid: "unified", tun: true, proxy: true)
-        backend.lease = .init(protocolVersion: 6, dnsLeaseState: "conflict", dnsLeaseOwnerPID: nil, dnsLeaseServices: 1, reason: "external DNS edit")
+        backend.lease = .init(protocolVersion: 7, dnsLeaseState: "conflict", dnsLeaseOwnerPID: nil, dnsLeaseServices: 1, reason: "external DNS edit")
         let result = ClashModeTransactionEngine(backend: backend).apply(.originalNetwork)
         XCTAssertTrue(result.verified, result.reason ?? "")
         XCTAssertEqual(backend.lease.dnsLeaseState, "inactive")
@@ -230,7 +263,7 @@ final class ClashNetworkModeTests: XCTestCase {
 
     func testFinalLeaseReleaseCannotProduceVerifiedSuccess() {
         let backend = ModeBackend()
-        backend.didClose = { backend.lease = .init(protocolVersion: 6, dnsLeaseState: "inactive", dnsLeaseOwnerPID: nil, dnsLeaseServices: 0, reason: nil) }
+        backend.didClose = { backend.lease = .init(protocolVersion: 7, dnsLeaseState: "inactive", dnsLeaseOwnerPID: nil, dnsLeaseServices: 0, reason: nil) }
         let result = ClashModeTransactionEngine(backend: backend).apply(.unifiedEgress)
         XCTAssertFalse(result.verified)
         XCTAssertTrue(result.reason?.contains("最终回读时 DNS") == true)
@@ -294,10 +327,10 @@ final class ClashNetworkModeTests: XCTestCase {
 }
 
 private final class ModeBackend: ClashNetworkModeBackend {
-    static let owned = ClashDNSLeaseStatus(protocolVersion: 6, dnsLeaseState: "owned", dnsLeaseOwnerPID: Int(ProcessInfo.processInfo.processIdentifier), dnsLeaseServices: 2, reason: nil)
+    static let owned = ClashDNSLeaseStatus(protocolVersion: 7, dnsLeaseState: "owned", dnsLeaseOwnerPID: Int(ProcessInfo.processInfo.processIdentifier), dnsLeaseServices: 2, reason: nil)
     static let policy = ClashTunPolicy(autoRoute: true, autoDetectInterface: true, strictRoute: true, dnsHijack: ["any:53", "tcp://any:53"], routeExcludeAddress: ["10.0.0.0/8"])
     var state = runtime(uid: "original", tun: false, proxy: true)
-    var lease = ClashDNSLeaseStatus(protocolVersion: 6, dnsLeaseState: "inactive", dnsLeaseOwnerPID: nil, dnsLeaseServices: 0, reason: nil)
+    var lease = ClashDNSLeaseStatus(protocolVersion: 7, dnsLeaseState: "inactive", dnsLeaseOwnerPID: nil, dnsLeaseServices: 0, reason: nil)
     var events: [String] = []
     var companyBlocked = false, failSystemHTTPS = false, externalChangeOnVerify = false, missingTCP = false
     var failAfterActivate = false, failAfterTun = false, failAfterAcquire = false
@@ -349,8 +382,12 @@ private final class ModeBackend: ClashNetworkModeBackend {
         state = Self.runtime(uid: state.profileUID, tun: state.tunEnabled, proxy: state.systemProxyEnabled, leaf: node, tcp: !missingTCP)
         state.tunCaptureSHA256 = old.tunCaptureSHA256; state.dnsSHA256 = old.dnsSHA256; state.rulesSHA256 = old.rulesSHA256; state.tunPolicy = old.tunPolicy
     }
-    func acquireDNS() throws { events.append("dns-acquire"); lease = Self.owned; if failAfterAcquire { failAfterAcquire = false; throw ClashModeFailure("acquire timed out after write") } }
-    func releaseDNS() throws { events.append("dns-release"); lease = .init(protocolVersion: 6, dnsLeaseState: "inactive", dnsLeaseOwnerPID: nil, dnsLeaseServices: 0, reason: nil) }
+    func prepareDNS() throws {
+        events.append("dns-prepare")
+        lease = .init(protocolVersion: 7, dnsLeaseState: "preparing", dnsLeaseOwnerPID: Int(ProcessInfo.processInfo.processIdentifier), dnsLeaseServices: 0, reason: nil)
+    }
+    func acquireDNS() throws { events.append("dns-acquire"); guard ["preparing", "owned"].contains(lease.dnsLeaseState) else { throw ClashModeFailure("original journal missing") }; lease = Self.owned; if failAfterAcquire { failAfterAcquire = false; throw ClashModeFailure("acquire timed out after write") } }
+    func releaseDNS() throws { events.append("dns-release"); lease = .init(protocolVersion: 7, dnsLeaseState: "inactive", dnsLeaseOwnerPID: nil, dnsLeaseServices: 0, reason: nil) }
     func verifyDNSPath(mode: ClashNetworkMode, entry: ClashModeManifest.Entry, leaf: String) throws {
         events.append("verify-dns")
         if externalChangeOnVerify { state = Self.runtime(uid: "external", tun: true, proxy: false); throw ClashModeFailure("external change") }

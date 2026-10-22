@@ -280,10 +280,12 @@ private final class Watcher {
     private var retries = 0
     private var fileSources: [String: DispatchSourceFileSystemObject] = [:]
     private var filePaths: [String] = []
+    private var preparationTimer: DispatchWorkItem?
 
     func start() throws -> Never {
         let store = LeaseStore()
         guard let lease = try store.load() else { exit(0) }
+        schedulePreparationDeadline(lease)
         if let account = getpwuid(lease.owner.uid) {
             let config = String(cString: account.pointee.pw_dir) + "/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/"
             filePaths = ["verge.yaml", "config.yaml", "clash-verge.yaml"].map { config + $0 }
@@ -333,6 +335,13 @@ private final class Watcher {
         work = item
         queue.asyncAfter(deadline: .now() + 0.25, execute: item)
     }
+    private func schedulePreparationDeadline(_ lease: DNSLease) {
+        preparationTimer?.cancel(); preparationTimer = nil
+        guard let deadline = lease.recoveryNotBefore ?? lease.activationDeadline else { return }
+        let timer = DispatchWorkItem { [weak self] in self?.reconcile() }
+        preparationTimer = timer
+        queue.asyncAfter(deadline: .now() + max(0, deadline.timeIntervalSinceNow), execute: timer)
+    }
     private func reconcile() {
         do {
             let lock = try PrivilegedLock()
@@ -343,7 +352,8 @@ private final class Watcher {
             let result = try DNSLeaseEngine(backend: MacDNSBackend(), store: store).reconcile()
             retries = 0
             try printStatus(result)
-            if try store.load() == nil { exit(0) }
+            guard let remaining = try store.load() else { exit(0) }
+            schedulePreparationDeadline(remaining)
         } catch {
             // Bounded contention retry, never a network-probe loop. Future network events
             // can retry unresolved services; a writer lock may still be finishing acquire.
@@ -361,7 +371,7 @@ guard geteuid() == 0, CommandLine.arguments.count == 2 else { fail("Root helper 
 do {
     try prepareStateRoot()
     let action = CommandLine.arguments[1]
-    guard ["dns-status", "dns-acquire", "dns-release", "dns-reconcile", "watch"].contains(action) else { fail("Unsupported DNS action") }
+    guard ["dns-status", "dns-prepare", "dns-acquire", "dns-release", "dns-reconcile", "watch"].contains(action) else { fail("Unsupported DNS action") }
     if action == "watch" { try Watcher().start() }
     let lock = try PrivilegedLock()
     defer { withExtendedLifetime(lock) {} }
@@ -369,9 +379,13 @@ do {
     let engine = DNSLeaseEngine(backend: MacDNSBackend(), store: store)
     switch action {
     case "dns-status": try printStatus(engine.status())
-    case "dns-release": try printStatus(engine.release(reason: "DNS restored by user action"))
+    case "dns-release":
+        // The native rollback can dispatch Verge's bounded five-second DNS script.
+        // Hold our writer lock until it settles, then compare-and-set originals.
+        if try store.load()?.activationDeadline != nil { Thread.sleep(forTimeInterval: 6) }
+        try printStatus(engine.release(reason: "DNS restored by user action"))
     case "dns-reconcile": try printStatus(engine.reconcile())
-    case "dns-acquire":
+    case "dns-prepare", "dns-acquire":
         guard !FileManager.default.fileExists(atPath: stateRoot.appendingPathComponent("dns-installing").path) else {
             throw DNSLeaseError.invalidState("DNS recovery component installation is in progress")
         }
@@ -380,8 +394,8 @@ do {
         }
         try launchctl(["print", "system/\(guardianLabel)"])
         let (owner, clash, core) = try consoleProcesses()
-        let result = try engine.acquire(owner: owner, clash: clash, core: core)
-        do { try launchctl(["kickstart", "system/\(guardianLabel)"]) }
+        let result = action == "dns-prepare" ? try engine.prepare(owner: owner, clash: clash, core: core) : try engine.acquire(owner: owner, clash: clash, core: core)
+        do { try launchctl(["kickstart", "-k", "system/\(guardianLabel)"]) }
         catch { _ = try engine.release(reason: "Recovery component failed to start"); throw error }
         try printStatus(result)
     default: break

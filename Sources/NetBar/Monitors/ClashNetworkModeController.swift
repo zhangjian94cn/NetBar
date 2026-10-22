@@ -140,10 +140,12 @@ struct ClashDNSLeaseStatus: Decodable, Equatable {
     let reason: String?
     static let unavailable = Self(protocolVersion: 0, dnsLeaseState: "unknown", dnsLeaseOwnerPID: nil, dnsLeaseServices: 0, reason: "DNS 恢复组件未就绪")
     var ownedByThisProcess: Bool { dnsLeaseState == "owned" && dnsLeaseOwnerPID == Int(ProcessInfo.processInfo.processIdentifier) }
+    var managedByThisProcess: Bool { ["preparing", "owned", "conflict"].contains(dnsLeaseState) && dnsLeaseOwnerPID == Int(ProcessInfo.processInfo.processIdentifier) }
     var displayName: String {
         switch dnsLeaseState {
         case "owned": return ownedByThisProcess ? "已接管 · \(dnsLeaseServices) 个服务" : "其他进程持有，待恢复"
         case "inactive": return "未接管"
+        case "preparing": return "已保存原 DNS · 等待核验"
         case "conflict": return "外部修改，待处理"
         default: return "组件未就绪"
         }
@@ -184,6 +186,7 @@ protocol ClashNetworkModeBackend: AnyObject {
     func setNativeTunPolicy(_ policy: ClashTunPolicy) throws
     func setNativeSwitch(tun: Bool, proxy: Bool) throws
     func select(group: String, node: String) throws
+    func prepareDNS() throws
     func acquireDNS() throws
     func releaseDNS() throws
     func verifyDNSPath(mode: ClashNetworkMode, entry: ClashModeManifest.Entry, leaf: String) throws
@@ -232,7 +235,7 @@ final class ClashModeTransactionEngine {
             try checkInterruption()
             let original = try backend.runtime(); baseline = original; ownedState = original
             let originalDNS = try backend.dnsStatus()
-            guard originalDNS.protocolVersion >= 6,
+            guard originalDNS.protocolVersion >= 7,
                   originalDNS.dnsLeaseState == "inactive" || originalDNS.ownedByThisProcess || (mode == .originalNetwork && originalDNS.dnsLeaseState == "conflict") else {
                 throw ClashModeFailure(originalDNS.reason ?? "DNS 被其他任务持有或发生外部修改，请先处理")
             }
@@ -265,6 +268,11 @@ final class ClashModeTransactionEngine {
             let preferredLeaf = mode == .unifiedEgress
                 ? (original.leaf(for: "🌐 统一出口") ?? original.leaf(for: "♻️ 手动切换")) : nil
             if mode == .unifiedEgress, preferredLeaf == nil { throw ClashModeFailure("未找到当前手动选择的真实代理节点") }
+            try assertUnchanged(original)
+            stage = "保存 DNS 原件"
+            acquiredDNS = true // Preparation is a recoverable journal, without a DNS write.
+            try backend.prepareDNS()
+            try checkInterruption()
             try assertUnchanged(original)
             stage = "原生激活配置"
             try checkInterruption()
@@ -363,13 +371,6 @@ final class ClashModeTransactionEngine {
                 return result
             }
             var restored = true
-            let currentDNS = try? backend.dnsStatus()
-            if acquiredDNS || (!hadDNS && currentDNS?.ownedByThisProcess == true) {
-                if hadDNS { releasedDNS = true }
-                if currentDNS?.ownedByThisProcess == true {
-                    do { try backend.releaseDNS() } catch { restored = false }
-                } else if currentDNS?.dnsLeaseState != "inactive" { restored = false }
-            }
             if let baseline, let ownedState {
                 do {
                     let current = try backend.runtime()
@@ -377,6 +378,11 @@ final class ClashModeTransactionEngine {
                     // last observed state or our original baseline; never overwrite a third state.
                     guard current.controlFingerprint == ownedState.controlFingerprint || current.controlFingerprint == baseline.controlFingerprint else {
                         throw ClashModeFailure("外部并发修改，停止覆盖式回滚")
+                    }
+                    if releasedDNS && hadDNS {
+                        guard try backend.dnsStatus().dnsLeaseState == "inactive" else { throw ClashModeFailure("DNS 存在外部修改，停止重新接管") }
+                        // Capture restored originals before a rollback can enable TUN again.
+                        try backend.prepareDNS()
                     }
                     if current.controlFingerprint != baseline.controlFingerprint {
                         var rollbackOwned = current
@@ -407,11 +413,21 @@ final class ClashModeTransactionEngine {
                         try backend.setNativeSwitch(tun: baseline.tunEnabled, proxy: baseline.systemProxyEnabled)
                         guard try backend.runtime().controlFingerprint == baseline.controlFingerprint else { throw ClashModeFailure("原 Clash 状态未完整恢复") }
                     }
-                    if releasedDNS && hadDNS {
-                        guard try backend.dnsStatus().dnsLeaseState == "inactive" else { throw ClashModeFailure("DNS 存在外部修改，停止重新接管") }
-                        try backend.acquireDNS()
+                    if hadDNS && (releasedDNS || acquiredDNS) {
+                        let dns = try backend.dnsStatus()
+                        guard dns.managedByThisProcess else { throw ClashModeFailure("原 DNS 原件不再由本次事务持有，停止重新接管") }
+                        if !dns.ownedByThisProcess { try backend.acquireDNS() }
+                    } else if !hadDNS && acquiredDNS {
+                        let dns = try backend.dnsStatus()
+                        if dns.managedByThisProcess { try backend.releaseDNS() }
+                        else if dns.dnsLeaseState != "inactive" { throw ClashModeFailure("DNS 存在外部修改，停止覆盖式恢复") }
                     }
-                } catch { restored = false }
+                } catch {
+                    restored = false
+                    // A failed/untrusted native rollback must not leave DNS owned on an
+                    // unverified path. CAS release preserves all external DNS changes.
+                    if (try? backend.dnsStatus().managedByThisProcess) == true { try? backend.releaseDNS() }
+                }
             }
             let finalDNS = try? backend.dnsStatus()
             if hadDNS { restored = restored && finalDNS?.ownedByThisProcess == true }
@@ -442,8 +458,8 @@ final class ClashModeTransactionEngine {
 final class ClashNetworkModeController: ObservableObject {
     @Published private(set) var snapshot = ClashNetworkModeSnapshot()
     @Published private(set) var isSwitching = false
+    @Published private(set) var isRefreshing = false
     private var generation: UInt64 = 0
-    private var refreshing = false
     private let queue = DispatchQueue(label: "com.zjah.NetBar.clash-network-mode", qos: .userInitiated)
     private let stateLock = NSLock()
     private var stopping = false
@@ -456,13 +472,13 @@ final class ClashNetworkModeController: ObservableObject {
 
     func refresh() {
         #if !APP_STORE
-        guard !isSwitching, !refreshing, !isStopping else { return }
-        refreshing = true; generation &+= 1; let id = generation
+        guard !isSwitching, !isRefreshing, !isStopping else { return }
+        isRefreshing = true; generation &+= 1; let id = generation
         queue.async { [weak self] in
             guard let self else { return }
             let result = ClashModeTransactionEngine(backend: self.backend).observe()
             DispatchQueue.main.async {
-                self.refreshing = false
+                self.isRefreshing = false
                 guard self.generation == id, !self.isStopping else { return }
                 self.snapshot = result
             }
@@ -474,7 +490,7 @@ final class ClashNetworkModeController: ObservableObject {
 
     func switchMode(to mode: ClashNetworkMode) {
         #if !APP_STORE
-        guard !isSwitching, !refreshing, !isStopping, DistributionFlavor.current.supportsClashModeSwitch else { return }
+        guard !isSwitching, !isRefreshing, !isStopping, DistributionFlavor.current.supportsClashModeSwitch else { return }
         isSwitching = true; generation &+= 1; let id = generation
         snapshot.phase = "正在切换"; snapshot.verified = false; snapshot.reason = nil
         queue.async { [weak self] in

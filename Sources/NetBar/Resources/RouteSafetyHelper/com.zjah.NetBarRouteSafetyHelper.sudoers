@@ -7,6 +7,7 @@ __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRout
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper commit
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper rollback
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper dns-status
+__USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper dns-prepare
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper dns-acquire
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper dns-release
 __USER__ ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.zjah.NetBarRouteSafetyHelper dns-reconcile

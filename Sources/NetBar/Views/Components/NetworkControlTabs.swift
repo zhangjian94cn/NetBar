@@ -43,7 +43,7 @@ struct ClashModeTabView: View {
                     .foregroundColor(PopoverVisualStyle.secondaryText)
             }
             Spacer()
-            if controller.isSwitching {
+            if controller.isSwitching || controller.isRefreshing {
                 ProgressView().controlSize(.small)
             } else {
                 PopoverStatusDot(state: healthState)
@@ -65,7 +65,7 @@ struct ClashModeTabView: View {
             title: mode.displayName,
             icon: icon,
             isSelected: controller.snapshot.mode == mode,
-            isEnabled: !controller.isSwitching
+            isEnabled: !controller.isSwitching && !controller.isRefreshing
         ) {
             controller.switchMode(to: mode)
         }
@@ -99,7 +99,7 @@ struct ClashModeTabView: View {
             .buttonStyle(.link)
             .font(PopoverVisualStyle.Typography.caption)
             .padding(.vertical, PopoverVisualStyle.Spacing.sm)
-            .disabled(controller.isSwitching)
+            .disabled(controller.isSwitching || controller.isRefreshing)
         }
         .padding(.horizontal, PopoverVisualStyle.cardPadding)
         .popoverSurface()
