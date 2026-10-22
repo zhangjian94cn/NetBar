@@ -10,7 +10,6 @@ struct ClashModeTabView: View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: PopoverVisualStyle.blockSpacing) {
                 hero
-                modeSelector
                 explanation
                 configurationFacts
                 diagnosticsDisclosure
@@ -27,7 +26,7 @@ struct ClashModeTabView: View {
             .padding(.vertical, PopoverVisualStyle.Spacing.sm)
         }
         .onAppear { controller.refresh() }
-        .help("模式只在点击后切换；退出 NetBar 只恢复 DNS。")
+        .help("请在 Clash 原生界面切换；退出 NetBar 不改变网络。")
     }
 
     private var hero: some View {
@@ -43,31 +42,11 @@ struct ClashModeTabView: View {
                     .foregroundColor(PopoverVisualStyle.secondaryText)
             }
             Spacer()
-            if controller.isSwitching || controller.isRefreshing {
+            if controller.isProbing || controller.isRefreshing {
                 ProgressView().controlSize(.small)
             } else {
                 PopoverStatusDot(state: healthState)
             }
-        }
-    }
-
-    private var modeSelector: some View {
-        HStack(spacing: 0) {
-            modeButton(.companyCoexistence, icon: "building.2")
-            modeButton(.unifiedEgress, icon: "globe")
-            modeButton(.originalNetwork, icon: "network")
-        }
-        .popoverSegmentedTrack()
-    }
-
-    private func modeButton(_ mode: ClashNetworkMode, icon: String) -> some View {
-        PopoverSegmentedOption(
-            title: mode.displayName,
-            icon: icon,
-            isSelected: controller.snapshot.mode == mode,
-            isEnabled: !controller.isSwitching && !controller.isRefreshing
-        ) {
-            controller.switchMode(to: mode)
         }
     }
 
@@ -86,20 +65,28 @@ struct ClashModeTabView: View {
             Divider()
             PopoverFactRow(title: "系统代理", value: boolText(controller.snapshot.runtime?.systemProxyEnabled))
             Divider()
-            PopoverFactRow(title: "DNS", value: controller.snapshot.dns.displayName,
-                           state: controller.snapshot.dns.ownedByThisProcess ? .ok : .warning)
+            PopoverFactRow(title: "节点", value: controller.snapshot.selectedNode ?? "待检测")
             Divider()
-            PopoverFactRow(title: "出口核验", value: controller.snapshot.verified ? "本次切换已核验" : "待核验",
-                           state: controller.snapshot.verified ? .ok : .unknown)
+            PopoverFactRow(title: "DNS 策略", value: controller.snapshot.configurationMatches ? "配置符合 · 路径待独立检测" : "未核对 / 存在差异")
+            Divider()
+            PopoverFactRow(title: "最近检测", value: probeSummary,
+                           state: controller.freshProbe?.passed == true ? .ok : .unknown)
+            if let detail = controller.probe?.detail {
+                Text(detail).font(PopoverVisualStyle.Typography.caption)
+                    .foregroundColor(PopoverVisualStyle.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             HStack {
                 Button("刷新状态") { controller.refresh() }
                 Spacer()
-                Button("安装 / 更新恢复组件") { controller.installDNSRecoveryComponent() }
+                Button("检测当前网络") { controller.detectCurrentNetwork() }
+                Spacer()
+                Button("打开 Clash") { openClash() }
             }
             .buttonStyle(.link)
             .font(PopoverVisualStyle.Typography.caption)
             .padding(.vertical, PopoverVisualStyle.Spacing.sm)
-            .disabled(controller.isSwitching || controller.isRefreshing)
+            .disabled(controller.isProbing || controller.isRefreshing)
         }
         .padding(.horizontal, PopoverVisualStyle.cardPadding)
         .popoverSurface()
@@ -161,14 +148,16 @@ struct ClashModeTabView: View {
     }
 
     private var modeExplanation: String {
-        if controller.snapshot.mode == .originalNetwork {
-            return "TUN 与系统代理已关闭，DNS 恢复原设置，Clash 应用继续运行。"
-        }
-        return "退出 NetBar 时恢复它接管的 DNS，Clash 保持当前状态。重新打开后，选择模式才会接管 DNS。统一出口前请手动断开公司 VPN。"
+        "请在 Clash 中切换配置、TUN 与系统代理。统一出口前手动断开公司 VPN。NetBar 只读，启动或退出均不改变网络；极端崩溃后重开 Clash 再关闭 TUN。"
     }
-
+    private var probeSummary: String {
+        guard let probe = controller.probe else { return "尚未检测" }
+        let time = probe.sampledAt.formatted(date: .omitted, time: .shortened)
+        guard controller.freshProbe != nil else { return time + " · 已失效" }
+        return time + (probe.passed ? " · DNS / HTTPS 通过" : " · 未通过")
+    }
     private var healthState: PopoverFactState {
-        controller.snapshot.verified ? .ok : (controller.isSwitching ? .unknown : .warning)
+        controller.freshProbe?.passed == true ? .ok : .unknown
     }
 
     private func openClash() {

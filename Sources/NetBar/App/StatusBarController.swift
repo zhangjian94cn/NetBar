@@ -73,7 +73,6 @@ class StatusBarController: NSObject, NSWindowDelegate {
             vpsTrafficMonitor: coordinator.vpsTrafficMonitor,
             appIconResolver: coordinator.appIconResolver,
             networkModeController: coordinator.networkModeController,
-            clashOverlayModeController: coordinator.clashOverlayModeController,
             clashNetworkModeController: coordinator.clashNetworkModeController,
             coordinator: coordinator
         )

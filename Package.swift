@@ -9,7 +9,6 @@ let package = Package(
     products: [
         .executable(name: "NetBar", targets: ["NetBar"]),
         .executable(name: "NetBarMiniNetworkGuardian", targets: ["NetBarMiniNetworkGuardian"]),
-        .executable(name: "NetBarDNSGuardian", targets: ["NetBarDNSGuardian"]),
     ],
     targets: [
         .target(name: "NetworkExecution", path: "Sources/NetworkExecution"),
@@ -40,16 +39,9 @@ let package = Package(
             name: "NetBarMiniNetworkGuardianSupport",
             path: "Sources/NetBarMiniNetworkGuardianSupport"
         ),
-        .target(name: "NetBarDNSLeaseSupport", path: "Sources/NetBarDNSLeaseSupport"),
-        .executableTarget(
-            name: "NetBarDNSGuardian",
-            dependencies: ["NetBarDNSLeaseSupport", "NetworkExecution"],
-            path: "Sources/NetBarDNSGuardian",
-            linkerSettings: [.linkedFramework("SystemConfiguration")]
-        ),
         .testTarget(
             name: "NetBarTests",
-            dependencies: ["NetBar", "NetBarMiniNetworkGuardianSupport", "NetBarDNSLeaseSupport", "NetworkExecution"],
+            dependencies: ["NetBar", "NetBarMiniNetworkGuardianSupport", "NetworkExecution"],
             path: "Tests/NetBarTests"
         )
     ]

@@ -19,16 +19,8 @@ echo "📦 打包 NetBar.app 到 $HOME/Applications ..."
 # Stop the owner first so KeepAlive cannot restart the old app during replacement.
 launchctl unload "$PLIST_DST" 2>/dev/null || true
 if pgrep -x NetBar >/dev/null; then
-    # Normal app termination waits for its bounded DNS release. The independent root
-    # Guardian still covers a stuck app that needs the exact-name TERM fallback.
-    /usr/bin/osascript -e 'tell application "NetBar" to quit' >/dev/null 2>&1 &
-    quit_request=$!
-    for attempt in 1 2 3 4 5 6; do
-        pgrep -x NetBar >/dev/null || break
-        sleep 1
-    done
-    kill "$quit_request" 2>/dev/null || true
-    pkill -x NetBar || true
+    # Read-only Clash/DNS integration has no termination transaction.
+    pkill -TERM -x NetBar || true
 fi
 for attempt in 1 2 3 4 5; do
     pgrep -x NetBar >/dev/null || break
@@ -47,10 +39,10 @@ mkdir -p "$RES_DIR"
 # 复制二进制和 Info.plist
 cp .build/release/NetBar "$BIN_DIR/"
 cp -R .build/release/NetBar_NetBar.bundle "$RES_DIR/NetBar_NetBar.bundle"
+# SwiftPM may retain removed resources from an earlier build; never ship the retired DNS binary/plist.
+rm -f "$RES_DIR/NetBar_NetBar.bundle/RouteSafetyHelper/NetBarDNSGuardian" "$RES_DIR/NetBar_NetBar.bundle/RouteSafetyHelper/com.zjah.NetBarDNSGuardian.plist"
 cp .build/release/NetBarMiniNetworkGuardian "$RES_DIR/NetBar_NetBar.bundle/MiniLinkHelper/NetBarMiniNetworkGuardian"
 chmod 0755 "$RES_DIR/NetBar_NetBar.bundle/MiniLinkHelper/NetBarMiniNetworkGuardian"
-cp .build/release/NetBarDNSGuardian "$RES_DIR/NetBar_NetBar.bundle/RouteSafetyHelper/NetBarDNSGuardian"
-chmod 0755 "$RES_DIR/NetBar_NetBar.bundle/RouteSafetyHelper/NetBarDNSGuardian"
 if [ -f "Info.plist" ]; then
     cp Info.plist "$APP_DIR/Contents/"
 else

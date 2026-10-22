@@ -36,12 +36,15 @@ struct ClashModeManifest: Decodable {
         var expectedTunCaptureSHA256: String? = nil
         var expectedUnifiedMembersSHA256: String? = nil
     }
+    let activationOwner: String?
+    let networkSettingsOwner: String?
+    let ipv6Policy: String?
     let schemaVersion: Int
     let configRoot: String
     let modes: [Entry]
 
     func entry(for mode: ClashNetworkMode) throws -> Entry {
-        guard schemaVersion == 1, modes.count == 2,
+        guard schemaVersion == 2, activationOwner == "clash-native", networkSettingsOwner == "clash-native", ipv6Policy == "capture-and-reject-public", modes.count == 2,
               Set(modes.map(\.id)) == Set([ClashNetworkMode.companyCoexistence.rawValue, ClashNetworkMode.unifiedEgress.rawValue]),
               Set(modes.map(\.profileUID)).count == 2,
               Set(modes.map(\.displayName)).count == 2,
@@ -61,7 +64,7 @@ struct ClashModeManifest: Decodable {
 }
 
 struct ClashTunPolicy: Codable, Equatable {
-    static let captureKeys = ["auto-route", "auto-detect-interface", "strict-route", "dns-hijack", "route-address", "route-address-set", "route-exclude-address", "route-exclude-address-set", "inet4-route-address", "inet6-route-address", "inet4-route-exclude-address", "inet6-route-exclude-address", "exclude-ip", "include-interface", "exclude-interface", "include-uid", "include-uid-range", "exclude-uid", "exclude-uid-range", "exclude-src-port", "exclude-src-port-range", "exclude-dst-port", "exclude-dst-port-range", "include-android-user", "include-package", "exclude-package", "include-mac-address", "exclude-mac-address", "file-descriptor"]
+    static let captureKeys = ["auto-route", "auto-detect-interface", "strict-route", "dns-hijack", "disable-icmp-forwarding", "route-address", "route-address-set", "route-exclude-address", "route-exclude-address-set", "inet4-route-address", "inet6-route-address", "inet4-route-exclude-address", "inet6-route-exclude-address", "exclude-ip", "include-interface", "exclude-interface", "include-uid", "include-uid-range", "exclude-uid", "exclude-uid-range", "exclude-src-port", "exclude-src-port-range", "exclude-dst-port", "exclude-dst-port-range", "include-android-user", "include-package", "exclude-package", "include-mac-address", "exclude-mac-address", "file-descriptor"]
     var autoRoute: Bool
     var autoDetectInterface: Bool
     var strictRoute: Bool
@@ -124,49 +127,12 @@ struct ClashModeRuntime: Equatable {
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Only fields this transaction can change. Unrelated preferences stay owned by Clash.
+    /// Read-only identity includes automatic selector leaves as well as manual choices.
     var controlFingerprint: String {
-        let choices = manualSelectors.sorted(by: { $0.key < $1.key }).map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
+        let choices = selectors.sorted(by: { $0.key < $1.key }).map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
         let topology = (try? JSONSerialization.data(withJSONObject: ["members": members, "types": proxyTypes], options: [.sortedKeys, .withoutEscapingSlashes])) ?? Data()
         let topologyHash = SHA256.hash(data: topology).map { String(format: "%02x", $0) }.joined()
         return "\(profileUID)|\(tunEnabled)|\(systemProxyEnabled)|\(ipv6Enabled)|\(runtimeRuleMode)|\(routingDigest)|\(choices)|\(topologyHash)"
-    }
-}
-
-struct ClashDNSLeaseStatus: Decodable, Equatable {
-    let protocolVersion: Int
-    let dnsLeaseState: String
-    let dnsLeaseOwnerPID: Int?
-    let dnsLeaseServices: Int
-    let reason: String?
-    static let unavailable = Self(protocolVersion: 0, dnsLeaseState: "unknown", dnsLeaseOwnerPID: nil, dnsLeaseServices: 0, reason: "DNS 恢复组件未就绪")
-    var ownedByThisProcess: Bool { dnsLeaseState == "owned" && dnsLeaseOwnerPID == Int(ProcessInfo.processInfo.processIdentifier) }
-    var managedByThisProcess: Bool { ["preparing", "owned", "conflict"].contains(dnsLeaseState) && dnsLeaseOwnerPID == Int(ProcessInfo.processInfo.processIdentifier) }
-    var displayName: String {
-        switch dnsLeaseState {
-        case "owned": return ownedByThisProcess ? "已接管 · \(dnsLeaseServices) 个服务" : "其他进程持有，待恢复"
-        case "inactive": return "未接管"
-        case "preparing": return "已保存原 DNS · 等待核验"
-        case "conflict": return "外部修改，待处理"
-        default: return "组件未就绪"
-        }
-    }
-}
-
-struct ClashNetworkModeSnapshot {
-    var mode: ClashNetworkMode?
-    var runtime: ClashModeRuntime?
-    var dns: ClashDNSLeaseStatus = .unavailable
-    var phase = "待检测"
-    var verified = false
-    var reason: String?
-    var manualPending = false
-
-    var headline: String {
-        guard let mode else { return runtime == nil ? "Clash 状态待检测" : "其他 Clash 配置" }
-        if dns.ownedByThisProcess, runtime?.tunEnabled != true || runtime?.systemProxyEnabled != true { return "DNS 仍接管，流量接管不完整" }
-        if mode == .unifiedEgress, !dns.ownedByThisProcess { return "统一配置仍运行，DNS 未接管" }
-        return mode.displayName
     }
 }
 
@@ -176,314 +142,99 @@ struct ClashModeFailure: LocalizedError {
     var errorDescription: String? { message }
 }
 
+struct ClashNetworkModeSnapshot {
+    var mode: ClashNetworkMode?
+    var runtime: ClashModeRuntime?
+    var phase = "待检测"
+    var configurationMatches = false
+    var reason: String?
+    var networkFingerprint = ""
+    var selectedNode: String?
+    var evidenceFingerprint: String { [runtime?.controlFingerprint ?? "unknown", networkFingerprint, mode?.rawValue ?? "unknown", String(configurationMatches), selectedNode ?? "unknown", reason ?? ""].joined(separator: "|") }
+    var headline: String { mode?.displayName ?? (runtime == nil ? "Clash 状态待检测" : "其他 Clash 配置") }
+}
+
+struct ClashNetworkProbe: Equatable {
+    let fingerprint: String
+    let sampledAt: Date
+    let passed: Bool
+    let detail: String
+    func isFresh(for snapshot: ClashNetworkModeSnapshot, now: Date = Date()) -> Bool {
+        snapshot.runtime != nil && fingerprint == snapshot.evidenceFingerprint && now.timeIntervalSince(sampledAt) >= 0 && now.timeIntervalSince(sampledAt) < 300
+    }
+}
+
 #if !APP_STORE
+/// This interface deliberately has no network-configuration mutation operation.
 protocol ClashNetworkModeBackend: AnyObject {
     func manifest() throws -> ClashModeManifest
     func runtime() throws -> ClashModeRuntime
-    func dnsStatus() throws -> ClashDNSLeaseStatus
+    func networkFingerprint() throws -> String
     func assertCompanyVPNDisconnected() throws
-    func activate(_ entry: ClashModeManifest.Entry) throws
-    func restoreProfile(_ uid: String) throws
-    func setNativeTunPolicy(_ policy: ClashTunPolicy) throws
-    func setNativeIPv6(_ enabled: Bool) throws
-    func setNativeSwitch(tun: Bool, proxy: Bool) throws
-    func select(group: String, node: String) throws
-    func prepareDNS() throws
-    func acquireDNS() throws
-    func releaseDNS() throws
     func verifyDNSPath(mode: ClashNetworkMode, entry: ClashModeManifest.Entry, leaf: String) throws
     func verifySystemHTTPS() throws
-    func closeConnections() throws
 }
 
-/// Synchronous engine runs on a private serial queue. Startup/readback never acquires DNS.
-final class ClashModeTransactionEngine {
+struct ClashModeObserver {
     let backend: ClashNetworkModeBackend
-    private let interrupted: () -> Bool
-    init(backend: ClashNetworkModeBackend, interrupted: @escaping () -> Bool = { false }) {
-        self.backend = backend; self.interrupted = interrupted
-    }
-
     func observe() -> ClashNetworkModeSnapshot {
         var result = ClashNetworkModeSnapshot()
         do {
             let runtime = try backend.runtime()
             result.runtime = runtime
-            let manifest = try? backend.manifest()
-            result.mode = manifest?.modes.first(where: { $0.profileUID == runtime.profileUID }).flatMap { ClashNetworkMode(rawValue: $0.id) }
-            result.dns = (try? backend.dnsStatus()) ?? .unavailable
-            if !runtime.tunEnabled && !runtime.systemProxyEnabled && result.dns.dnsLeaseState == "inactive" { result.mode = .originalNetwork }
-            result.phase = "已读取现状"
-            // Protection is verified by a switch, not by a persisted intention or a menu click.
-            result.reason = result.dns.reason
-            if result.dns.ownedByThisProcess && (!runtime.tunEnabled || !runtime.hijacksUDPAndTCP) {
-                result.reason = "DNS 仍被本次接管，但 TUN 或双协议劫持已关闭。恢复组件将释放 DNS；也可选择“原网络”。"
-                result.manualPending = true
-            } else if result.mode == .unifiedEgress && !result.dns.ownedByThisProcess {
-                result.reason = "Clash 仍在使用统一配置；DNS 保障已解除。选择模式后才会重新接管。"
+            result.networkFingerprint = try backend.networkFingerprint()
+            let manifest = try backend.manifest()
+            result.mode = manifest.modes.first(where: { $0.profileUID == runtime.profileUID }).flatMap { ClashNetworkMode(rawValue: $0.id) }
+            if let mode = result.mode {
+                let entry = try manifest.entry(for: mode)
+                result.selectedNode = runtime.leaf(for: entry.targetGroup)
+                result.configurationMatches = runtime.runtimeRuleMode && runtime.disabledRuleCount == 0 &&
+                    runtime.markers.contains(entry.ruleMarker) && runtime.rulesSHA256 == entry.expectedRulesSHA256 &&
+                    runtime.dnsSHA256 == entry.expectedDNSSHA256 && runtime.ipv6Enabled == true &&
+                    runtime.tunPolicy == entry.expectedTunPolicy && runtime.tunCaptureSHA256 == entry.expectedTunCaptureSHA256 &&
+                    (mode != .unifiedEgress || (runtime.isRealNodeSelector(entry.targetGroup) && runtime.membersSHA256(entry.targetGroup) == entry.expectedUnifiedMembersSHA256))
+                if !result.configurationMatches { result.reason = "运行策略与登记不一致；请在 Clash 原生重新激活并检查共同设置。" }
+                if mode == .unifiedEgress {
+                    do { try backend.assertCompanyVPNDisconnected() }
+                    catch { result.reason = "统一保障条件未满足：" + error.localizedDescription }
+                }
             }
+            if !runtime.tunEnabled && !runtime.systemProxyEnabled { result.phase = "流量接管已关闭 · DNS 需独立核对" }
+            else { result.phase = "已读取现状 · Clash 原生管理" }
         } catch { result.reason = error.localizedDescription }
         return result
     }
 
-    func apply(_ mode: ClashNetworkMode) -> ClashNetworkModeSnapshot {
-        var stage = "预检"
-        var baseline: ClashModeRuntime?
-        var ownedState: ClashModeRuntime?
-        var hadDNS = false
-        var acquiredDNS = false
-        var releasedDNS = false
+    func probe(_ snapshot: ClashNetworkModeSnapshot, now: Date = Date()) -> ClashNetworkProbe {
         do {
-            try checkInterruption()
-            let original = try backend.runtime(); baseline = original; ownedState = original
-            let originalDNS = try backend.dnsStatus()
-            guard originalDNS.protocolVersion >= 7,
-                  originalDNS.dnsLeaseState == "inactive" || originalDNS.ownedByThisProcess || (mode == .originalNetwork && originalDNS.dnsLeaseState == "conflict") else {
-                throw ClashModeFailure(originalDNS.reason ?? "DNS 被其他任务持有或发生外部修改，请先处理")
+            guard snapshot.configurationMatches, snapshot.runtime?.tunEnabled == true,
+                  snapshot.runtime?.systemProxyEnabled == true, let mode = snapshot.mode, let leaf = snapshot.selectedNode else {
+                throw ClashModeFailure("配置、TUN、系统代理或真实节点条件未满足；请在 Clash 中检查。")
             }
-            hadDNS = originalDNS.ownedByThisProcess
-            if mode == .originalNetwork {
-                stage = "恢复 DNS"
-                try backend.releaseDNS(); releasedDNS = hadDNS
-                try checkInterruption()
-                try assertUnchanged(original)
-                stage = "关闭流量接管"
-                do { try backend.setNativeSwitch(tun: false, proxy: false) }
-                catch {
-                    if let observed = try? backend.runtime(), observed.profileUID == original.profileUID,
-                       observed.routingDigest == original.routingDigest, observed.manualSelectors == original.manualSelectors,
-                       (observed.tunEnabled == original.tunEnabled || !observed.tunEnabled),
-                       (observed.systemProxyEnabled == original.systemProxyEnabled || !observed.systemProxyEnabled) { ownedState = observed }
-                    throw error
-                }
-                let current = try backend.runtime(); ownedState = current
-                guard current.profileUID == original.profileUID, !current.tunEnabled, !current.systemProxyEnabled,
-                      current.manualSelectors == original.manualSelectors else { throw ClashModeFailure("原网络状态核验失败") }
-                let dns = try backend.dnsStatus()
-                guard dns.dnsLeaseState == "inactive" else { throw ClashModeFailure("DNS 恢复尚未完成") }
-                try backend.closeConnections()
-                return try verifiedSnapshot(expected: current, mode: mode, entry: nil)
-            }
-            let manifest = try backend.manifest()
-            let entry = try manifest.entry(for: mode)
             if mode == .unifiedEgress { try backend.assertCompanyVPNDisconnected() }
-            let preferredLeaf = mode == .unifiedEgress
-                ? (original.leaf(for: "🌐 统一出口") ?? original.leaf(for: "♻️ 手动切换")) : nil
-            if mode == .unifiedEgress, preferredLeaf == nil { throw ClashModeFailure("未找到当前手动选择的真实代理节点") }
-            try assertUnchanged(original)
-            stage = "保存 DNS 原件"
-            acquiredDNS = true // Preparation is a recoverable journal, without a DNS write.
-            try backend.prepareDNS()
-            try checkInterruption()
-            try assertUnchanged(original)
-            stage = "原生激活配置"
-            try checkInterruption()
-            if original.profileUID != entry.profileUID || original.rulesSHA256 != entry.expectedRulesSHA256 || !original.markers.contains(entry.ruleMarker) || original.dnsSHA256 != entry.expectedDNSSHA256 || original.ipv6Enabled != entry.expectedIPv6 || original.tunCaptureSHA256 != entry.expectedTunCaptureSHA256 {
-                do { try backend.activate(entry) }
-                catch {
-                    if let observed = try? backend.runtime(), observed.profileUID == entry.profileUID,
-                       observed.rulesSHA256 == entry.expectedRulesSHA256, observed.markers.contains(entry.ruleMarker),
-                       observed.tunEnabled == original.tunEnabled, observed.systemProxyEnabled == original.systemProxyEnabled {
-                        ownedState = observed
-                    }
-                    throw error
-                }
-            }
-            var active = try backend.runtime(); ownedState = active
-            guard active.profileUID == entry.profileUID, active.markers.contains(entry.ruleMarker), active.runtimeRuleMode, active.disabledRuleCount == 0,
-                  entry.expectedRulesSHA256 != nil, active.rulesSHA256 == entry.expectedRulesSHA256 else {
-                throw ClashModeFailure("配置 UID 与实际运行规则不一致")
-            }
-            if mode == .unifiedEgress, !active.isRealNodeSelector(entry.targetGroup) || entry.expectedUnifiedMembersSHA256 == nil || active.membersSHA256(entry.targetGroup) != entry.expectedUnifiedMembersSHA256 {
-                throw ClashModeFailure("统一出口必须是只包含真实节点的手动选择组；拒绝自动或直连回退")
-            }
-            if let leaf = preferredLeaf {
-                guard active.members[entry.targetGroup]?.contains(leaf) == true else { throw ClashModeFailure("当前节点已不在统一配置中，请重新选择可用节点") }
-                stage = "对齐出口节点"
-                try checkInterruption()
-                do { try backend.select(group: entry.targetGroup, node: leaf) }
-                catch {
-                    if let observed = try? backend.runtime(), observed.profileUID == active.profileUID,
-                       observed.routingDigest == active.routingDigest, observed.tunEnabled == active.tunEnabled,
-                       observed.systemProxyEnabled == active.systemProxyEnabled,
-                       observed.manualSelectors == active.manualSelectors.merging([entry.targetGroup: leaf], uniquingKeysWith: { _, new in new }) {
-                        ownedState = observed
-                    }
-                    throw error
-                }
-                active = try backend.runtime(); ownedState = active
-                guard active.leaf(for: entry.targetGroup) == leaf else { throw ClashModeFailure("统一节点选择未生效") }
-            }
-            guard let leaf = active.leaf(for: entry.targetGroup) else { throw ClashModeFailure("目标组未选择真实代理节点") }
-            try assertUnchanged(active)
-            stage = "对齐 Clash IPv6"
-            guard let expectedIPv6 = entry.expectedIPv6 else { throw ClashModeFailure("模式 IPv6 契约缺失") }
-            if active.ipv6Enabled != expectedIPv6 {
-                try backend.setNativeIPv6(expectedIPv6)
-                active = try backend.runtime(); ownedState = active
-                guard active.ipv6Enabled == expectedIPv6 else { throw ClashModeFailure("Clash 原生 IPv6 未生效") }
-            }
-            stage = "对齐原生 TUN 策略"
-            try checkInterruption()
-            guard let tunPolicy = entry.expectedTunPolicy, entry.expectedIPv6 != nil, entry.expectedDNSSHA256 != nil,
-                  entry.expectedTunCaptureSHA256 != nil, entry.expectedTunCaptureKeys?.isEmpty == false else { throw ClashModeFailure("模式策略契约不完整，请重新生成双配置") }
-            if active.tunPolicy?.matches(tunPolicy) != true {
-                do { try backend.setNativeTunPolicy(tunPolicy) }
-                catch {
-                    if let observed = try? backend.runtime(), observed.profileUID == active.profileUID,
-                       observed.rulesSHA256 == active.rulesSHA256, observed.manualSelectors == active.manualSelectors,
-                       observed.tunEnabled == active.tunEnabled, observed.systemProxyEnabled == active.systemProxyEnabled,
-                       observed.tunPolicy?.matches(tunPolicy) == true { ownedState = observed }
-                    throw error
-                }
-            }
-            active = try backend.runtime(); ownedState = active
-            guard active.tunPolicy?.matches(tunPolicy) == true else { throw ClashModeFailure("原生 TUN 策略未生效") }
-            stage = "开启流量接管"
-            try checkInterruption()
-            do { try backend.setNativeSwitch(tun: true, proxy: true) }
-            catch {
-                if let observed = try? backend.runtime(), observed.profileUID == active.profileUID,
-                   observed.routingDigest == active.routingDigest, observed.manualSelectors == active.manualSelectors,
-                   (observed.tunEnabled == active.tunEnabled || observed.tunEnabled),
-                   (observed.systemProxyEnabled == active.systemProxyEnabled || observed.systemProxyEnabled) { ownedState = observed }
-                throw error
-            }
-            active = try backend.runtime(); ownedState = active
-            guard active.profileUID == entry.profileUID, active.tunEnabled, active.systemProxyEnabled,
-                  active.markers.contains(entry.ruleMarker), active.rulesSHA256 == entry.expectedRulesSHA256, active.hijacksUDPAndTCP,
-                  active.leaf(for: entry.targetGroup) == leaf,
-                  active.ipv6Enabled == entry.expectedIPv6, active.dnsSHA256 == entry.expectedDNSSHA256,
-                  active.tunPolicy?.matches(tunPolicy) == true, active.tunCaptureSHA256 == entry.expectedTunCaptureSHA256 else { throw ClashModeFailure("TUN、代理、双协议 DNS 劫持或 IPv6 配置未生效，或存在额外绕过字段") }
-            if mode == .unifiedEgress, !active.isRealNodeSelector(entry.targetGroup) || active.membersSHA256(entry.targetGroup) != entry.expectedUnifiedMembersSHA256 { throw ClashModeFailure("统一出口组在切换期间变化") }
-            stage = "核验 DNS 劫持"
+            let entry = try backend.manifest().entry(for: mode)
             try backend.verifyDNSPath(mode: mode, entry: entry, leaf: leaf)
-            try checkInterruption()
-            try assertUnchanged(active)
-            stage = "临时接管 DNS"
-            acquiredDNS = true // Includes ambiguous/partial acquisition failures.
-            try backend.acquireDNS()
-            try checkInterruption()
-            let dns = try backend.dnsStatus()
-            guard dns.ownedByThisProcess else { throw ClashModeFailure("DNS 接管未核验，保留待处理") }
-            stage = "核验系统网络"
             try backend.verifySystemHTTPS()
-            try backend.verifyDNSPath(mode: mode, entry: entry, leaf: leaf)
-            try assertUnchanged(active)
-            try backend.closeConnections()
-            return try verifiedSnapshot(expected: active, mode: mode, entry: entry)
+            let after = observe()
+            guard after.evidenceFingerprint == snapshot.evidenceFingerprint, after.configurationMatches else {
+                throw ClashModeFailure("检测期间配置、节点或网络变化，结果已失效。")
+            }
+            return .init(fingerprint: snapshot.evidenceFingerprint, sampledAt: now, passed: true,
+                         detail: "本轮 UDP/TCP DNS 经 Cloudflare DoH 与所选节点；系统解析及 HTTPS 可达。IPv6/业务需独立验收。")
         } catch {
-            // Process exit strictly releases DNS. Never undo a profile or switch on this path.
-            if interrupted() {
-                try? backend.releaseDNS()
-                var result = observe(); result.phase = "已停止切换"; result.reason = "退出期间只恢复 DNS；Clash 保持实际状态。"
-                return result
-            }
-            var restored = true
-            if let baseline, let ownedState {
-                do {
-                    let current = try backend.runtime()
-                    // A native operation may have completed despite an error. Only accept the
-                    // last observed state or our original baseline; never overwrite a third state.
-                    guard current.controlFingerprint == ownedState.controlFingerprint || current.controlFingerprint == baseline.controlFingerprint else {
-                        throw ClashModeFailure("外部并发修改，停止覆盖式回滚")
-                    }
-                    if releasedDNS && hadDNS {
-                        guard try backend.dnsStatus().dnsLeaseState == "inactive" else { throw ClashModeFailure("DNS 存在外部修改，停止重新接管") }
-                        // Capture restored originals before a rollback can enable TUN again.
-                        try backend.prepareDNS()
-                    }
-                    if current.controlFingerprint != baseline.controlFingerprint {
-                        var rollbackOwned = current
-                        if current.profileUID != baseline.profileUID {
-                            try assertUnchanged(rollbackOwned)
-                            try backend.restoreProfile(baseline.profileUID)
-                            let after = try backend.runtime()
-                            guard after.profileUID == baseline.profileUID, after.manualSelectors == baseline.manualSelectors,
-                                  after.members == baseline.members, after.proxyTypes == baseline.proxyTypes,
-                                  after.tunEnabled == rollbackOwned.tunEnabled, after.systemProxyEnabled == rollbackOwned.systemProxyEnabled,
-                                  after.rulesSHA256 == baseline.rulesSHA256, after.dnsSHA256 == baseline.dnsSHA256,
-                                  after.ipv6Enabled == rollbackOwned.ipv6Enabled else {
-                                throw ClashModeFailure("原生恢复后的节点或控制状态与已保存基线不一致，停止继续覆盖")
-                            }
-                            rollbackOwned = after
-                        }
-                        if rollbackOwned.ipv6Enabled != baseline.ipv6Enabled {
-                            try assertUnchanged(rollbackOwned)
-                            try backend.setNativeIPv6(baseline.ipv6Enabled)
-                            let after = try backend.runtime()
-                            guard after.profileUID == baseline.profileUID, after.manualSelectors == rollbackOwned.manualSelectors,
-                                  after.members == rollbackOwned.members, after.proxyTypes == rollbackOwned.proxyTypes,
-                                  after.rulesSHA256 == baseline.rulesSHA256, after.dnsSHA256 == baseline.dnsSHA256,
-                                  after.tunEnabled == rollbackOwned.tunEnabled, after.systemProxyEnabled == rollbackOwned.systemProxyEnabled,
-                                  after.tunCaptureSHA256 == rollbackOwned.tunCaptureSHA256,
-                                  after.ipv6Enabled == baseline.ipv6Enabled else { throw ClashModeFailure("Clash IPv6 恢复期间发生外部修改") }
-                            rollbackOwned = after
-                        }
-                        if let policy = baseline.tunPolicy, rollbackOwned.tunPolicy?.matches(policy) != true {
-                            try assertUnchanged(rollbackOwned)
-                            try backend.setNativeTunPolicy(policy)
-                            let after = try backend.runtime()
-                            guard after.profileUID == baseline.profileUID, after.manualSelectors == rollbackOwned.manualSelectors,
-                                  after.members == rollbackOwned.members, after.proxyTypes == rollbackOwned.proxyTypes,
-                                  after.tunEnabled == rollbackOwned.tunEnabled, after.systemProxyEnabled == rollbackOwned.systemProxyEnabled,
-                                  after.routingDigest == baseline.routingDigest else { throw ClashModeFailure("TUN 恢复期间发生外部修改") }
-                            rollbackOwned = after
-                        }
-                        try assertUnchanged(rollbackOwned)
-                        try backend.setNativeSwitch(tun: baseline.tunEnabled, proxy: baseline.systemProxyEnabled)
-                        guard try backend.runtime().controlFingerprint == baseline.controlFingerprint else { throw ClashModeFailure("原 Clash 状态未完整恢复") }
-                    }
-                    if hadDNS && (releasedDNS || acquiredDNS) {
-                        let dns = try backend.dnsStatus()
-                        guard dns.managedByThisProcess else { throw ClashModeFailure("原 DNS 原件不再由本次事务持有，停止重新接管") }
-                        if !dns.ownedByThisProcess { try backend.acquireDNS() }
-                    } else if !hadDNS && acquiredDNS {
-                        let dns = try backend.dnsStatus()
-                        if dns.managedByThisProcess { try backend.releaseDNS() }
-                        else if dns.dnsLeaseState != "inactive" { throw ClashModeFailure("DNS 存在外部修改，停止覆盖式恢复") }
-                    }
-                } catch {
-                    restored = false
-                    // A failed/untrusted native rollback must not leave DNS owned on an
-                    // unverified path. CAS release preserves all external DNS changes.
-                    if (try? backend.dnsStatus().managedByThisProcess) == true { try? backend.releaseDNS() }
-                }
-            }
-            let finalDNS = try? backend.dnsStatus()
-            if hadDNS { restored = restored && finalDNS?.ownedByThisProcess == true }
-            else { restored = restored && finalDNS?.dnsLeaseState == "inactive" }
-            var result = observe()
-            result.phase = "\(stage)失败"
-            result.reason = "\(error.localizedDescription)；\(restored ? "本次已确认的修改已恢复" : "manual_pending：无法证明安全恢复，请检查 Clash 与 DNS 状态")"
-            result.manualPending = !restored
-            return result
+            return .init(fingerprint: snapshot.evidenceFingerprint, sampledAt: now, passed: false, detail: error.localizedDescription)
         }
-    }
-
-    private func checkInterruption() throws { if interrupted() { throw ClashModeFailure("切换已取消") } }
-    private func verifiedSnapshot(expected: ClashModeRuntime, mode: ClashNetworkMode, entry: ClashModeManifest.Entry?) throws -> ClashNetworkModeSnapshot {
-        let current = try backend.runtime()
-        guard current.controlFingerprint == expected.controlFingerprint else { throw ClashModeFailure("最终回读时 Clash 状态已变化") }
-        if let entry { guard try backend.manifest().entry(for: mode) == entry else { throw ClashModeFailure("最终回读时模式登记已变化") } }
-        let dns = try backend.dnsStatus()
-        guard mode == .originalNetwork ? dns.dnsLeaseState == "inactive" : dns.ownedByThisProcess else { throw ClashModeFailure("最终回读时 DNS 已释放或存在冲突") }
-        return .init(mode: mode, runtime: current, dns: dns, phase: mode == .originalNetwork ? "原网络已恢复" : "切换已核验", verified: true)
-    }
-    private func assertUnchanged(_ expected: ClashModeRuntime) throws {
-        guard try backend.runtime().controlFingerprint == expected.controlFingerprint else { throw ClashModeFailure("配置被外部修改，停止切换") }
     }
 }
 #endif
 
 final class ClashNetworkModeController: ObservableObject {
     @Published private(set) var snapshot = ClashNetworkModeSnapshot()
-    @Published private(set) var isSwitching = false
+    @Published private(set) var probe: ClashNetworkProbe?
     @Published private(set) var isRefreshing = false
-    private var generation: UInt64 = 0
-    private let queue = DispatchQueue(label: "com.zjah.NetBar.clash-network-mode", qos: .userInitiated)
-    private let stateLock = NSLock()
-    private var stopping = false
+    @Published private(set) var isProbing = false
+    private var revision: UInt64 = 0
+    private let queue = DispatchQueue(label: "com.zjah.NetBar.clash-observation", qos: .utility)
     #if !APP_STORE
     private let backend: ClashNetworkModeBackend
     init(backend: ClashNetworkModeBackend = LiveClashNetworkModeBackend()) { self.backend = backend }
@@ -491,70 +242,43 @@ final class ClashNetworkModeController: ObservableObject {
     init() {}
     #endif
 
-    func refresh() {
+    func invalidateProbe() {
+        revision &+= 1
+        probe = nil
+    }
+
+    func refresh() { read(probing: false) }
+    func detectCurrentNetwork() { read(probing: true) }
+    private func read(probing: Bool) {
         #if !APP_STORE
-        guard !isSwitching, !isRefreshing, !isStopping else { return }
-        isRefreshing = true; generation &+= 1; let id = generation
+        guard !isRefreshing, !isProbing else { return }
+        isRefreshing = !probing; isProbing = probing
+        let currentRevision = revision
         queue.async { [weak self] in
             guard let self else { return }
-            let result = ClashModeTransactionEngine(backend: self.backend).observe()
+            let observer = ClashModeObserver(backend: self.backend)
+            let result = observer.observe()
+            let evidence = probing ? observer.probe(result) : nil
             DispatchQueue.main.async {
-                self.isRefreshing = false
-                guard self.generation == id, !self.isStopping else { return }
+                self.isRefreshing = false; self.isProbing = false
+                guard currentRevision == self.revision else { return }
+                if result.evidenceFingerprint != self.snapshot.evidenceFingerprint { self.probe = nil }
                 self.snapshot = result
+                if let evidence { self.probe = evidence }
             }
         }
         #else
-        snapshot.reason = "App Store Lite 不提供配置和 DNS 写入能力"
+        snapshot.reason = "App Store Lite 不提供 Clash 本机控制端诊断；请打开 Clash 查看。"
         #endif
     }
 
-    func switchMode(to mode: ClashNetworkMode) {
-        #if !APP_STORE
-        guard !isSwitching, !isRefreshing, !isStopping, DistributionFlavor.current.supportsClashModeSwitch else { return }
-        isSwitching = true; generation &+= 1; let id = generation
-        snapshot.phase = "正在切换"; snapshot.verified = false; snapshot.reason = nil
-        queue.async { [weak self] in
-            guard let self else { return }
-            let result = ClashModeTransactionEngine(backend: self.backend, interrupted: { self.isStopping }).apply(mode)
-            DispatchQueue.main.async {
-                guard self.generation == id else { return }
-                self.isSwitching = false
-                self.snapshot = result
-            }
-        }
-        #endif
-    }
-
-    /// Called only for application termination. It intentionally has no Clash mutation.
-    func releaseDNSForTermination(completion: @escaping () -> Void) {
-        stateLock.lock(); stopping = true; stateLock.unlock()
-        generation &+= 1
-        #if !APP_STORE
-        queue.async { [weak self] in
-            try? self?.backend.releaseDNS()
-            DispatchQueue.main.async(execute: completion)
-        }
-        #else
-        completion()
-        #endif
-    }
-
-    func installDNSRecoveryComponent() {
-        #if !APP_STORE
-        let result = LiveRouteSafetyController().openInstaller()
-        if !result.succeeded { snapshot.reason = "无法打开恢复组件安装器：\(result.standardError)" }
-        #endif
-    }
-
-    private var isStopping: Bool { stateLock.lock(); defer { stateLock.unlock() }; return stopping }
-
+    var freshProbe: ClashNetworkProbe? { guard !isRefreshing, !isProbing else { return nil }; return probe.flatMap { $0.isFresh(for: snapshot) ? $0 : nil } }
     var overlaySummary: ClashOverlaySnapshot {
         let runtime = snapshot.runtime
         return .init(mode: runtime.map { $0.tunEnabled ? .tunFull : .systemProxy }, runtimeTunEnabled: runtime?.tunEnabled,
                      persistentTunEnabled: runtime?.tunEnabled, systemProxyEnabled: runtime?.systemProxyEnabled ?? false,
-                     coexistenceBaselineReady: snapshot.mode == .companyCoexistence || snapshot.mode == .unifiedEgress,
-                     dataPlaneReady: snapshot.verified,
-                     health: isSwitching ? .switching : (snapshot.verified ? .ready : .degraded), reason: snapshot.reason)
+                     coexistenceBaselineReady: snapshot.configurationMatches,
+                     dataPlaneReady: freshProbe?.passed == true,
+                     health: freshProbe?.passed == true ? .ready : .degraded, reason: snapshot.reason)
     }
 }

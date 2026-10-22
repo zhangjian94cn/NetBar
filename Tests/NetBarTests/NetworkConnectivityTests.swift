@@ -123,7 +123,7 @@ final class NetworkConnectivityTests: XCTestCase {
         XCTAssertTrue(state.shouldRunSlowFallbackProbe(at: start.addingTimeInterval(360)))
     }
 
-    func testUnderlayOnlyClosesConnectionsAndTunWriteStaysInManualOverlayController() throws {
+    func testUnderlayClosesConnectionsButNoClashConfigurationWriterSurvives() throws {
         let repo = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -134,16 +134,16 @@ final class NetworkConnectivityTests: XCTestCase {
 
         XCTAssertTrue(source.contains("write(method: \"DELETE\", path: \"/connections\""))
         XCTAssertTrue(source.contains("/connections"))
-        XCTAssertTrue(source.contains("write(method: \"PATCH\", path: \"/configs\""))
-        XCTAssertTrue(source.contains("/configs"))
+        XCTAssertFalse(source.contains("write(method: \"PATCH\", path: \"/configs\""))
+        XCTAssertTrue(source.contains("runtimeConfiguration"))
         XCTAssertFalse(source.contains("/restart"))
         XCTAssertFalse(source.contains("/upgrade"))
         XCTAssertFalse(source.contains("PUT\", \"/configs"))
         XCTAssertFalse(underlay.contains("setTunEnabled"))
         XCTAssertFalse(underlay.contains("enable_tun_mode"))
-        XCTAssertTrue(overlay.contains("func switchMode(to target: ClashOverlayMode)"))
-        XCTAssertTrue(overlay.contains("preferenceStore.replace"))
-        XCTAssertTrue(overlay.contains("runtime.setTunEnabled"))
+        XCTAssertFalse(overlay.contains("func switchMode(to target: ClashOverlayMode)"))
+        XCTAssertFalse(overlay.contains("preferenceStore.replace"))
+        XCTAssertFalse(overlay.contains("runtime.setTunEnabled"))
         XCTAssertFalse(overlay.contains("/restart"))
         XCTAssertFalse(overlay.contains("/upgrade"))
     }

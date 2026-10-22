@@ -85,12 +85,6 @@ enum MihomoClient {
         )
     }
 
-    static func setTunEnabled(_ enabled: Bool) -> Bool {
-        guard let body = try? JSONSerialization.data(withJSONObject: ["tun": ["enable": enabled]]),
-              let json = String(data: body, encoding: .utf8) else { return false }
-        return controller.write(method: "PATCH", path: "/configs", body: json)
-    }
-
     static func probeHTTPS() -> Bool {
         guard let configuration = runtimeConfiguration(), configuration.mixedPort > 0 else { return false }
         let result = runCurlCommand(arguments: [

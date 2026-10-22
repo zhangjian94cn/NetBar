@@ -57,7 +57,7 @@ enum DistributionFlavor: String {
         }
     }
 
-    var supportsClashModeSwitch: Bool {
+    var supportsClashDiagnostics: Bool {
         switch self {
         case .appStoreLite:
             return false

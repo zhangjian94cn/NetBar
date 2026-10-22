@@ -12,7 +12,6 @@ struct MenuPopoverView: View {
     @ObservedObject var vpsTrafficMonitor: VPSTrafficMonitor
     @ObservedObject var appIconResolver: AppIconResolver
     @ObservedObject var networkModeController: NetworkModeController
-    @ObservedObject var clashOverlayModeController: ClashOverlayModeController
     @ObservedObject var clashNetworkModeController: ClashNetworkModeController
     @ObservedObject private var appConfig = AppConfig.shared
     let coordinator: MonitorCoordinator
@@ -83,7 +82,7 @@ struct MenuPopoverView: View {
                 networkModeController.beginObserving()
                 networkModeController.refresh()
             }
-            if DistributionFlavor.current.supportsClashModeSwitch {
+            if DistributionFlavor.current.supportsClashDiagnostics {
                 clashNetworkModeController.refresh()
             }
         }
@@ -98,12 +97,15 @@ struct MenuPopoverView: View {
             preloadVisibleIcons()
         }
         .onChange(of: networkInfoProvider.wifiSSID) { _ in
+            clashNetworkModeController.invalidateProbe()
             coordinator.scheduleEgressIPRefreshAfterIdentityChange()
         }
         .onChange(of: networkInfoProvider.localIP) { _ in
+            clashNetworkModeController.invalidateProbe()
             coordinator.scheduleEgressIPRefreshAfterIdentityChange()
         }
         .onChange(of: proxyDetector.status) { _ in
+            clashNetworkModeController.invalidateProbe()
             coordinator.scheduleEgressIPRefreshAfterIdentityChange()
         }
     }
@@ -273,7 +275,7 @@ struct MenuPopoverView: View {
         if DistributionFlavor.current.supportsNetworkModeSwitch {
             networkModeController.refresh()
         }
-        if DistributionFlavor.current.supportsClashModeSwitch {
+        if DistributionFlavor.current.supportsClashDiagnostics {
             clashNetworkModeController.refresh()
         }
 
