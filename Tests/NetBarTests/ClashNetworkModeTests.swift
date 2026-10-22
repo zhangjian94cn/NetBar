@@ -4,6 +4,36 @@ import Combine
 
 #if !APP_STORE
 final class ClashNetworkModeTests: XCTestCase {
+    func testVergeOwnedIPv6IsAlignedBeforeDNSAndRestoredAfterFailure() throws {
+        let backend = ModeBackend()
+        let result = ClashModeTransactionEngine(backend: backend).apply(.unifiedEgress)
+        XCTAssertTrue(result.verified, result.reason ?? "")
+        XCTAssertTrue(backend.state.ipv6Enabled)
+        XCTAssertLessThan(try XCTUnwrap(backend.events.firstIndex(of: "ipv6:true")), try XCTUnwrap(backend.events.firstIndex(of: "verify-dns")))
+
+        let failing = ModeBackend(); failing.failSystemHTTPS = true
+        let baseline = failing.state.controlFingerprint
+        let failed = ClashModeTransactionEngine(backend: failing).apply(.unifiedEgress)
+        XCTAssertFalse(failed.verified)
+        XCTAssertFalse(failed.manualPending, failed.reason ?? "")
+        XCTAssertEqual(failing.state.controlFingerprint, baseline)
+        XCTAssertTrue(failing.events.contains("ipv6:false"))
+        XCTAssertEqual(failing.lease.dnsLeaseState, "inactive")
+    }
+
+    func testTunMembershipIgnoresOrderButNeverExtraCaptureExceptions() throws {
+        let first: [String: Any] = ["route-exclude-address": ["10.0.0.0/8", "172.16.0.0/12"], "dns-hijack": ["any:53", "tcp://any:53"]]
+        let reordered: [String: Any] = ["route-exclude-address": ["172.16.0.0/12", "10.0.0.0/8", "10.0.0.0/8"], "dns-hijack": ["tcp://any:53", "any:53"]]
+        XCTAssertEqual(try ClashDNSPathEvidence.tunCaptureSHA256(first), try ClashDNSPathEvidence.tunCaptureSHA256(reordered))
+        var bypass = reordered; bypass["exclude-interface"] = ["en0"]
+        XCTAssertNotEqual(try ClashDNSPathEvidence.tunCaptureSHA256(first), try ClashDNSPathEvidence.tunCaptureSHA256(bypass))
+        let policy = ClashTunPolicy(autoRoute: true, autoDetectInterface: true, strictRoute: false, dnsHijack: ["any:53", "tcp://any:53"], routeExcludeAddress: ["10.0.0.0/8", "172.16.0.0/12"])
+        var other = policy; other.routeExcludeAddress.reverse(); other.dnsHijack.reverse()
+        XCTAssertEqual(policy, other)
+        other.routeExcludeAddress.append("0.0.0.0/0")
+        XCTAssertNotEqual(policy, other)
+    }
+
     func testRefreshPublishesBusyStateAndPreventsAnOverlappingSwitch() {
         let backend = ModeBackend()
         let controller = ClashNetworkModeController(backend: backend)
@@ -356,7 +386,9 @@ private final class ModeBackend: ClashNetworkModeBackend {
     func dnsStatus() throws -> ClashDNSLeaseStatus { events.append("dns-status"); return lease }
     func assertCompanyVPNDisconnected() throws { events.append("company-gate"); if companyBlocked { throw ClashModeFailure("company tunnel active") } }
     func activate(_ entry: ClashModeManifest.Entry) throws {
+        let ipv6 = state.ipv6Enabled
         events.append("activate:" + entry.profileUID); state = Self.runtime(uid: entry.profileUID, tun: state.tunEnabled, proxy: state.systemProxyEnabled, tcp: !missingTCP)
+        state.ipv6Enabled = ipv6
         if activatedProblem == "tun" { state.tunCaptureSHA256 = "altered" }
         if activatedProblem == "rules" { state.rulesSHA256 = "altered" }
         if activatedProblem == "dns" { state.dnsSHA256 = "altered" }
@@ -367,20 +399,24 @@ private final class ModeBackend: ClashNetworkModeBackend {
         didActivate?()
         if failAfterActivate { failAfterActivate = false; throw ClashModeFailure("activation timed out after apply") }
     }
-    func restoreProfile(_ uid: String) throws { events.append("restore-profile:" + uid); state = Self.runtime(uid: uid, tun: state.tunEnabled, proxy: state.systemProxyEnabled); didRestore?() }
+    func restoreProfile(_ uid: String) throws { let ipv6 = state.ipv6Enabled; events.append("restore-profile:" + uid); state = Self.runtime(uid: uid, tun: state.tunEnabled, proxy: state.systemProxyEnabled); state.ipv6Enabled = ipv6; didRestore?() }
     func setNativeTunPolicy(_ policy: ClashTunPolicy) throws { events.append("tun-policy") }
+    func setNativeIPv6(_ enabled: Bool) throws { events.append("ipv6:" + String(enabled)); state.ipv6Enabled = enabled }
     func setNativeSwitch(tun: Bool, proxy: Bool) throws {
+        let ipv6 = state.ipv6Enabled
         events.append("switches")
         if failAfterTun { failAfterTun = false; state = Self.runtime(uid: state.profileUID, tun: tun, proxy: state.systemProxyEnabled); throw ClashModeFailure("system proxy failed") }
         let capture = state.tunCaptureSHA256, dns = state.dnsSHA256
         state = Self.runtime(uid: state.profileUID, tun: tun, proxy: proxy, leaf: state.selectors["🌐 统一出口"]!, tcp: !missingTCP)
         state.tunCaptureSHA256 = capture; state.dnsSHA256 = dns
+        state.ipv6Enabled = ipv6
     }
     func select(group: String, node: String) throws {
         events.append("select")
         let old = state
         state = Self.runtime(uid: state.profileUID, tun: state.tunEnabled, proxy: state.systemProxyEnabled, leaf: node, tcp: !missingTCP)
         state.tunCaptureSHA256 = old.tunCaptureSHA256; state.dnsSHA256 = old.dnsSHA256; state.rulesSHA256 = old.rulesSHA256; state.tunPolicy = old.tunPolicy
+        state.ipv6Enabled = old.ipv6Enabled
     }
     func prepareDNS() throws {
         events.append("dns-prepare")

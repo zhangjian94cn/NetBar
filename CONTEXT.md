@@ -72,3 +72,5 @@ Route Safety Helper新增固定dns-status/prepare/acquire/release/reconcile协�
 DNS Helper protocol7 先在原生激活/TUN之前prepare保存原自动/手动来源（不写DNS、120秒预算），之后真实TUN UDP/TCP53劫持核验通过才获取。与Verge2.5.8共用114.114.114.114占位，不能另写地址触发两个写入方竞争。模式互切保留首次原件；普通失败先回滚Clash、准备记录等待6秒原生脚本宽限再CAS释放；进程退出仍只恢复DNS。公网统一出口需同一真实节点、无DIRECTfallback；公网IPv6经代理或失败，系统IPv6设置不动。内网/OA、浏览器自带DoH、真实DNS与流量、退出/强退/换网、Direct Full/Lite和能耗分别验收，不用文件/单测/菜单点击代替。
 
 Guardian 启动保留 launchd 30 秒限速，固定 `kickstart -p` 请求最多 35 秒，App prepare/acquire 最多 45 秒；核对实际 root PID 和 executable，不能仅以已登记视为运行。租约替换事件刷新已有 watcher 的进程与期限，忽略自身最终值；不在每次获取时强制重启。启动失败保留原件日志，普通事务先回滚 Clash 再释放 DNS。
+
+Verge 2.5.8 在增强后强制应用控制面的 root IPv6，局部脚本覆盖会被丢弃。按 manifest 原生对齐 Clash 的 IPv6 开关，普通失败恢复原值，退出不改该值；macOS IPv6 保持不动。TUN 捕获字符串列表按集合去重排序后计算摘要，CIDR 排列变化不算漂移，成员增减仍失败；规则、DNS 与节点组的顺序不能套用该规范。回滚先恢复 profile，再恢复 Clash IPv6/TUN，核对完整控制指纹。

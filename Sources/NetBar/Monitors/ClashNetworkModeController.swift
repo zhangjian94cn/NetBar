@@ -75,6 +75,7 @@ struct ClashTunPolicy: Codable, Equatable {
         autoRoute == other.autoRoute && autoDetectInterface == other.autoDetectInterface && strictRoute == other.strictRoute &&
         Set(dnsHijack) == Set(other.dnsHijack) && Set(routeExcludeAddress) == Set(other.routeExcludeAddress)
     }
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.matches(rhs) }
 }
 
 struct ClashModeRuntime: Equatable {
@@ -87,7 +88,7 @@ struct ClashModeRuntime: Equatable {
     let members: [String: [String]]
     let proxyTypes: [String: String]
     let hijacksUDPAndTCP: Bool
-    let ipv6Enabled: Bool
+    var ipv6Enabled: Bool
     var routingDigest: String = ""
     var rulesSHA256: String = ""
     var dnsSHA256: String = ""
@@ -128,7 +129,7 @@ struct ClashModeRuntime: Equatable {
         let choices = manualSelectors.sorted(by: { $0.key < $1.key }).map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
         let topology = (try? JSONSerialization.data(withJSONObject: ["members": members, "types": proxyTypes], options: [.sortedKeys, .withoutEscapingSlashes])) ?? Data()
         let topologyHash = SHA256.hash(data: topology).map { String(format: "%02x", $0) }.joined()
-        return "\(profileUID)|\(tunEnabled)|\(systemProxyEnabled)|\(runtimeRuleMode)|\(routingDigest)|\(choices)|\(topologyHash)"
+        return "\(profileUID)|\(tunEnabled)|\(systemProxyEnabled)|\(ipv6Enabled)|\(runtimeRuleMode)|\(routingDigest)|\(choices)|\(topologyHash)"
     }
 }
 
@@ -184,6 +185,7 @@ protocol ClashNetworkModeBackend: AnyObject {
     func activate(_ entry: ClashModeManifest.Entry) throws
     func restoreProfile(_ uid: String) throws
     func setNativeTunPolicy(_ policy: ClashTunPolicy) throws
+    func setNativeIPv6(_ enabled: Bool) throws
     func setNativeSwitch(tun: Bool, proxy: Bool) throws
     func select(group: String, node: String) throws
     func prepareDNS() throws
@@ -314,6 +316,13 @@ final class ClashModeTransactionEngine {
             }
             guard let leaf = active.leaf(for: entry.targetGroup) else { throw ClashModeFailure("目标组未选择真实代理节点") }
             try assertUnchanged(active)
+            stage = "对齐 Clash IPv6"
+            guard let expectedIPv6 = entry.expectedIPv6 else { throw ClashModeFailure("模式 IPv6 契约缺失") }
+            if active.ipv6Enabled != expectedIPv6 {
+                try backend.setNativeIPv6(expectedIPv6)
+                active = try backend.runtime(); ownedState = active
+                guard active.ipv6Enabled == expectedIPv6 else { throw ClashModeFailure("Clash 原生 IPv6 未生效") }
+            }
             stage = "对齐原生 TUN 策略"
             try checkInterruption()
             guard let tunPolicy = entry.expectedTunPolicy, entry.expectedIPv6 != nil, entry.expectedDNSSHA256 != nil,
@@ -394,9 +403,21 @@ final class ClashModeTransactionEngine {
                                   after.members == baseline.members, after.proxyTypes == baseline.proxyTypes,
                                   after.tunEnabled == rollbackOwned.tunEnabled, after.systemProxyEnabled == rollbackOwned.systemProxyEnabled,
                                   after.rulesSHA256 == baseline.rulesSHA256, after.dnsSHA256 == baseline.dnsSHA256,
-                                  after.ipv6Enabled == baseline.ipv6Enabled, after.tunPolicy == rollbackOwned.tunPolicy else {
+                                  after.ipv6Enabled == rollbackOwned.ipv6Enabled else {
                                 throw ClashModeFailure("原生恢复后的节点或控制状态与已保存基线不一致，停止继续覆盖")
                             }
+                            rollbackOwned = after
+                        }
+                        if rollbackOwned.ipv6Enabled != baseline.ipv6Enabled {
+                            try assertUnchanged(rollbackOwned)
+                            try backend.setNativeIPv6(baseline.ipv6Enabled)
+                            let after = try backend.runtime()
+                            guard after.profileUID == baseline.profileUID, after.manualSelectors == rollbackOwned.manualSelectors,
+                                  after.members == rollbackOwned.members, after.proxyTypes == rollbackOwned.proxyTypes,
+                                  after.rulesSHA256 == baseline.rulesSHA256, after.dnsSHA256 == baseline.dnsSHA256,
+                                  after.tunEnabled == rollbackOwned.tunEnabled, after.systemProxyEnabled == rollbackOwned.systemProxyEnabled,
+                                  after.tunCaptureSHA256 == rollbackOwned.tunCaptureSHA256,
+                                  after.ipv6Enabled == baseline.ipv6Enabled else { throw ClashModeFailure("Clash IPv6 恢复期间发生外部修改") }
                             rollbackOwned = after
                         }
                         if let policy = baseline.tunPolicy, rollbackOwned.tunPolicy?.matches(policy) != true {

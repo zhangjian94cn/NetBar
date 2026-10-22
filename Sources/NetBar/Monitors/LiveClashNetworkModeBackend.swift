@@ -43,7 +43,17 @@ enum ClashDNSPathEvidence {
     static func runtimeTunConfiguration(_ tun: [String: Any]) -> [String: Any] {
         // The live device/address are allocated when TUN starts. Intended device
         // and address settings remain covered by the generated YAML digest.
-        Dictionary(uniqueKeysWithValues: (ClashTunPolicy.captureKeys + ["stack", "mtu"]).map { ($0, tun[$0] ?? NSNull()) })
+        normalizedTunConfiguration(Dictionary(uniqueKeysWithValues: (ClashTunPolicy.captureKeys + ["stack", "mtu"]).map { ($0, tun[$0] ?? NSNull()) }))
+    }
+
+    static func normalizedTunConfiguration(_ tun: [String: Any]) -> [String: Any] {
+        var result = tun
+        // TUN capture lists are sets. Verge can merge/reorder the deprecated
+        // CIDR forms; membership changes must still invalidate the contract.
+        for key in ClashTunPolicy.captureKeys {
+            if let values = tun[key] as? [String] { result[key] = Array(Set(values)).sorted() }
+        }
+        return result
     }
 
     static func isManagedDoH(_ connection: [String: Any]) -> Bool {
@@ -85,7 +95,7 @@ enum ClashDNSPathEvidence {
     }
 
     static func tunCaptureSHA256(_ tun: [String: Any]) throws -> String {
-        let projection = Dictionary(uniqueKeysWithValues: ClashTunPolicy.captureKeys.map { ($0, tun[$0] ?? NSNull()) })
+        let projection = normalizedTunConfiguration(Dictionary(uniqueKeysWithValues: ClashTunPolicy.captureKeys.map { ($0, tun[$0] ?? NSNull()) }))
         let data = try JSONSerialization.data(withJSONObject: projection, options: [.sortedKeys, .withoutEscapingSlashes])
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -220,6 +230,14 @@ final class ClashNativeProfileAdapter {
         guard let save = find(in: app, matching: { title($0) == "保存" && role($0) == kAXButtonRole as String }) else { throw ClashModeFailure("原生 TUN 保存按钮不可用") }
         try press(save)
         saved = true
+    }
+
+    func setIPv6(_ enabled: Bool) throws {
+        try checkAccess()
+        let app = try application()
+        bringForward()
+        try openSettings(in: app)
+        try setFollowingLabel("IPv6", root: app, role: "AXSwitch", value: NSNumber(value: enabled))
     }
 
     private func setFollowingLabel(_ label: String, root: AXUIElement, role wantedRole: String, value: CFTypeRef) throws {
@@ -500,7 +518,7 @@ final class LiveClashNetworkModeBackend: ClashNetworkModeBackend {
         let tunCaptureSHA256 = try ClashDNSPathEvidence.tunCaptureSHA256(generated.tun)
         // hit/miss counters and timestamps change with ordinary traffic. They
         // must never look like an external configuration write during CAS.
-        let routingData = try JSONSerialization.data(withJSONObject: ["rules": ClashDNSPathEvidence.ruleConfiguration(rules), "ipv6": ipv6, "tun": ClashDNSPathEvidence.runtimeTunConfiguration(tun), "generatedTun": generated.tun.filter { $0.key != "enable" }, "dnsHash": dnsHash], options: [.sortedKeys])
+        let routingData = try JSONSerialization.data(withJSONObject: ["rules": ClashDNSPathEvidence.ruleConfiguration(rules), "ipv6": ipv6, "tun": ClashDNSPathEvidence.runtimeTunConfiguration(tun), "generatedTun": ClashDNSPathEvidence.normalizedTunConfiguration(generated.tun.filter { $0.key != "enable" }), "dnsHash": dnsHash], options: [.sortedKeys])
         let routingDigest = SHA256.hash(data: routingData).map { String(format: "%02x", $0) }.joined()
         return .init(profileUID: profile.current, tunEnabled: tunEnabled,
                      systemProxyEnabled: LiveSystemProxyInspector().isEnabled(expectedPort: port),
@@ -574,6 +592,11 @@ final class LiveClashNetworkModeBackend: ClashNetworkModeBackend {
     func setNativeTunPolicy(_ policy: ClashTunPolicy) throws {
         try native.setTunPolicy(policy)
         try waitUntil { try self.runtime().tunPolicy?.matches(policy) == true }
+    }
+
+    func setNativeIPv6(_ enabled: Bool) throws {
+        try native.setIPv6(enabled)
+        try waitUntil { try self.runtime().ipv6Enabled == enabled }
     }
 
     func setNativeSwitch(tun: Bool, proxy: Bool) throws {
@@ -670,7 +693,10 @@ final class LiveClashNetworkModeBackend: ClashNetworkModeBackend {
     private func readProfileRegistry(root: String) throws -> ClashNativeProfileRegistry {
         let script = "require 'yaml';require 'json';x=YAML.safe_load(File.read(ARGV[0]),aliases:true)||{};puts JSON.dump({current:x['current'],names:(x['items']||[]).map{|i|[i['uid'],i['name']]}.to_h})"
         let result = BoundedCommand.run("/usr/bin/ruby", ["-e", script, URL(fileURLWithPath: root).appendingPathComponent("profiles.yaml").path], timeout: 2)
-        guard result.exitCode == 0, let data = result.stdout.data(using: .utf8), let value = try? JSONDecoder().decode(ClashNativeProfileRegistry.self, from: data) else { throw ClashModeFailure("无法读取 Clash 原生配置身份") }
+        guard result.exitCode == 0, !result.outputTruncated else {
+            throw ClashModeFailure("无法读取 Clash 原生配置身份（\(result.outcome.rawValue)，exit \(result.exitCode)，truncated \(result.outputTruncated)）")
+        }
+        guard let data = result.stdout.data(using: .utf8), let value = try? JSONDecoder().decode(ClashNativeProfileRegistry.self, from: data) else { throw ClashModeFailure("Clash 原生配置身份格式无效，未执行切换") }
         return value
     }
 }
