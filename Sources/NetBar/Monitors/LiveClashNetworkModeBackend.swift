@@ -120,6 +120,25 @@ enum ClashDNSPathEvidence {
 
 /// Fixed native AX surface for Clash Verge Rev. No generic script execution, file
 /// current-UID edits, synthesized shortcuts or configuration mutation via HTTP.
+enum ClashNativeControlMatching {
+    struct Element {
+        let title: String
+        let role: String
+    }
+
+    static func index(after label: String, role wantedRole: String, in elements: [Element]) -> Int? {
+        guard let labelIndex = elements.firstIndex(where: { $0.title == label && $0.role != "AXButton" }) else { return nil }
+        for index in (labelIndex + 1)..<min(elements.count, labelIndex + 65) {
+            let element = elements[index]
+            // Chromium exposes an ARIA switch as AXCheckBox on macOS. Restrict
+            // the equivalent toggle role to this reviewed, heading-bound row.
+            if element.role == wantedRole || (wantedRole == "AXSwitch" && element.role == "AXCheckBox") { return index }
+            if ["AXHeading", "AXStaticText"].contains(element.role), !element.title.isEmpty, element.title != label { return nil }
+        }
+        return nil
+    }
+}
+
 final class ClashNativeProfileAdapter {
     private let supportedVersion = "2.5.8"
     private let bundleID = "io.github.clash-verge-rev.clash-verge-rev"
@@ -208,9 +227,9 @@ final class ClashNativeProfileAdapter {
 
     private func followingControl(_ label: String, root: AXUIElement, role wantedRole: String) -> AXUIElement? {
         let all = flatten(root)
-        guard let index = all.firstIndex(where: { title($0) == label && role($0) != kAXButtonRole as String }),
-              let control = all.dropFirst(index + 1).prefix(8).first(where: { role($0) == wantedRole }) else { return nil }
-        return control
+        let elements = all.map { ClashNativeControlMatching.Element(title: title($0), role: role($0)) }
+        guard let index = ClashNativeControlMatching.index(after: label, role: wantedRole, in: elements) else { return nil }
+        return all[index]
     }
 
     private func flatten(_ root: AXUIElement) -> [AXUIElement] {
@@ -289,7 +308,10 @@ final class ClashNativeProfileAdapter {
     }
 
     private func title(_ element: AXUIElement) -> String {
-        attribute(element, kAXTitleAttribute as String) as? String ?? attribute(element, kAXDescriptionAttribute as String) as? String ?? ""
+        for key in [kAXTitleAttribute as String, kAXDescriptionAttribute as String, kAXValueAttribute as String] {
+            if let value = attribute(element, key) as? String, !value.isEmpty { return value }
+        }
+        return ""
     }
     private func normalizedTitle(_ element: AXUIElement) -> String { title(element).filter { !$0.isWhitespace } }
     private func role(_ element: AXUIElement) -> String { attribute(element, kAXRoleAttribute as String) as? String ?? "" }

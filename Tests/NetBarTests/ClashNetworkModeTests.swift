@@ -3,6 +3,19 @@ import XCTest
 
 #if !APP_STORE
 final class ClashNetworkModeTests: XCTestCase {
+    func testNativeSwitchMatchesChromiumCheckboxBeyondPresentationWrappers() {
+        typealias Element = ClashNativeControlMatching.Element
+        let elements = [Element(title: "系统代理", role: "AXHeading")] +
+            (0..<12).map { _ in Element(title: "", role: "AXGroup") } +
+            [Element(title: "", role: "AXCheckBox"), Element(title: "IPv6", role: "AXHeading"), Element(title: "", role: "AXSwitch")]
+        XCTAssertEqual(ClashNativeControlMatching.index(after: "系统代理", role: "AXSwitch", in: elements), 13)
+        let missing = [Element(title: "系统代理", role: "AXHeading"), Element(title: "IPv6", role: "AXHeading"), Element(title: "", role: "AXCheckBox")]
+        XCTAssertNil(ClashNativeControlMatching.index(after: "系统代理", role: "AXSwitch", in: missing))
+        let nextStaticRow = [Element(title: "系统代理", role: "AXHeading"), Element(title: "开机自启", role: "AXStaticText"), Element(title: "", role: "AXCheckBox")]
+        XCTAssertNil(ClashNativeControlMatching.index(after: "系统代理", role: "AXSwitch", in: nextStaticRow))
+        XCTAssertNil(ClashNativeControlMatching.index(after: "不存在的字段", role: "AXSwitch", in: elements))
+    }
+
     func testTunStartDoesNotLookLikeAConcurrentPolicyEdit() throws {
         func data(_ values: [String: Any]) throws -> Data {
             try JSONSerialization.data(withJSONObject: ClashDNSPathEvidence.runtimeTunConfiguration(values), options: [.sortedKeys])
