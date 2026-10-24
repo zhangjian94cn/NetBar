@@ -3,6 +3,7 @@ import SwiftUI
 
 struct MenuPopoverView: View {
     private let maxTableApps = 20
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @ObservedObject var networkMonitor: NetworkMonitor
     @ObservedObject var proxyDetector: ProxyDetector
@@ -82,7 +83,7 @@ struct MenuPopoverView: View {
 
             contentSection
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .animation(.easeOut(duration: 0.15), value: selectedSection)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: selectedSection)
 
             if availableSections.count > 1 {
                 Divider()
@@ -132,11 +133,11 @@ struct MenuPopoverView: View {
         HStack(spacing: PopoverVisualStyle.Spacing.sm) {
             PopoverStatusDot(state: experience.state, diameter: 6)
 
-            Text(experience.headline)
+            Text(DistributionFlavor.current == .directFull ? experience.headline : "网络监控")
                 .font(PopoverVisualStyle.Typography.title)
                 .foregroundColor(PopoverVisualStyle.primaryText)
 
-            Text(statusPresentation.outletText)
+            Text(DistributionFlavor.current == .directFull ? statusPresentation.outletText : "Lite")
                 .font(PopoverVisualStyle.Typography.body)
                 .foregroundColor(PopoverVisualStyle.secondaryText)
                 .lineLimit(1)
@@ -342,7 +343,7 @@ private struct ApplicationsTabView: View {
                 Menu {
                     Picker("路由", selection: $route) {
                         Text("全部路由").tag("全部路由")
-                        ForEach([ProcessTrafficMonitor.AppProxyStatus.direct, .proxied, .mixed, .unknown], id: \.label) { Text($0.label).tag($0.label) }
+                        ForEach([ProcessTrafficMonitor.AppProxyStatus.direct, .proxied, .mixed, .unknown], id: \.label) { Text($0 == .unknown ? "待确认" : $0.label).tag($0.label) }
                     }
                     Picker("排序", selection: $sort) {
                         ForEach(ApplicationTrafficQuery.Sort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
@@ -587,7 +588,11 @@ private struct MonitoringTabView: View {
         .popoverSurface()
     }
 
+    @ViewBuilder
     private var networkFacts: some View {
+        if DistributionFlavor.current == .appStoreLite {
+            PopoverFactRow(title: "本机地址 · en0", value: networkInfoProvider.localIP)
+        } else {
         VStack(spacing: PopoverVisualStyle.blockSpacing) {
             HStack(spacing: PopoverVisualStyle.Spacing.md) {
                 PopoverFactTile(
@@ -606,7 +611,7 @@ private struct MonitoringTabView: View {
             }
             HStack(spacing: PopoverVisualStyle.Spacing.md) {
                 PopoverFactTile(
-                    title: "局域网地址",
+                    title: "本机地址 · en0",
                     icon: "pc",
                     value: networkInfoProvider.localIP,
                     monospacedValue: true
@@ -618,6 +623,7 @@ private struct MonitoringTabView: View {
                     state: statusPresentation.monitoringNeedsAttention ? .warning : (dnsFacts?.effectiveDNSReady == true ? .ok : .unknown)
                 )
             }
+        }
         }
     }
 }

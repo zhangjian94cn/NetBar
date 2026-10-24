@@ -72,3 +72,13 @@ Wi-Fi 是当前出口时，Mini Helper 的 `ready` 只允许进入 30 秒资格�
 一次性 [退役维护](Sources/NetBar/Resources/RouteSafetyHelper/retire-netbar-dns-experiment.command) 仅在旧租约 inactive、TUN/代理关、DNS 原件核实后撤销 DNS 动作、卸载 DNS launchd 并私有备份组件；不写 DNS 或 Clash。基础路由动作逐字保留，外部变化 manual_pending。
 
 Clash 正常关 TUN/退出后核对逐服务 DNS；极端崩溃的恢复路径是重新打开 Clash 再关闭 TUN，不承诺后台自动恢复。只有 Clash 正常、TUN 有效及本轮证据通过时才谈分流保障。历史失败在 infra Spec validation 保留，不能将旧实验测试当作新版本验收。
+
+## 四 Tab 产品界面
+
+保留出口、Clash、应用、监控四个底部 Tab，Direct Full 为 340×460pt，Lite 为 340×390pt 并按既有能力裁剪；设置保留独立单实例窗口。用户在 2026-10-23 明确取消单页总览及侧栏详情方向，该方向从未安装。正式约束见 [Spec 006](https://github.com/zhangjian94cn/zhangjian-skills/blob/feature/netbar-product-experience/skills/my/infra/local-dev-config/netbar-app-management/specs/006-product-experience/spec.md)，当前视觉验收见 [design-qa](design-qa.md)。
+
+- 顶部物理连通性、配置事实与显式检测分开；未检测、过期、条件不足保持中性。DNS/HTTPS 通过仅证明对应两项。
+- 应用流量只使用近期连接证据判定路由，只有接口信息时待确认；累计数据不被当前路由重新归因。
+- VPS 的最近尝试与最近成功分开，首次失败不填零，缺少配额不显示无限制；草稿测试不提前保存，关闭时保护未保存输入。
+- 一套协调器监听网络身份。仅面板应用页可见时提升进程明细采样，独立设置不创建监控实例；继续执行前台至少 2 秒、后台至少 10 秒和失败退避。
+- DEBUG 原生预览使用独立 bundle、偏好与 Keychain service，不写路由策略或流量历史。重建后旧预览钥匙串授权不可交互时返回凭据缺失，避免验收窗口等待旧签名授权；不改变正式凭据行为。

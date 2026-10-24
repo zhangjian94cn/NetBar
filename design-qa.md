@@ -1,5 +1,7 @@
 # NetBar Popover Visual QA
 
+当前四 Tab 视觉、原生故事与资源证据见 [2026-10-23 验收](docs/2026-10-23-four-tab-experience-validation.md)。以下保留 2026-08-29 历史记录，不能用旧截图或旧测试数量代表当前版本。
+
 - Date: 2026-08-29
 - Scope: Direct Full four-tab popover — compact geometry, dense type scale, two-role palette, data meters
 - Reference: the 2026-08-29 first pass (380 × 540pt, 11–20pt type, purple/cyan card icons)

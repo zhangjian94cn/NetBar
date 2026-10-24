@@ -49,7 +49,7 @@ enum KeychainHelper {
 
     /// 从 Keychain 读取 Data
     static func load(key: String) -> Data? {
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
@@ -57,6 +57,13 @@ enum KeychainHelper {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
 
+        #if DEBUG
+        // Rebuilt QA bundles must never wait for authorization of an older
+        // preview signature. Missing fixture credentials stay an explicit error.
+        if MonitorCoordinator.isVisualCaptureRun {
+            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        }
+        #endif
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess else { return nil }
