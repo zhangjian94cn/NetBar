@@ -218,7 +218,8 @@ struct NetworkOutletPresentation: Equatable {
         routePreference: NetworkRoutePreference,
         requiresManualRecovery: Bool,
         dnsFacts: DNSPathFacts?,
-        applicationFacts: ApplicationPathFacts?
+        applicationFacts: ApplicationPathFacts?,
+        hasConnectivityFailure: Bool = false
     ) {
         outletText = snapshot?.effectiveMode?.displayName ?? "待确认"
 
@@ -274,20 +275,20 @@ struct NetworkOutletPresentation: Equatable {
         } else {
             sharingDetail = snapshot?.miniGateway
         }
-        sharingStateDot = snapshot.map { $0.gatewayState == .ready ? .ok : .warning } ?? .unknown
+        sharingStateDot = snapshot.map { $0.gatewayState == .unknown ? .unknown : ($0.gatewayState == .ready ? .ok : .warning) } ?? .unknown
 
         switch proofLevel {
         case .activeVerified: proofValue = "已验证"
         case .preflightEligible: proofValue = "预检通过"
         case .routeEligible: proofValue = "路由可用"
         case .degradedActive: proofValue = "受限可用"
-        case .unavailable: proofValue = "不可用"
+        case .unavailable: proofValue = hasConnectivityFailure ? "未通过" : "尚未验证"
         }
         proofDetail = failoverPhase.displayName
         switch proofLevel {
         case .activeVerified: proofStateDot = .ok
         case .preflightEligible, .routeEligible, .degradedActive: proofStateDot = .warning
-        case .unavailable: proofStateDot = snapshot == nil ? .unknown : .warning
+        case .unavailable: proofStateDot = hasConnectivityFailure ? .warning : .unknown
         }
 
         preferenceDetail = routePreference.displayName

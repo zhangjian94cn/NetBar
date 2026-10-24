@@ -96,14 +96,15 @@ final class CompanyVPNDiagnosticMonitorTests: XCTestCase {
         XCTAssertNotEqual(snapshot.health, .ready)
     }
 
-    func testRecoveryUsesFixedOwnerCommandWithoutShellOrAutomaticInvocation() throws {
+    func testReadOnlyDiagnosticsCannotInvokeLegacyRecovery() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/NetBar/Monitors/CompanyVPNDiagnosticMonitor.swift"))
 
-        XCTAssertTrue(source.contains("recover-coexistence"))
+        XCTAssertFalse(source.contains("recover-coexistence"))
+        XCTAssertFalse(source.contains("requestCoexistenceRecovery"))
         XCTAssertFalse(source.contains("/bin/sh"))
         XCTAssertFalse(source.contains("-c\""))
         XCTAssertFalse(source.contains("Timer.scheduledTimer") && source.contains("recoverCoexistence()"))

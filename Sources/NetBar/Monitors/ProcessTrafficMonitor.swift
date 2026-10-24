@@ -51,6 +51,7 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
         var cumulativeDownload: UInt64
         var cumulativeUpload: UInt64
         var proxyStatus: AppProxyStatus
+        var routeEvidence: String { proxyStatus == .unknown ? "仅接口信息或缺少连接证据，路由待确认" : "Mihomo 近期连接证据；不代表全部历史连接" }
 
         var totalSpeed: Double { downloadSpeed + uploadSpeed }
         var totalCumulative: UInt64 { cumulativeDownload + cumulativeUpload }
@@ -112,6 +113,7 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
     }
 
     @Published private(set) var samplingMessage: String?
+    @Published private(set) var lastSampleAt: Date?
     @Published var appSpeeds: [AppTraffic] = []
     @Published var cumulativeRanking: [AppTraffic] = []
     @Published var selectedPeriod: TimePeriod = .fiveMinutes {
@@ -139,7 +141,6 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
     private var previousTime: Date = Date()
     private var trafficHistory: [TrafficRecord] = []
     private var appInterfaces: [String: Set<String>] = [:]
-    private var activeTunnelInterfaces: Set<String> = []
     private var routeHistory: [RouteSample] = []
     private let startTime = Date()
     private var cachedCumulativePeriod: TimePeriod?
@@ -169,7 +170,6 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
             self.hasNettopBaseline = false
             self.previousTime = Date()
             self.appInterfaces = [:]
-            self.activeTunnelInterfaces = []
             self.previousMihomoSnapshots = [:]
         }
         scheduleNextSample()
@@ -245,14 +245,12 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
             let nettopResult = NettopParser.fetchExternalSummary()
             guard !nettopResult.stats.isEmpty else { return }
             succeeded = true
-            let activeTunnelInterfaces = TunnelRouteDetector.activeTunnelInterfaces()
             let currentMihomoSnapshots = MihomoClient.fetchConnectionSnapshots()
             let now = Date()
             let elapsed = now.timeIntervalSince(self.previousTime)
             guard elapsed > 0.5 else { return }
 
             self.appInterfaces = nettopResult.interfaces
-            self.activeTunnelInterfaces = activeTunnelInterfaces
 
             guard self.hasNettopBaseline else {
                 self.previousStats = nettopResult.stats
@@ -277,18 +275,14 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
 
                 let dlBytes = val.bytesIn >= previous.bytesIn ? val.bytesIn - previous.bytesIn : 0
                 let ulBytes = val.bytesOut >= previous.bytesOut ? val.bytesOut - previous.bytesOut : 0
-                let routeKinds = self.routeKinds(
-                    from: nettopResult.interfaces[appName] ?? nettopResult.interfaces[rawAppName],
-                    activeTunnelInterfaces: activeTunnelInterfaces
-                )
-                let externalRouteKinds = routeKinds.isEmpty ? Set([RouteKind.direct]) : routeKinds
+                let externalRouteKinds: Set<RouteKind> = [] // An interface does not prove the final proxy route.
 
                 if self.isProxyCoreProcess(appName) || self.isProxyCoreProcess(rawAppName) {
                     self.addDelta(
                         appName: self.proxyCoreDisplayName(for: appName),
                         bytesIn: dlBytes,
                         bytesOut: ulBytes,
-                        routeKinds: [.proxied],
+                        routeKinds: [],
                         to: &proxyCoreFallbackDeltas
                     )
                 } else {
@@ -390,6 +384,7 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
 
             DispatchQueue.main.async {
                 guard self.sampling.isRunning, self.sampling.generation == generation else { return }
+                self.lastSampleAt = now
                 self.appSpeeds = speeds
                 if let cumulative, self.selectedPeriod == selectedPeriod {
                     self.cumulativeRanking = cumulative
@@ -452,14 +447,6 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
             return proxyStatus(from: historyKinds)
         }
 
-        let interfaceKinds = routeKinds(
-            from: appInterfaces[appName],
-            activeTunnelInterfaces: activeTunnelInterfaces
-        )
-        if !interfaceKinds.isEmpty {
-            return proxyStatus(from: interfaceKinds)
-        }
-
         return .unknown
     }
 
@@ -477,32 +464,6 @@ class ProcessTrafficMonitor: ObservableObject, MonitorProtocol {
         Set(routeHistory.lazy
             .filter { $0.appName == appName && $0.timestamp >= since }
             .map(\.routeKind))
-    }
-
-    private func routeKinds(
-        from interfaces: Set<String>?,
-        activeTunnelInterfaces: Set<String>
-    ) -> Set<RouteKind> {
-        guard let interfaces else { return [] }
-
-        let nonLoopback = interfaces.filter { $0 != "lo0" && !$0.isEmpty }
-        guard !nonLoopback.isEmpty else { return [] }
-
-        var kinds: Set<RouteKind> = []
-        for iface in nonLoopback {
-            if isVPNInterface(iface) {
-                if activeTunnelInterfaces.contains(iface) {
-                    kinds.insert(.proxied)
-                }
-            } else {
-                kinds.insert(.direct)
-            }
-        }
-        return kinds
-    }
-
-    private func isVPNInterface(_ iface: String) -> Bool {
-        TunnelRouteDetector.isVPNInterfaceName(iface)
     }
 
     private func recordRouteKinds(_ routeKinds: Set<RouteKind>, for appName: String, at timestamp: Date) {

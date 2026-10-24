@@ -43,7 +43,6 @@ struct CompanyVPNDiagnosticSnapshot: Equatable {
 final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
     @Published private(set) var snapshot: CompanyVPNDiagnosticSnapshot = .unknown
     @Published private(set) var isRunningOwnerDiagnostic = false
-    @Published private(set) var isRecoveringCoexistence = false
     @Published private(set) var errorMessage: String?
 
     private let fileManager: FileManager
@@ -187,43 +186,6 @@ final class CompanyVPNDiagnosticMonitor: ObservableObject, MonitorProtocol {
         }
     }
 
-    #if !APP_STORE
-    func requestCoexistenceRecovery() {
-        guard DistributionFlavor.current == .directFull,
-              !isRecoveringCoexistence,
-              !isRunningOwnerDiagnostic else { return }
-        let cliPath = environment["NETBAR_DUAL_VPN_CLI_PATH"] ??
-            "/Users/zjah/Documents/code/zhangjian-skills/skills/my/infra/local-dev-config/dual-vpn-config/scripts/dual-vpn-cli.mjs"
-        guard fileManager.isReadableFile(atPath: cliPath) else {
-            errorMessage = "未找到 dual-vpn-config 恢复入口"
-            return
-        }
-        isRecoveringCoexistence = true
-        errorMessage = nil
-        let artifactDirectory = overlayArtifactURL.deletingLastPathComponent().path
-        let backupDirectory = overlayArtifactURL.deletingLastPathComponent()
-            .appendingPathComponent("transactions", isDirectory: true).path
-        queue.async { [weak self] in
-            guard let self else { return }
-            let result = Self.run(
-                executable: "/usr/bin/env",
-                arguments: [
-                    "node", cliPath, "recover-coexistence",
-                    "--artifacts-dir", artifactDirectory,
-                    "--backup-dir", backupDirectory,
-                ]
-            )
-            let next = self.collectSnapshot()
-            DispatchQueue.main.async {
-                self.isRecoveringCoexistence = false
-                self.snapshot = next
-                self.errorMessage = result == 0
-                    ? nil
-                    : "共存模式恢复未提交，已尝试回滚；请查看诊断结果"
-            }
-        }
-    }
-    #endif
 
     func collectSnapshot() -> CompanyVPNDiagnosticSnapshot {
         let processOutput = Self.commandOutput(executable: "/bin/ps", arguments: ["-axo", "comm="])

@@ -25,6 +25,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
         self.coordinator = coordinator
         super.init()
 
+        coordinator.onSettingsOpened = { [weak self] in self?.closePanel() }
         setupStatusItem()
         startUpdatingTitle()
         setupEventMonitors()
@@ -64,18 +65,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
             AppConfig.shared.selectedPopoverSection = section
         }
         #endif
-        let contentView = MenuPopoverView(
-            networkMonitor: coordinator.networkMonitor,
-            proxyDetector: coordinator.proxyDetector,
-            processTrafficMonitor: coordinator.processTrafficMonitor,
-            networkInfoProvider: coordinator.networkInfoProvider,
-            egressIPMonitor: coordinator.egressIPMonitor,
-            vpsTrafficMonitor: coordinator.vpsTrafficMonitor,
-            appIconResolver: coordinator.appIconResolver,
-            networkModeController: coordinator.networkModeController,
-            clashNetworkModeController: coordinator.clashNetworkModeController,
-            coordinator: coordinator
-        )
+        let contentView = MenuPopoverView(coordinator: coordinator)
         let controller = NSHostingController(rootView: contentView)
         #if DEBUG
         if let appearanceName = ProcessInfo.processInfo.environment["NETBAR_CAPTURE_APPEARANCE"] {
@@ -146,6 +136,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
 
     func showPanel() {
         guard let button = statusItem.button, panel == nil else { return }
+        coordinator.refreshVisibleFacts()
 
         DispatchQueue.main.async { [weak self, weak button] in
             guard let self = self, let button = button, self.panel == nil else { return }
@@ -172,7 +163,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
             panel.isReleasedWhenClosed = false
 
             self.panel = panel
-            self.coordinator.processTrafficMonitor.setDetailVisible(true)
+            // The visible applications Tab owns foreground process sampling.
             self.setStatusItemHighlighted(true)
             panel.orderFrontRegardless()
             #if DEBUG
@@ -206,7 +197,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
     #endif
 
     private func closePanel() {
-        coordinator.processTrafficMonitor.setDetailVisible(false)
+        coordinator.setVisibleConsumer("popover", visible: false)
         panel?.close()
         panel = nil
         setStatusItemHighlighted(false)
@@ -214,7 +205,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         if notification.object as? NSPanel === panel {
-            coordinator.processTrafficMonitor.setDetailVisible(false)
+            coordinator.setVisibleConsumer("popover", visible: false)
             panel = nil
             setStatusItemHighlighted(false)
         }

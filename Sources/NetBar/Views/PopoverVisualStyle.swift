@@ -32,20 +32,20 @@ enum PopoverVisualStyle {
 
     /// The single horizontal inset shared by every page and by the tab bar, so
     /// content edges and navigation edges always line up.
-    static let contentInset: CGFloat = Spacing.md
+    static let contentInset: CGFloat = 14
 
     /// Gap between the stacked blocks of a page.
-    static let blockSpacing: CGFloat = Spacing.sm
+    static let blockSpacing: CGFloat = 10
 
     /// Inner padding of a card or a grouped list.
-    static let cardPadding: CGFloat = 10
+    static let cardPadding: CGFloat = 11
 
     // MARK: - Radius
 
     enum Radius {
         static let badge: CGFloat = 5
         static let control: CGFloat = 8
-        static let card: CGFloat = 8
+        static let card: CGFloat = 10
         static let shell: CGFloat = 12
     }
 
@@ -118,8 +118,8 @@ enum PopoverVisualStyle {
     /// a light-mode alpha that reads correctly turns invisible once it is
     /// composited over `.regularMaterial` in Dark Aqua.
     static let surface = Color(nsColor: .popoverDynamic(
-        light: NSColor.black.withAlphaComponent(0.045),
-        dark: NSColor.white.withAlphaComponent(0.075)
+        light: NSColor.white.withAlphaComponent(0.58),
+        dark: NSColor.white.withAlphaComponent(0.045)
     ))
 
     static let surfaceSelected = Color(nsColor: .popoverDynamic(
@@ -195,6 +195,8 @@ private struct PopoverSurfaceModifier: ViewModifier {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .fill(PopoverVisualStyle.surface)
             )
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .stroke(PopoverVisualStyle.hairline.opacity(0.35), lineWidth: 0.5))
     }
 }
 

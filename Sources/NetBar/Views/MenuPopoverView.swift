@@ -3,6 +3,7 @@ import SwiftUI
 
 struct MenuPopoverView: View {
     private let maxTableApps = 20
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @ObservedObject var networkMonitor: NetworkMonitor
     @ObservedObject var proxyDetector: ProxyDetector
@@ -18,6 +19,28 @@ struct MenuPopoverView: View {
 
     @State private var selectedSection = AppConfig.shared.selectedPopoverSection
     @State private var selectedTrafficTab = 0
+
+    init(coordinator: MonitorCoordinator) {
+        self.coordinator = coordinator
+        networkMonitor = coordinator.networkMonitor
+        proxyDetector = coordinator.proxyDetector
+        processTrafficMonitor = coordinator.processTrafficMonitor
+        networkInfoProvider = coordinator.networkInfoProvider
+        egressIPMonitor = coordinator.egressIPMonitor
+        vpsTrafficMonitor = coordinator.vpsTrafficMonitor
+        appIconResolver = coordinator.appIconResolver
+        networkModeController = coordinator.networkModeController
+        clashNetworkModeController = coordinator.clashNetworkModeController
+    }
+
+    private var experience: ExperiencePresentation {
+        ExperiencePresentation(proof: networkModeController.connectivityProofLevel,
+            mode: networkModeController.snapshot?.effectiveMode,
+            hasPhysicalSample: networkModeController.snapshot != nil,
+            physicalError: networkModeController.errorMessage,
+            clash: clashNetworkModeController.snapshot, probe: clashNetworkModeController.probe,
+            previousProbe: clashNetworkModeController.previousProbe, probing: clashNetworkModeController.isProbing)
+    }
 
     private var availableSections: [PopoverSection] {
         PopoverSection.available(for: DistributionFlavor.current)
@@ -60,7 +83,7 @@ struct MenuPopoverView: View {
 
             contentSection
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .animation(.easeOut(duration: 0.15), value: selectedSection)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: selectedSection)
 
             if availableSections.count > 1 {
                 Divider()
@@ -77,6 +100,7 @@ struct MenuPopoverView: View {
         .clipShape(RoundedRectangle(cornerRadius: PopoverVisualStyle.Radius.shell, style: .continuous))
         .onAppear {
             normalizeSelectedSection()
+            coordinator.setVisibleConsumer("popover", visible: selectedSection == .applications)
             preloadVisibleIcons()
             if DistributionFlavor.current.supportsNetworkModeSwitch {
                 networkModeController.beginObserving()
@@ -90,23 +114,12 @@ struct MenuPopoverView: View {
             networkModeController.endObserving()
         }
         .onChange(of: selectedSection) { section in
+            coordinator.setVisibleConsumer("popover", visible: section == .applications)
             appConfig.selectedPopoverSection = section
             refreshOnSelection(section)
         }
         .onChange(of: visibleIconNames) { _ in
             preloadVisibleIcons()
-        }
-        .onChange(of: networkInfoProvider.wifiSSID) { _ in
-            clashNetworkModeController.invalidateProbe()
-            coordinator.scheduleEgressIPRefreshAfterIdentityChange()
-        }
-        .onChange(of: networkInfoProvider.localIP) { _ in
-            clashNetworkModeController.invalidateProbe()
-            coordinator.scheduleEgressIPRefreshAfterIdentityChange()
-        }
-        .onChange(of: proxyDetector.status) { _ in
-            clashNetworkModeController.invalidateProbe()
-            coordinator.scheduleEgressIPRefreshAfterIdentityChange()
         }
     }
 
@@ -118,13 +131,13 @@ struct MenuPopoverView: View {
     /// actionable banner themselves.
     private var headerSection: some View {
         HStack(spacing: PopoverVisualStyle.Spacing.sm) {
-            PopoverStatusDot(state: statusPresentation.tone.factState, diameter: 7)
+            PopoverStatusDot(state: experience.state, diameter: 6)
 
-            Text(statusPresentation.connectivity.displayName)
+            Text(DistributionFlavor.current == .directFull ? experience.headline : "网络监控")
                 .font(PopoverVisualStyle.Typography.title)
                 .foregroundColor(PopoverVisualStyle.primaryText)
 
-            Text(statusPresentation.outletText)
+            Text(DistributionFlavor.current == .directFull ? statusPresentation.outletText : "Lite")
                 .font(PopoverVisualStyle.Typography.body)
                 .foregroundColor(PopoverVisualStyle.secondaryText)
                 .lineLimit(1)
@@ -142,7 +155,7 @@ struct MenuPopoverView: View {
 
             Menu {
                 Button("设置…") {
-                    SettingsWindowController.shared.show(coordinator: coordinator)
+                    coordinator.openSettings()
                 }
                 Divider()
                 Button("退出 NetBar") {
@@ -160,7 +173,7 @@ struct MenuPopoverView: View {
             .help("设置与退出")
         }
         .padding(.horizontal, PopoverVisualStyle.contentInset)
-        .padding(.vertical, PopoverVisualStyle.Spacing.xs + 2)
+        .padding(.vertical, 11)
     }
 
     @ViewBuilder
@@ -168,6 +181,7 @@ struct MenuPopoverView: View {
         switch selectedSection {
         case .outlet:
             NetworkModeCard(controller: networkModeController)
+
         case .clash:
             ClashModeTabView(
                 controller: clashNetworkModeController,
@@ -189,6 +203,7 @@ struct MenuPopoverView: View {
                 statusPresentation: statusPresentation,
                 dnsFacts: networkModeController.dnsPathFacts,
                 companyVPNMonitor: coordinator.companyVPNDiagnosticMonitor,
+                managementPanels: coordinator.managementPanels,
                 appConfig: appConfig
             )
         }
@@ -219,8 +234,8 @@ struct MenuPopoverView: View {
         return VStack(spacing: 3) {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: section.systemImage)
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 20, height: 15)
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 20, height: 17)
                 if tabNeedsAttention(section) {
                     Circle()
                         .fill(PopoverVisualStyle.warning)
@@ -231,21 +246,21 @@ struct MenuPopoverView: View {
             Text(section.title).font(PopoverVisualStyle.Typography.captionStrong)
         }
         .foregroundColor(isSelected ? PopoverVisualStyle.accent : PopoverVisualStyle.secondaryText)
-        .frame(maxWidth: .infinity, minHeight: 34)
+        .frame(maxWidth: .infinity, minHeight: 39)
         .background {
             RoundedRectangle(cornerRadius: PopoverVisualStyle.Radius.control, style: .continuous)
-                .fill(isSelected ? PopoverVisualStyle.accent.opacity(0.16) : Color.clear)
+                .fill(isSelected ? PopoverVisualStyle.accent.opacity(0.09) : Color.clear)
         }
         .contentShape(Rectangle())
     }
 
     private func tabNeedsAttention(_ section: PopoverSection) -> Bool {
-        if section == .monitoring {
-            return statusPresentation.needsAttention(section) ||
-                egressIPMonitor.errorMessage != nil ||
-                vpsTrafficMonitor.vpsList.contains(where: { $0.error != nil })
+        switch section {
+        case .monitoring: return egressIPMonitor.errorMessage != nil || vpsTrafficMonitor.vpsList.contains { $0.error != nil }
+        case .clash: return experience.probeState == .failed || clashNetworkModeController.snapshot.reason != nil
+        case .outlet: return networkModeController.requiresManualRecovery || networkModeController.errorMessage != nil
+        case .applications: return false
         }
-        return statusPresentation.needsAttention(section)
     }
 
     private func normalizeSelectedSection() {
@@ -306,28 +321,57 @@ private struct ApplicationsTabView: View {
     @ObservedObject var appIconResolver: AppIconResolver
     @Binding var selectedTrafficTab: Int
     let maxTableApps: Int
+    @State private var search = ""
+    @State private var route = "全部路由"
+    @State private var sort = ApplicationTrafficQuery.Sort.total
+    @State private var selectedApp: ProcessTrafficMonitor.AppTraffic?
+    @FocusState private var searchFocused: Bool
+    private var rows: [ProcessTrafficMonitor.AppTraffic] {
+        Array(ApplicationTrafficQuery.rows(selectedTrafficTab == 0 ? processTrafficMonitor.appSpeeds : processTrafficMonitor.cumulativeRanking,
+            search: search, route: route, sort: sort, cumulative: selectedTrafficTab == 1).prefix(maxTableApps))
+    }
+
 
     var body: some View {
         VStack(alignment: .leading, spacing: PopoverVisualStyle.Spacing.sm) {
             speedSection
             trafficSelector
+            HStack(spacing: 6) {
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                    TextField("搜索应用", text: $search).textFieldStyle(.plain).focused($searchFocused)
+                }.font(PopoverVisualStyle.Typography.caption).padding(6).popoverSurface(radius: 6)
+                Menu {
+                    Picker("路由", selection: $route) {
+                        Text("全部路由").tag("全部路由")
+                        ForEach([ProcessTrafficMonitor.AppProxyStatus.direct, .proxied, .mixed, .unknown], id: \.label) { Text($0 == .unknown ? "待确认" : $0.label).tag($0.label) }
+                    }
+                    Picker("排序", selection: $sort) {
+                        ForEach(ApplicationTrafficQuery.Sort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                } label: { Image(systemName: "line.3.horizontal.decrease.circle").font(.system(size: 13)).foregroundColor(route == "全部路由" ? .secondary : PopoverVisualStyle.accent) }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("筛选路由与排序")
+            }
+
 
             if selectedTrafficTab == 0 {
                 TrafficTable(
-                    isEmpty: processTrafficMonitor.appSpeeds.isEmpty,
-                    emptyText: processTrafficMonitor.samplingMessage ?? L10n.Table.noActiveApps,
-                    emptyDetail: processTrafficMonitor.samplingMessage == nil
+                    isEmpty: rows.isEmpty,
+                    emptyText: !search.isEmpty || route != "全部路由" ? "没有匹配的应用" : (processTrafficMonitor.samplingMessage ?? (processTrafficMonitor.lastSampleAt == nil ? "正在取得有效采样…" : L10n.Table.noActiveApps)),
+                    emptyDetail: !search.isEmpty || route != "全部路由"
+                        ? "请更换关键词，或在筛选菜单选择全部路由。"
+                        : processTrafficMonitor.samplingMessage == nil
                         ? "打开应用并产生网络请求后，实时流量会显示在这里。"
                         : "菜单栏总网速仍正常更新，历史流量记录保留。"
                 ) {
-                    ForEach(Array(processTrafficMonitor.appSpeeds.prefix(maxTableApps))) { app in
+                    ForEach(rows) { app in
                         TrafficTableRow(
                             app: app,
                             iconResolver: appIconResolver,
                             downloadText: app.formattedDownload,
                             uploadText: app.formattedUpload,
                             share: PopoverMeter.fraction(app.totalSpeed, of: peakSpeed)
-                        )
+                        ).contentShape(Rectangle()).onTapGesture { selectedApp = app }
                     }
                 }
             } else {
@@ -337,24 +381,33 @@ private struct ApplicationsTabView: View {
                         .frame(width: 94, height: 22)
                 }
                 TrafficTable(
-                    isEmpty: processTrafficMonitor.cumulativeRanking.isEmpty,
-                    emptyText: L10n.Table.noTrafficRecords,
+                    isEmpty: rows.isEmpty,
+                    emptyText: !search.isEmpty || route != "全部路由" ? "没有匹配的应用" : L10n.Table.noTrafficRecords,
                     emptyDetail: "选择时间范围后，累计使用量会显示在这里。"
                 ) {
-                    ForEach(Array(processTrafficMonitor.cumulativeRanking.prefix(maxTableApps))) { app in
+                    ForEach(rows) { app in
                         TrafficTableRow(
                             app: app,
                             iconResolver: appIconResolver,
                             downloadText: app.formattedCumulativeDown,
                             uploadText: app.formattedCumulativeUp,
                             share: PopoverMeter.fraction(app.totalCumulative, of: peakCumulative)
-                        )
+                        ).contentShape(Rectangle()).onTapGesture { selectedApp = app }
                     }
+                }
+            }
+            if let selectedApp {
+                HStack(alignment: .top) {
+                    Text(selectedApp.name + " · " + selectedApp.routeEvidence)
+                        .font(PopoverVisualStyle.Typography.caption).foregroundColor(.secondary)
+                        .lineLimit(2).help(selectedApp.routeEvidence)
+                    Button { self.selectedApp = nil } label: { Image(systemName: "xmark").font(.system(size: 9)) }.buttonStyle(.plain).help("收起路由依据")
                 }
             }
         }
         .padding(.horizontal, PopoverVisualStyle.contentInset)
         .padding(.vertical, PopoverVisualStyle.Spacing.sm)
+        .onReceive(NotificationCenter.default.publisher(for: .netbarFind)) { _ in searchFocused = true }
     }
 
     private var peakSpeed: Double {
@@ -434,12 +487,15 @@ private struct MonitoringTabView: View {
     let statusPresentation: PopoverStatusPresentation
     let dnsFacts: DNSPathFacts?
     @ObservedObject var companyVPNMonitor: CompanyVPNDiagnosticMonitor
+    @ObservedObject var managementPanels: ManagementPanelsStore
     @ObservedObject var appConfig: AppConfig
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: PopoverVisualStyle.blockSpacing) {
-                networkFacts
+                ManagementPanelsCard(store: managementPanels)
+                Text("本机网络").font(PopoverVisualStyle.Typography.caption).foregroundColor(.secondary)
+                networkFacts.padding(PopoverVisualStyle.cardPadding).popoverSurface()
 
                 if DistributionFlavor.current == .directFull {
                     companyVPNSection
@@ -475,7 +531,7 @@ private struct MonitoringTabView: View {
                     .font(PopoverVisualStyle.Typography.section)
                 Spacer()
                 PopoverStatusDot(state: state)
-                Text(snapshot.health == .ready ? "正常" : snapshot.health == .unknown ? "待检测" : "需关注")
+                Text(snapshot.health == .ready ? "正常" : snapshot.health == .unknown ? "状态未确认" : "需关注")
                     .font(PopoverVisualStyle.Typography.captionStrong)
             }
 
@@ -484,7 +540,7 @@ private struct MonitoringTabView: View {
                     title: "aTrust / 企业路由",
                     value: snapshot.aTrustRunning ? "客户端运行" : "未检测到",
                     detail: snapshot.protectedRouteInterface,
-                    state: snapshot.aTrustRunning ? .ok : .unknown
+                    state: .unknown
                 )
                 PopoverFactTile(
                     title: "OAVPN 入口",
@@ -522,18 +578,7 @@ private struct MonitoringTabView: View {
                 }
                 .buttonStyle(.link)
                 .disabled(companyVPNMonitor.isRunningOwnerDiagnostic)
-                #if !APP_STORE
-                if snapshot.recoveryAvailable {
-                    Button(companyVPNMonitor.isRecoveringCoexistence ? "正在恢复…" : "恢复公司 VPN + 外网共存") {
-                        companyVPNMonitor.requestCoexistenceRecovery()
-                    }
-                    .buttonStyle(.link)
-                    .disabled(
-                        companyVPNMonitor.isRecoveringCoexistence ||
-                        companyVPNMonitor.isRunningOwnerDiagnostic
-                    )
-                }
-                #endif
+
                 Spacer()
                 if let observedAt = snapshot.observedAt {
                     Text(observedAt, style: .relative)
@@ -546,7 +591,11 @@ private struct MonitoringTabView: View {
         .popoverSurface()
     }
 
+    @ViewBuilder
     private var networkFacts: some View {
+        if DistributionFlavor.current == .appStoreLite {
+            PopoverFactRow(title: "本机地址 · en0", value: networkInfoProvider.localIP)
+        } else {
         VStack(spacing: PopoverVisualStyle.blockSpacing) {
             HStack(spacing: PopoverVisualStyle.Spacing.md) {
                 PopoverFactTile(
@@ -565,7 +614,7 @@ private struct MonitoringTabView: View {
             }
             HStack(spacing: PopoverVisualStyle.Spacing.md) {
                 PopoverFactTile(
-                    title: "局域网地址",
+                    title: "本机地址 · en0",
                     icon: "pc",
                     value: networkInfoProvider.localIP,
                     monospacedValue: true
@@ -574,9 +623,10 @@ private struct MonitoringTabView: View {
                     title: "DNS",
                     icon: "server.rack",
                     value: statusPresentation.dnsText,
-                    state: dnsFacts == nil ? .unknown : (statusPresentation.monitoringNeedsAttention ? .warning : .ok)
+                    state: statusPresentation.monitoringNeedsAttention ? .warning : (dnsFacts?.effectiveDNSReady == true ? .ok : .unknown)
                 )
             }
+        }
         }
     }
 }

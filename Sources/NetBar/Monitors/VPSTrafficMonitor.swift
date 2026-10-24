@@ -17,11 +17,14 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
         var lastUpdated: Date?
         var isOnline: Bool
         var error: String?
+        var lastAttemptAt: Date? = nil
+        var quotaKnown = false
+        var hasData: Bool { lastUpdated != nil }
 
         var formattedUpload: String { Formatters.formatBytes(upload) }
         var formattedDownload: String { Formatters.formatBytes(download) }
         var formattedTotal: String { Formatters.formatBytes(total) }
-        var formattedLimit: String { totalLimit == 0 ? "∞" : Formatters.formatBytes(totalLimit) }
+        var formattedLimit: String { !quotaKnown ? "额度未知" : totalLimit == 0 ? "无限制" : Formatters.formatBytes(totalLimit) }
         var lastUpdatedText: String {
             guard let last = lastUpdated else { return "未连接" }
             let elapsed = Date().timeIntervalSince(last)
@@ -46,16 +49,18 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
     private var configs: [AppConfig.VPSConfig] = []
     private var sessionCookies: [String: String] = [:]
     private let stateQueue = DispatchQueue(label: "com.zjah.NetBar.vpsTrafficMonitor.state")
-    private let client = ThreeXUIClient()
+    private let client: ThreeXUIClient
+    private let configProvider: () -> [AppConfig.VPSConfig]
+    private let passwordProvider: (AppConfig.VPSConfig) -> String
+    private var inFlight: [String: UUID] = [:]
     private var timer: Timer?
 
-    init() {
-        configs = Self.loadConfigsFromAppConfig()
+    init(client: ThreeXUIClient = ThreeXUIClient(),
+         configProvider: @escaping () -> [AppConfig.VPSConfig] = { AppConfig.shared.vpsConfigs },
+         passwordProvider: @escaping (AppConfig.VPSConfig) -> String = { $0.password }) {
+        self.client = client; self.configProvider = configProvider; self.passwordProvider = passwordProvider
+        configs = configProvider()
         logLoadedConfigs()
-    }
-
-    private static func loadConfigsFromAppConfig() -> [AppConfig.VPSConfig] {
-        AppConfig.shared.vpsConfigs
     }
 
     private func logLoadedConfigs() {
@@ -68,24 +73,16 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
     }
 
     func reloadConfigs() {
-        let newConfigs = Self.loadConfigsFromAppConfig()
+        let newConfigs = configProvider()
         let validIDs = Set(newConfigs.map(\.id))
 
-        stateQueue.async {
+        stateQueue.sync {
             self.configs = newConfigs
-            self.sessionCookies = self.sessionCookies.filter { validIDs.contains($0.key) }
-
-            DispatchQueue.main.async {
-                self.vpsList.removeAll { !validIDs.contains($0.id) }
-            }
-
-            if newConfigs.isEmpty {
-                Log.vps.info("未配置 VPS 信息，VPS 流量监控跳过")
-            } else {
-                Log.vps.info("已重新加载 \(newConfigs.count) 个 VPS 配置")
-            }
-            self.fetchAll(configs: newConfigs)
+            self.sessionCookies.removeAll()
+            self.inFlight.removeAll() // Invalidate requests from the old credentials/configuration.
         }
+        vpsList.removeAll { !validIDs.contains($0.id) }
+        fetchAll(configs: newConfigs)
     }
 
     func start() {
@@ -93,6 +90,7 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
     }
 
     func start(interval: TimeInterval) {
+        timer?.invalidate()
         fetchAll()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.fetchAll()
@@ -105,6 +103,7 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
     func stop() {
         timer?.invalidate()
         timer = nil
+        stateQueue.sync { inFlight.removeAll() }
     }
 
     func refresh() {
@@ -120,8 +119,13 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
 
     private func fetchAll(configs configsSnapshot: [AppConfig.VPSConfig]) {
         for config in configsSnapshot {
+            let token: UUID? = stateQueue.sync {
+                guard inFlight[config.id] == nil else { return nil }
+                let token = UUID(); inFlight[config.id] = token; return token
+            }
+            guard let token else { continue }
             Task.detached(priority: .utility) { [weak self] in
-                await self?.fetchVPSTraffic(config: config)
+                await self?.fetchVPSTraffic(config: config, token: token)
             }
         }
     }
@@ -130,56 +134,47 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
         stateQueue.sync { sessionCookies[configID] }
     }
 
-    private func setCookie(_ cookie: String, for configID: String) {
-        stateQueue.async {
-            guard self.configs.contains(where: { $0.id == configID }) else { return }
-            self.sessionCookies[configID] = cookie
-        }
+    private func isCurrent(_ id: String, token: UUID) -> Bool {
+        stateQueue.sync { inFlight[id] == token }
+    }
+    private func setCookie(_ cookie: String?, for id: String, token: UUID) {
+        stateQueue.sync { if inFlight[id] == token { sessionCookies[id] = cookie } }
+    }
+    private func finish(_ id: String, token: UUID) {
+        stateQueue.sync { if inFlight[id] == token { inFlight.removeValue(forKey: id) } }
     }
 
-    private func removeCookie(for configID: String) {
-        stateQueue.async {
-            self.sessionCookies.removeValue(forKey: configID)
-        }
-    }
-
-    private func containsConfig(id: String) -> Bool {
-        stateQueue.sync {
-            configs.contains { $0.id == id }
-        }
-    }
-
-    private func fetchVPSTraffic(config: AppConfig.VPSConfig) async {
-        guard !config.password.isEmpty else {
-            updateError(config: config, error: VPSConnectionError.passwordRequired.localizedDescription)
+    private func fetchVPSTraffic(config: AppConfig.VPSConfig, token: UUID) async {
+        let password = passwordProvider(config)
+        guard !password.isEmpty else {
+            updateError(config: config, token: token, error: VPSConnectionError.passwordRequired.localizedDescription)
             return
         }
 
         if let cookie = cookie(for: config.id) {
             do {
                 let traffic = try await client.fetchInbounds(config: config, cookie: cookie)
-                updateTraffic(config: config, traffic: traffic)
+                updateTraffic(config: config, token: token, traffic: traffic)
                 return
             } catch {
-                removeCookie(for: config.id)
+                setCookie(nil, for: config.id, token: token)
             }
         }
 
         do {
-            let cookie = try await client.login(config: config, password: config.password)
-            setCookie(cookie, for: config.id)
+            let cookie = try await client.login(config: config, password: password)
+            setCookie(cookie, for: config.id, token: token)
             let traffic = try await client.fetchInbounds(config: config, cookie: cookie)
-            updateTraffic(config: config, traffic: traffic)
+            updateTraffic(config: config, token: token, traffic: traffic)
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            updateError(config: config, error: message)
+            updateError(config: config, token: token, error: message)
         }
     }
 
     // MARK: - 数据更新
 
-    private func updateTraffic(config: AppConfig.VPSConfig, traffic: [ThreeXUIInboundData]) {
-        guard containsConfig(id: config.id) else { return }
+    private func updateTraffic(config: AppConfig.VPSConfig, token: UUID, traffic: [ThreeXUIInboundData]) {
 
         let now = Date()
         var totalUp: UInt64 = 0
@@ -211,6 +206,7 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
             }
         }
 
+        if traffic.contains(where: { $0.quotaKnown && $0.total == 0 }) { totalLimit = 0 }
         let hasOnlineClient = allClients.contains { $0.isOnline }
         let vpsTraffic = VPSTraffic(
             id: config.id,
@@ -224,10 +220,12 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
             clients: allClients,
             lastUpdated: now,
             isOnline: hasOnlineClient,
-            error: nil
+            error: nil, lastAttemptAt: now, quotaKnown: !traffic.isEmpty && traffic.allSatisfy(\.quotaKnown)
         )
 
         DispatchQueue.main.async {
+            guard self.isCurrent(config.id, token: token) else { return }
+            defer { self.finish(config.id, token: token) }
             if let idx = self.vpsList.firstIndex(where: { $0.id == config.id }) {
                 self.vpsList[idx] = vpsTraffic
             } else {
@@ -236,13 +234,14 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
         }
     }
 
-    private func updateError(config: AppConfig.VPSConfig, error: String) {
-        guard containsConfig(id: config.id) else { return }
+    private func updateError(config: AppConfig.VPSConfig, token: UUID, error: String) {
 
         DispatchQueue.main.async {
+            guard self.isCurrent(config.id, token: token) else { return }
+            defer { self.finish(config.id, token: token) }
             if let idx = self.vpsList.firstIndex(where: { $0.id == config.id }) {
                 self.vpsList[idx].error = error
-                self.vpsList[idx].lastUpdated = Date()
+                self.vpsList[idx].lastAttemptAt = Date()
             } else {
                 self.vpsList.append(VPSTraffic(
                     id: config.id,
@@ -254,9 +253,9 @@ class VPSTrafficMonitor: ObservableObject, MonitorProtocol {
                     protocol_: "",
                     port: 0,
                     clients: [],
-                    lastUpdated: Date(),
+                    lastUpdated: nil,
                     isOnline: false,
-                    error: error
+                    error: error, lastAttemptAt: Date()
                 ))
             }
         }

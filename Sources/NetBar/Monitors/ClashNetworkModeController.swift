@@ -150,6 +150,7 @@ struct ClashNetworkModeSnapshot {
     var reason: String?
     var networkFingerprint = ""
     var selectedNode: String?
+    var observedAt: Date? = nil
     var evidenceFingerprint: String { [runtime?.controlFingerprint ?? "unknown", networkFingerprint, mode?.rawValue ?? "unknown", String(configurationMatches), selectedNode ?? "unknown", reason ?? ""].joined(separator: "|") }
     var headline: String { mode?.displayName ?? (runtime == nil ? "Clash 状态待检测" : "其他 Clash 配置") }
 }
@@ -159,6 +160,8 @@ struct ClashNetworkProbe: Equatable {
     let sampledAt: Date
     let passed: Bool
     let detail: String
+    var blocked = false
+    var checks: [String] = []
     func isFresh(for snapshot: ClashNetworkModeSnapshot, now: Date = Date()) -> Bool {
         snapshot.runtime != nil && fingerprint == snapshot.evidenceFingerprint && now.timeIntervalSince(sampledAt) >= 0 && now.timeIntervalSince(sampledAt) < 300
     }
@@ -178,7 +181,7 @@ protocol ClashNetworkModeBackend: AnyObject {
 struct ClashModeObserver {
     let backend: ClashNetworkModeBackend
     func observe() -> ClashNetworkModeSnapshot {
-        var result = ClashNetworkModeSnapshot()
+        var result = ClashNetworkModeSnapshot(observedAt: Date())
         do {
             let runtime = try backend.runtime()
             result.runtime = runtime
@@ -206,23 +209,34 @@ struct ClashModeObserver {
     }
 
     func probe(_ snapshot: ClashNetworkModeSnapshot, now: Date = Date()) -> ClashNetworkProbe {
+        var checks: [String] = []
+        guard snapshot.configurationMatches, snapshot.runtime?.tunEnabled == true,
+              snapshot.runtime?.systemProxyEnabled == true, let mode = snapshot.mode, let leaf = snapshot.selectedNode else {
+            return .init(fingerprint: snapshot.evidenceFingerprint, sampledAt: now, passed: false,
+                         detail: "配置、TUN、系统代理或真实节点条件未满足；请在 Clash 中检查。", blocked: true)
+        }
+        if mode == .unifiedEgress {
+            do { try backend.assertCompanyVPNDisconnected() }
+            catch { return .init(fingerprint: snapshot.evidenceFingerprint, sampledAt: now, passed: false,
+                                 detail: "公司隧道未确认断开，当前检测条件不足。", blocked: true) }
+        }
         do {
-            guard snapshot.configurationMatches, snapshot.runtime?.tunEnabled == true,
-                  snapshot.runtime?.systemProxyEnabled == true, let mode = snapshot.mode, let leaf = snapshot.selectedNode else {
-                throw ClashModeFailure("配置、TUN、系统代理或真实节点条件未满足；请在 Clash 中检查。")
-            }
-            if mode == .unifiedEgress { try backend.assertCompanyVPNDisconnected() }
             let entry = try backend.manifest().entry(for: mode)
             try backend.verifyDNSPath(mode: mode, entry: entry, leaf: leaf)
+            checks.append("UDP/TCP DNS · Cloudflare DoH 与所选节点：通过")
             try backend.verifySystemHTTPS()
+            checks.append("系统 HTTPS：通过")
             let after = observe()
             guard after.evidenceFingerprint == snapshot.evidenceFingerprint, after.configurationMatches else {
-                throw ClashModeFailure("检测期间配置、节点或网络变化，结果已失效。")
+                return .init(fingerprint: snapshot.evidenceFingerprint, sampledAt: now, passed: false,
+                             detail: "检测期间配置、节点或网络变化，结果已失效。", blocked: true, checks: checks)
             }
             return .init(fingerprint: snapshot.evidenceFingerprint, sampledAt: now, passed: true,
-                         detail: "本轮 UDP/TCP DNS 经 Cloudflare DoH 与所选节点；系统解析及 HTTPS 可达。IPv6/业务需独立验收。")
+                         detail: "DNS / HTTPS 通过。普通 UDP、IPv6 和业务需分别验收。", checks: checks)
         } catch {
-            return .init(fingerprint: snapshot.evidenceFingerprint, sampledAt: now, passed: false, detail: error.localizedDescription)
+            checks.append(checks.isEmpty ? "DNS 路径：未通过" : "系统 HTTPS：未通过")
+            return .init(fingerprint: snapshot.evidenceFingerprint, sampledAt: now, passed: false,
+                         detail: error.localizedDescription, checks: checks)
         }
     }
 }
@@ -231,6 +245,8 @@ struct ClashModeObserver {
 final class ClashNetworkModeController: ObservableObject {
     @Published private(set) var snapshot = ClashNetworkModeSnapshot()
     @Published private(set) var probe: ClashNetworkProbe?
+    @Published private(set) var previousProbe: ClashNetworkProbe?
+    private var expiryTimer: Timer?
     @Published private(set) var isRefreshing = false
     @Published private(set) var isProbing = false
     private var revision: UInt64 = 0
@@ -244,7 +260,9 @@ final class ClashNetworkModeController: ObservableObject {
 
     func invalidateProbe() {
         revision &+= 1
+        if let probe { previousProbe = probe }
         probe = nil
+        expiryTimer?.invalidate()
     }
 
     func refresh() { read(probing: false) }
@@ -262,9 +280,21 @@ final class ClashNetworkModeController: ObservableObject {
             DispatchQueue.main.async {
                 self.isRefreshing = false; self.isProbing = false
                 guard currentRevision == self.revision else { return }
-                if result.evidenceFingerprint != self.snapshot.evidenceFingerprint { self.probe = nil }
+                if result.evidenceFingerprint != self.snapshot.evidenceFingerprint {
+                    if let probe = self.probe { self.previousProbe = probe }
+                    self.probe = nil
+                }
                 self.snapshot = result
-                if let evidence { self.probe = evidence }
+                if let evidence {
+                    self.previousProbe = self.probe ?? self.previousProbe
+                    self.probe = evidence
+                    self.expiryTimer?.invalidate()
+                    self.expiryTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: false) { [weak self] _ in
+                        self?.objectWillChange.send()
+                    }
+                    NetworkEventLogger.shared.record(event: "network_probe_finished",
+                        detail: evidence.blocked ? "条件不足" : (evidence.passed ? "DNS/HTTPS通过" : "DNS/HTTPS未通过"))
+                }
             }
         }
         #else

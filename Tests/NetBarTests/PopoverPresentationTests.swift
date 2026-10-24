@@ -164,6 +164,7 @@ final class PopoverPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.linkStateDot, .unknown)
         XCTAssertEqual(presentation.sharingStateDot, .unknown)
         XCTAssertEqual(presentation.proofStateDot, .unknown)
+        XCTAssertEqual(presentation.proofValue, "尚未验证")
         XCTAssertEqual(presentation.dnsState, .unknown)
         XCTAssertEqual(presentation.managementState, .unknown)
         XCTAssertEqual(presentation.hotspotAPState, .unknown)

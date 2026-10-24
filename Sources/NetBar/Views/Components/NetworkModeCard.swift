@@ -15,7 +15,8 @@ struct NetworkModeCard: View {
             routePreference: controller.routePreference,
             requiresManualRecovery: controller.requiresManualRecovery,
             dnsFacts: controller.dnsPathFacts,
-            applicationFacts: controller.applicationPathFacts
+            applicationFacts: controller.applicationPathFacts,
+            hasConnectivityFailure: controller.requiresManualRecovery || controller.errorMessage != nil || controller.applicationPathFacts?.proxyUnawareHTTPSReady == false
         )
     }
 
@@ -24,6 +25,11 @@ struct NetworkModeCard: View {
             VStack(alignment: .leading, spacing: PopoverVisualStyle.blockSpacing) {
                 hero
                 evidenceGrid
+                    .padding(PopoverVisualStyle.cardPadding)
+                    .popoverSurface()
+                Text("出口偏好")
+                    .font(PopoverVisualStyle.Typography.caption)
+                    .foregroundColor(PopoverVisualStyle.secondaryText)
                 modeSelector
 
                 if let policyMessage = controller.policyMessage, !policyMessage.isEmpty {
@@ -33,8 +39,8 @@ struct NetworkModeCard: View {
                         .lineLimit(2)
                 }
 
-                criticalActions
-                disclosureRows
+                criticalActions.disabled(MonitorCoordinator.isVisualCaptureRun)
+                disclosureRows.disabled(MonitorCoordinator.isVisualCaptureRun)
 
                 if let action = controller.lastClashAction {
                     PopoverBanner(
@@ -56,33 +62,23 @@ struct NetworkModeCard: View {
 
     private var hero: some View {
         let facts = presentation
-        return VStack(alignment: .leading, spacing: PopoverVisualStyle.Spacing.xs + 2) {
-            HStack(spacing: PopoverVisualStyle.Spacing.sm) {
-                Image(systemName: "cable.connector")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(PopoverVisualStyle.secondaryText)
-                Text("Mac mini 链路")
-                    .font(PopoverVisualStyle.Typography.section)
-                Spacer()
-                PopoverStatusDot(state: facts.heroState)
-                Text(facts.outletText)
-                    .font(PopoverVisualStyle.Typography.bodyStrong)
-                    .foregroundColor(PopoverVisualStyle.primaryText)
+        return HStack(spacing: 10) {
+            Image(systemName: facts.outletText.contains("Wi-Fi") ? "wifi" : "cable.connector")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(PopoverVisualStyle.accent)
+                .frame(width: 34, height: 34)
+                .background(PopoverVisualStyle.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("当前物理出口").font(PopoverVisualStyle.Typography.caption).foregroundColor(.secondary)
+                Text(facts.outletText).font(.system(size: 15, weight: .semibold))
+                Text(facts.addressText.isEmpty ? facts.linkText : facts.addressText)
+                    .font(PopoverVisualStyle.Typography.data).foregroundColor(.secondary)
+                    .lineLimit(1).truncationMode(.middle).help(facts.addressText)
             }
-
-            // The link state itself is the first evidence tile below, so the
-            // hero only adds what the grid does not carry: the addresses.
-            if !facts.addressText.isEmpty {
-                Text(facts.addressText)
-                    .font(PopoverVisualStyle.Typography.data)
-                    .foregroundColor(PopoverVisualStyle.secondaryText)
-                    .truncationMode(.middle)
-            } else {
-                Text(facts.linkText)
-                    .font(PopoverVisualStyle.Typography.caption)
-                    .foregroundColor(PopoverVisualStyle.secondaryText)
-            }
+            Spacer(minLength: 4)
+            PopoverStatusDot(state: facts.heroState)
         }
+        .padding(.vertical, 4)
     }
 
     private var evidenceGrid: some View {
@@ -136,7 +132,7 @@ struct NetworkModeCard: View {
             title: mode == .macMiniGateway ? "Mac mini 优先" : "Wi-Fi 优先",
             icon: icon,
             isSelected: isSelected,
-            isEnabled: canSwitch()
+            isEnabled: canSwitch() && !MonitorCoordinator.isVisualCaptureRun
         ) {
             controller.switchMode(to: mode)
         }

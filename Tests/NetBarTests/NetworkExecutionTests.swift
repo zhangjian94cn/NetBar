@@ -233,19 +233,21 @@ extension LatestEvaluationTests {
         XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
 
         scheduler.submit(timeout: 5) { _ in XCTFail("第一个 pending 应被后来者替换") }
+        let pendingCompleted = XCTestExpectation(description: "replacement pending actually ran")
         scheduler.submit(timeout: 5) { context in
             seen.lock(); generations.append(context.generation); seen.unlock()
+            pendingCompleted.fulfill()
         }
         XCTAssertEqual(scheduler.pendingCount, 1, "最多保留一个待处理请求")
 
         release.signal()
-        let drained = XCTestExpectation(description: "queue drained")
-        queue.async { drained.fulfill() }
-        wait(for: [drained], timeout: 3)
+        // A marker already queued behind the active job can run before the
+        // scheduler enqueues its replacement. Wait for the work itself.
+        wait(for: [pendingCompleted], timeout: 3)
 
         seen.lock(); let observed = generations; seen.unlock()
         XCTAssertEqual(observed.count, 2)
-        XCTAssertEqual(observed[0], observed[1], "非 superseding 提交不应推进 generation")
+        if observed.count == 2 { XCTAssertEqual(observed[0], observed[1], "非 superseding 提交不应推进 generation") }
         XCTAssertEqual(scheduler.pendingCount, 0, "排空后待处理数应归零")
     }
 }

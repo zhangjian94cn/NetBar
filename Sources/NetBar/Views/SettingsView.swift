@@ -2,41 +2,56 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 
-/// 设置窗口 — 通用、代理、服务器管理
+/// Independent settings window; connection forms remain drafts until saved.
 struct SettingsView: View {
-    @ObservedObject var config = AppConfig.shared
     let coordinator: MonitorCoordinator
-    @State private var selectedTab = 0
-
+    @ObservedObject private var draft: SettingsDraft
+    @State private var tab = 0
+    init(coordinator: MonitorCoordinator) { self.coordinator = coordinator; draft = coordinator.settingsDraft }
     var body: some View {
-        TabView(selection: $selectedTab) {
-            GeneralSettingsTab(coordinator: coordinator)
-                .tabItem {
-                    Label("通用", systemImage: "gear")
-                }
-                .tag(0)
-
-            if DistributionFlavor.current.supportsAdvancedProxyDetection {
-                ProxySettingsTab()
-                    .tabItem {
-                        Label("代理", systemImage: "network")
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("设置分类", selection: $tab) {
+                Text("通用").tag(0)
+                if DistributionFlavor.current == .directFull { Text("Clash 连接").tag(1) }
+                Text("IP 检测").tag(2)
+                Text("服务器").tag(3)
+            }.pickerStyle(.segmented).labelsHidden()
+            if tab == 0 { GeneralSettingsTab(coordinator: coordinator) }
+            else if tab == 3 { VPSSettingsTab(coordinator: coordinator) }
+            else {
+                Form {
+                    if tab == 1 {
+                        Section {
+                            TextField("Socket 路径（留空自动发现）", text: $draft.values.socket)
+                            TextField("Controller URL", text: $draft.values.url)
+                            SecureField("Secret", text: $draft.values.secret)
+                        } header: { Text("Mihomo / Clash Verge") } footer: {
+                            Text("留空自动发现。自定义 Socket 优先，自定义 HTTP 只读。测试当前草稿，不改变已保存连接。").font(.system(size: 11))
+                        }
+                    } else {
+                        Section {
+                            Toggle("启用出口 IP 检测", isOn: $draft.values.ipEnabled)
+                            Picker("检测版本", selection: $draft.values.ipVersion) { ForEach(IPVersion.allCases) { Text($0.displayName).tag($0) } }
+                            Picker("自动刷新", selection: $draft.values.ipMinutes) { ForEach([5.0,15,30,60], id: \.self) { Text("\(Int($0)) 分钟").tag($0) } }
+                            Toggle("隐藏 Wi-Fi 名称", isOn: $draft.values.hideSSID)
+                            SecureField("ping0 API Key", text: $draft.values.apiKey)
+                        } footer: {
+                            Text("检测会把当前公网出口 IP 发送给 ping0.cc；Key 留空使用免费链路。字段修改仅保留为草稿。").font(.system(size: 11))
+                        }
                     }
-                    .tag(1)
+                    if let result = draft.visibleTestResult { Text(result).font(.system(size: 12)).textSelection(.enabled) }
+                    if let message = draft.message { Text(message).font(.system(size: 12)).foregroundColor(.secondary) }
+                }.formStyle(.grouped)
+                HStack {
+                    Text(draft.hasChanges ? "有未保存的修改" : "与已保存设置一致").font(.system(size: 11)).foregroundColor(.secondary)
+                    Spacer()
+                    Button("取消修改") { draft.discard() }.disabled(!draft.hasChanges)
+                    Button(draft.isTesting ? "正在测试…" : "测试连接") { if tab == 1 { draft.testProxy() } else { draft.testIP() } }.disabled(draft.isTesting)
+                    Button("保存") { draft.save(coordinator: coordinator) }.buttonStyle(.borderedProminent).disabled(!draft.hasChanges || draft.isTesting)
+                }
             }
-
-            IPDetectionSettingsTab(coordinator: coordinator)
-                .tabItem {
-                    Label("IP 检测", systemImage: "globe")
-                }
-                .tag(2)
-
-            VPSSettingsTab(coordinator: coordinator)
-                .tabItem {
-                    Label("服务器管理", systemImage: "cloud")
-                }
-                .tag(3)
-        }
-        .frame(width: 560, height: 430)
+        }.padding(16).tint(PopoverVisualStyle.accent)
+        .onAppear { draft.loadIfClean() }
     }
 }
 
@@ -46,16 +61,19 @@ private struct GeneralSettingsTab: View {
     let coordinator: MonitorCoordinator
     @State private var launchAtLogin = StartupSetting.isEnabled
     @State private var suppressLaunchAtLoginChange = false
+    @State private var startupError: String?
     @State private var refreshInterval: Double = AppConfig.shared.refreshInterval
 
     var body: some View {
         Form {
             Section {
                 Toggle("开机自动启动", isOn: $launchAtLogin)
+                    .disabled(MonitorCoordinator.isVisualCaptureRun)
                     .onChange(of: launchAtLogin) { newValue in
                         guard !suppressLaunchAtLoginChange else { return }
                         guard StartupSetting.setEnabled(newValue) else {
                             Log.config.error("开机自启设置失败")
+                            startupError = "开机启动设置未生效，请检查系统的登录项设置。"
                             suppressLaunchAtLoginChange = true
                             launchAtLogin = StartupSetting.isEnabled
                             DispatchQueue.main.async {
@@ -65,8 +83,9 @@ private struct GeneralSettingsTab: View {
                         }
                     }
 
+                if let startupError { Text(startupError).foregroundColor(.orange) }
                 HStack {
-                    Text("刷新间隔")
+                    Text("网速刷新间隔")
                     Spacer()
                     Picker("", selection: $refreshInterval) {
                         Text("1 秒").tag(1.0)
@@ -144,231 +163,60 @@ private enum StartupSetting {
     }
 }
 
-// MARK: - 代理设置
-
-private struct ProxySettingsTab: View {
-    @State private var socketPath = AppConfig.shared.mihomoSocketPath
-    @State private var controllerURL = AppConfig.shared.mihomoControllerURL
-    @State private var secret = AppConfig.shared.mihomoSecret
-
-    var body: some View {
-        Form {
-            Section {
-                TextField("Socket 路径（留空自动发现）", text: $socketPath)
-                    .onChange(of: socketPath) { AppConfig.shared.mihomoSocketPath = $0 }
-
-                TextField("Controller URL", text: $controllerURL)
-                    .onChange(of: controllerURL) { AppConfig.shared.mihomoControllerURL = $0 }
-
-                SecureField("Secret", text: $secret)
-                    .onChange(of: secret) { AppConfig.shared.mihomoSecret = $0 }
-            } header: {
-                Text("Mihomo / Clash Verge")
-            } footer: {
-                Text("Socket 留空时自动发现当前用户的 Clash Verge 控制端，兼容旧默认路径。自定义 Socket 优先；未指定 Socket 时，自定义 Controller URL 优先。HTTP 控制端仅供读取。清空自定义地址可恢复自动发现。")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
-    }
-}
-
-// MARK: - IP 检测设置
-
-private struct IPDetectionSettingsTab: View {
-    let coordinator: MonitorCoordinator
-    @ObservedObject private var egressIPMonitor: EgressIPMonitor
-    @State private var enabled = AppConfig.shared.ipCheckEnabled
-    @State private var version = AppConfig.shared.ipCheckVersion
-    @State private var refreshMinutes = AppConfig.shared.ipCheckRefreshMinutes
-    @State private var hideWiFiName = AppConfig.shared.hideWiFiName
-    @State private var apiKey = AppConfig.shared.ping0APIKey
-    @State private var isTesting = false
-
-    init(coordinator: MonitorCoordinator) {
-        self.coordinator = coordinator
-        _egressIPMonitor = ObservedObject(initialValue: coordinator.egressIPMonitor)
-    }
-
-    var body: some View {
-        Form {
-            Section {
-                Toggle("启用出口 IP 检测", isOn: $enabled)
-                    .onChange(of: enabled) { newValue in
-                        AppConfig.shared.ipCheckEnabled = newValue
-                        coordinator.reloadIPCheckSettingsAndRefresh()
-                    }
-
-                Picker("检测版本", selection: $version) {
-                    ForEach(IPVersion.allCases) { item in
-                        Text(item.displayName).tag(item)
-                    }
-                }
-                .onChange(of: version) { newValue in
-                    AppConfig.shared.ipCheckVersion = newValue
-                    coordinator.reloadIPCheckSettingsAndRefresh()
-                }
-
-                Picker("自动刷新", selection: $refreshMinutes) {
-                    Text("5 分钟").tag(5.0)
-                    Text("15 分钟").tag(15.0)
-                    Text("30 分钟").tag(30.0)
-                    Text("60 分钟").tag(60.0)
-                }
-                .onChange(of: refreshMinutes) { newValue in
-                    AppConfig.shared.ipCheckRefreshMinutes = newValue
-                    coordinator.reloadIPCheckSettingsAndRefresh()
-                }
-
-                Toggle("隐藏 Wi-Fi 名称", isOn: $hideWiFiName)
-                    .onChange(of: hideWiFiName) { newValue in
-                        AppConfig.shared.hideWiFiName = newValue
-                    }
-            } header: {
-                Text("出口 IP")
-            } footer: {
-                Text("开启后顶部网络信息会显示“Wi-Fi: 已隐藏”。这是隐私显示设置，不影响公网出口 IP 或代理状态判断。")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Section {
-                SecureField("ping0 API Key", text: $apiKey)
-                    .onChange(of: apiKey) { newValue in
-                        AppConfig.shared.ping0APIKey = newValue
-                    }
-
-                HStack {
-                    Button {
-                        apiKey = ""
-                        AppConfig.shared.ping0APIKey = ""
-                        coordinator.reloadIPCheckSettingsAndRefresh()
-                    } label: {
-                        Label("清空 Key", systemImage: "xmark.circle")
-                    }
-
-                    Spacer()
-
-                    Button {
-                        runTest()
-                    } label: {
-                        if isTesting {
-                            ProgressView()
-                                .controlSize(.small)
-                                .frame(width: 64)
-                        } else {
-                            Label("测试检测", systemImage: "checkmark.circle")
-                        }
-                    }
-                    .disabled(!enabled || isTesting)
-                }
-            } header: {
-                Text("纯净度")
-            } footer: {
-                Text("未填写 API Key 时只显示免费基础信息；填写后会请求 ping0 指定 IP API 显示风险值、IDC、原生 IP 等字段。检测会把当前公网出口 IP 发送给 ping0.cc。")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Section {
-                if let info = egressIPMonitor.info {
-                    HStack {
-                        Text("当前出口")
-                        Spacer()
-                        Text(info.ip)
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundColor(.secondary)
-                    }
-                    HStack {
-                        Text("状态")
-                        Spacer()
-                        Text(info.riskLabel)
-                            .foregroundColor(riskColor(info))
-                    }
-                } else if let error = egressIPMonitor.errorMessage {
-                    Text(error)
-                        .foregroundColor(.orange)
-                } else {
-                    Text(enabled ? "尚未检测" : "已关闭")
-                        .foregroundColor(.secondary)
-                }
-            } header: {
-                Text("结果")
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
-        .onAppear {
-            enabled = AppConfig.shared.ipCheckEnabled
-            version = AppConfig.shared.ipCheckVersion
-            refreshMinutes = AppConfig.shared.ipCheckRefreshMinutes
-            hideWiFiName = AppConfig.shared.hideWiFiName
-            apiKey = AppConfig.shared.ping0APIKey
-        }
-    }
-
-    private func runTest() {
-        AppConfig.shared.ipCheckEnabled = enabled
-        AppConfig.shared.ipCheckVersion = version
-        AppConfig.shared.ipCheckRefreshMinutes = refreshMinutes
-        AppConfig.shared.ping0APIKey = apiKey
-
-        isTesting = true
-        Task {
-            _ = await coordinator.egressIPMonitor.refreshNow(force: true)
-            isTesting = false
-        }
-    }
-
-    private func riskColor(_ info: EgressIPInfo) -> Color {
-        guard let risk = info.ipRisk else {
-            return .secondary
-        }
-        if risk <= 25 { return .green }
-        if risk <= 50 { return .orange }
-        return .red
-    }
-}
-
 // MARK: - VPS 设置
 
-private struct VPSSettingsTab: View {
+struct VPSSettingsTab: View {
     let coordinator: MonitorCoordinator
     @State private var configs: [AppConfig.VPSConfig] = AppConfig.shared.vpsConfigs
     @State private var editingConfig: AppConfig.VPSConfig?
     @State private var testingIDs: Set<String> = []
     @State private var testMessages: [String: String] = [:]
+    @State private var deletingConfig: AppConfig.VPSConfig?
+    @State private var saveError: String?
+    @ObservedObject private var monitor: VPSTrafficMonitor
+    init(coordinator: MonitorCoordinator) { self.coordinator = coordinator; monitor = coordinator.vpsTrafficMonitor }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            if let saveError { Text(saveError).foregroundColor(.orange).padding(.horizontal, 18) }
 
             if configs.isEmpty {
                 emptyState
             } else {
-                List {
+                ScrollView {
+                    LazyVStack(spacing: 12) {
                     ForEach(configs) { config in
-                        serverRow(config)
+                        VStack(alignment: .leading, spacing: 8) {
+                            serverRow(config)
+                            if let traffic = monitor.vpsList.first(where: { $0.id == config.id }) { VPSTrafficCard(vps: traffic) }
+                            else { Text("尚未取得数据").font(.system(size: 12)).foregroundColor(.secondary) }
+                        }.padding(12).popoverSurface()
                     }
+                    }.padding(.horizontal, 18).padding(.bottom, 12)
                 }
-                .listStyle(.inset)
             }
 
             Divider()
             bottomBar
         }
+        .alert("删除服务器配置？", isPresented: Binding(get: { deletingConfig != nil }, set: { if !$0 { deletingConfig = nil } })) {
+            Button("取消", role: .cancel) { deletingConfig = nil }
+            Button("删除", role: .destructive) {
+                if let target = deletingConfig {
+                    let candidate = configs.filter { $0.id != target.id }
+                    _ = persist(candidate)
+                }
+                deletingConfig = nil
+            }
+        } message: { Text("将删除“\(deletingConfig?.name ?? "")”的连接配置。其他服务器保持原样。") }
         .sheet(item: $editingConfig) { config in
             VPSEditSheet(config: config) { updated in
-                if let idx = configs.firstIndex(where: { $0.id == updated.id }) {
-                    configs[idx] = updated
-                } else {
-                    configs.append(updated)
-                }
-                AppConfig.shared.vpsConfigs = configs
-                coordinator.reloadVPSConfigsAndRefresh()
-                editingConfig = nil
+                var candidate = configs
+                if let idx = candidate.firstIndex(where: { $0.id == updated.id }) { candidate[idx] = updated }
+                else { candidate.append(updated) }
+                if persist(candidate) { editingConfig = nil; return true }
+                return false
             } onCancel: {
                 editingConfig = nil
             }
@@ -383,7 +231,7 @@ private struct VPSSettingsTab: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("服务器管理")
                     .font(.system(size: 15, weight: .semibold))
-                Text("添加 3X-UI 面板后，NetBar 会在菜单栏显示 VPS 流量。")
+                Text("连接 3X-UI 面板，查看流量、额度与客户端。")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             }
@@ -470,6 +318,7 @@ private struct VPSSettingsTab: View {
             }
             .buttonStyle(.borderless)
             .help("测试连接")
+            .accessibilityLabel("测试服务器 " + config.name)
 
             Button {
                 editingConfig = config
@@ -478,22 +327,33 @@ private struct VPSSettingsTab: View {
             }
             .buttonStyle(.borderless)
             .help("编辑")
+            .accessibilityLabel("编辑服务器 " + config.name)
 
             Button {
-                configs.removeAll { $0.id == config.id }
-                AppConfig.shared.vpsConfigs = configs
-                coordinator.reloadVPSConfigsAndRefresh()
+                deletingConfig = config
             } label: {
                 Image(systemName: "trash")
                     .foregroundColor(.red)
             }
             .buttonStyle(.borderless)
             .help("删除")
+            .accessibilityLabel("删除服务器 " + config.name)
         }
         .padding(.vertical, 6)
     }
 
+    private func persist(_ candidate: [AppConfig.VPSConfig]) -> Bool {
+        guard AppConfig.shared.vpsConfigs == configs else {
+            saveError = "服务器配置已在其他位置改变，请重新打开此页面后再试。"; return false
+        }
+        AppConfig.shared.vpsConfigs = candidate
+        guard AppConfig.shared.vpsConfigs == candidate else {
+            saveError = "配置未能保存，原记录与输入已保留。"; return false
+        }
+        configs = candidate; saveError = nil; coordinator.reloadVPSConfigsAndRefresh(); return true
+    }
     private func testServer(_ config: AppConfig.VPSConfig) {
+        guard !testingIDs.contains(config.id) else { return }
         guard !config.password.isEmpty else {
             testMessages[config.id] = VPSConnectionError.passwordRequired.localizedDescription
             return
@@ -528,7 +388,7 @@ private struct VPSSettingsTab: View {
 // MARK: - VPS 编辑表单
 
 private struct VPSEditSheet: View {
-    let onSave: (AppConfig.VPSConfig) -> Void
+    let onSave: (AppConfig.VPSConfig) -> Bool
     let onCancel: () -> Void
 
     @State private var config: AppConfig.VPSConfig
@@ -543,7 +403,7 @@ private struct VPSEditSheet: View {
 
     init(
         config: AppConfig.VPSConfig,
-        onSave: @escaping (AppConfig.VPSConfig) -> Void,
+        onSave: @escaping (AppConfig.VPSConfig) -> Bool,
         onCancel: @escaping () -> Void
     ) {
         self.onSave = onSave
@@ -614,7 +474,10 @@ private struct VPSEditSheet: View {
                     do {
                         let updated = try buildConfig()
                         updated.password = password
-                        onSave(updated)
+                        guard updated.password == password else {
+                            testResult = .failure(VPSConnectionError.invalidCredentials("凭据未能保存，输入已保留。")); return
+                        }
+                        if !onSave(updated) { testResult = .failure(VPSConnectionError.invalidCredentials("服务器配置未能保存，输入已保留。")) }
                     } catch {
                         testResult = .failure(error)
                     }
@@ -645,9 +508,11 @@ private struct VPSEditSheet: View {
         Task {
             do {
                 let candidate = try buildConfig()
-                let result = await ThreeXUIClient().testConnection(config: candidate, password: password)
-                testResult = result
-                hasSuccessfulTest = result.success
+                let testedPassword = password
+                let result = await ThreeXUIClient().testConnection(config: candidate, password: testedPassword)
+                if (try? buildConfig()) == candidate && password == testedPassword {
+                    testResult = result; hasSuccessfulTest = result.success
+                }
             } catch {
                 testResult = .failure(error)
                 hasSuccessfulTest = false
@@ -679,30 +544,37 @@ private struct VPSEditSheet: View {
 
 // MARK: - Settings Window Controller
 
-/// 管理设置窗口的生命周期（确保只有一个实例）
-final class SettingsWindowController {
+/// One settings window, shared by the menu and keyboard shortcut.
+final class SettingsWindowController: NSObject, NSWindowDelegate {
     static let shared = SettingsWindowController()
     private var window: NSWindow?
-
+    private weak var coordinator: MonitorCoordinator?
     func show(coordinator: MonitorCoordinator) {
-        if let existingWindow = window {
-            existingWindow.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
+        self.coordinator = coordinator
+        coordinator.settingsDraft.loadIfClean()
+        if window == nil {
+            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(coordinator: coordinator)))
+            w.title = "NetBar 设置"
+            w.styleMask = [.titled, .closable, .miniaturizable]
+            w.setContentSize(NSSize(width: 560, height: 500))
+            w.center(); w.setFrameAutosaveName("NetBarSettingsWindow")
+            w.isReleasedWhenClosed = false; w.delegate = self
+            window = w
         }
-
-        let settingsView = SettingsView(coordinator: coordinator)
-        let hostingController = NSHostingController(rootView: settingsView)
-
-        let newWindow = NSWindow(contentViewController: hostingController)
-        newWindow.title = "NetBar 设置"
-        newWindow.styleMask = [.titled, .closable]
-        newWindow.center()
-        newWindow.setFrameAutosaveName("SettingsWindow")
-        newWindow.isReleasedWhenClosed = false
-
-        window = newWindow
-        newWindow.makeKeyAndOrderFront(nil)
+        window?.deminiaturize(nil); window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
+    func allowLeavingSettings() -> Bool {
+        guard let coordinator, coordinator.settingsDraft.hasChanges else { return true }
+        let alert = NSAlert()
+        alert.messageText = "保存连接设置的修改？"
+        alert.informativeText = "测试连接不会保存草稿。你可以保存、放弃修改或继续编辑。"
+        alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "放弃修改"); alert.addButton(withTitle: "继续编辑")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return coordinator.settingsDraft.save(coordinator: coordinator)
+        case .alertSecondButtonReturn: coordinator.settingsDraft.discard(); return true
+        default: return false
+        }
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { allowLeavingSettings() }
 }

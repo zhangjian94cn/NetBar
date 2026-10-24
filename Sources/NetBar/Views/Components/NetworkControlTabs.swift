@@ -5,14 +5,17 @@ struct ClashModeTabView: View {
     @ObservedObject var controller: ClashNetworkModeController
     let applicationFacts: ApplicationPathFacts?
     @State private var showsDiagnostics = false
+    @State private var showsExplanation = false
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: PopoverVisualStyle.blockSpacing) {
                 hero
-                explanation
                 configurationFacts
+                probeSection
                 diagnosticsDisclosure
+                PopoverDisclosure(icon: "info.circle", title: "管理方式与验证范围", isExpanded: $showsExplanation) { explanation }
+
 
                 if let reason = controller.snapshot.reason, !reason.isEmpty {
                     PopoverBanner(message: reason) {
@@ -30,24 +33,19 @@ struct ClashModeTabView: View {
     }
 
     private var hero: some View {
-        HStack(alignment: .center, spacing: PopoverVisualStyle.Spacing.sm) {
+        HStack(spacing: 10) {
             Image(systemName: "shield.lefthalf.filled")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(PopoverVisualStyle.secondaryText)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(controller.snapshot.headline)
-                    .font(PopoverVisualStyle.Typography.section)
-                Text(controller.snapshot.phase)
-                    .font(PopoverVisualStyle.Typography.caption)
-                    .foregroundColor(PopoverVisualStyle.secondaryText)
+                .font(.system(size: 16, weight: .medium)).foregroundColor(PopoverVisualStyle.accent)
+                .frame(width: 34, height: 34)
+                .background(PopoverVisualStyle.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("当前代理策略").font(PopoverVisualStyle.Typography.caption).foregroundColor(.secondary)
+                Text(controller.snapshot.headline).font(.system(size: 15, weight: .semibold))
+                Text("Clash 原生管理 · NetBar 只读").font(PopoverVisualStyle.Typography.caption).foregroundColor(.secondary)
             }
-            Spacer()
-            if controller.isProbing || controller.isRefreshing {
-                ProgressView().controlSize(.small)
-            } else {
-                PopoverStatusDot(state: healthState)
-            }
-        }
+            Spacer(minLength: 4)
+            if controller.isRefreshing { ProgressView().controlSize(.small) }
+        }.padding(.vertical, 4)
     }
 
     private var explanation: some View {
@@ -59,37 +57,54 @@ struct ClashModeTabView: View {
 
     private var configurationFacts: some View {
         VStack(spacing: 0) {
-            PopoverFactRow(title: "当前配置", value: controller.snapshot.mode?.displayName ?? "其他配置 / 待检测")
-            Divider()
             PopoverFactRow(title: "TUN", value: boolText(controller.snapshot.runtime?.tunEnabled))
             Divider()
             PopoverFactRow(title: "系统代理", value: boolText(controller.snapshot.runtime?.systemProxyEnabled))
             Divider()
-            PopoverFactRow(title: "节点", value: controller.snapshot.selectedNode ?? "待检测")
+            PopoverFactRow(title: controller.snapshot.mode == .companyCoexistence ? "Claude 组节点" : "代理组节点",
+                           value: controller.snapshot.selectedNode ?? "待检测")
             Divider()
-            PopoverFactRow(title: "DNS 策略", value: controller.snapshot.configurationMatches ? "配置符合 · 路径待独立检测" : "未核对 / 存在差异")
-            Divider()
-            PopoverFactRow(title: "最近检测", value: probeSummary,
-                           state: controller.freshProbe?.passed == true ? .ok : .unknown)
-            if let detail = controller.probe?.detail {
-                Text(detail).font(PopoverVisualStyle.Typography.caption)
-                    .foregroundColor(PopoverVisualStyle.secondaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            HStack {
-                Button("刷新状态") { controller.refresh() }
-                Spacer()
-                Button("检测当前网络") { controller.detectCurrentNetwork() }
-                Spacer()
-                Button("打开 Clash") { openClash() }
-            }
-            .buttonStyle(.link)
-            .font(PopoverVisualStyle.Typography.caption)
-            .padding(.vertical, PopoverVisualStyle.Spacing.sm)
-            .disabled(controller.isProbing || controller.isRefreshing)
+            PopoverFactRow(title: "DNS 策略", value: controller.snapshot.configurationMatches ? "配置符合" : "未核对 / 存在差异")
         }
         .padding(.horizontal, PopoverVisualStyle.cardPadding)
-        .popoverSurface()
+        .padding(.vertical, 3).popoverSurface()
+    }
+
+    private var probeSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                if controller.isProbing { ProgressView().controlSize(.mini) }
+                else { PopoverStatusDot(state: displayState.factState, diameter: 6) }
+                Text(displayState.title).font(PopoverVisualStyle.Typography.bodyStrong)
+                Spacer()
+                if let probe = controller.probe ?? controller.previousProbe {
+                    Text(probe.sampledAt, style: .time).font(PopoverVisualStyle.Typography.caption).foregroundColor(.secondary)
+                }
+            }
+            Text(controller.probe?.detail ?? "实际 DNS / HTTPS 路径需单独检测。UDP、IPv6与业务结果独立验收。")
+                .font(PopoverVisualStyle.Typography.caption).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button { controller.detectCurrentNetwork() } label: {
+                    Text(controller.isProbing ? "正在检测…" : "检测当前网络")
+                        .font(PopoverVisualStyle.Typography.bodyStrong)
+                        .frame(maxWidth: .infinity, minHeight: 29)
+                        .foregroundColor(PopoverVisualStyle.accent)
+                        .background(PopoverVisualStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
+                }.disabled(controller.isProbing || controller.isRefreshing)
+                Button { openClash() } label: {
+                    Label("打开 Clash", systemImage: "arrow.up.right")
+                        .font(PopoverVisualStyle.Typography.body)
+                        .frame(maxWidth: .infinity, minHeight: 29)
+                        .foregroundColor(PopoverVisualStyle.secondaryText)
+                        .background(PopoverVisualStyle.surface, in: RoundedRectangle(cornerRadius: 7))
+                }
+            }.buttonStyle(.plain)
+        }.padding(.vertical, 3)
+    }
+
+    private var displayState: ProbeDisplayState {
+        .resolve(snapshot: controller.snapshot, probe: controller.probe, previous: controller.previousProbe, running: controller.isProbing)
     }
 
     private func boolText(_ enabled: Bool?) -> String {
@@ -150,18 +165,8 @@ struct ClashModeTabView: View {
     private var modeExplanation: String {
         "请在 Clash 中切换配置、TUN 与系统代理。统一出口前手动断开公司 VPN。NetBar 只读，启动或退出均不改变网络；极端崩溃后重开 Clash 再关闭 TUN。"
     }
-    private var probeSummary: String {
-        guard let probe = controller.probe else { return "尚未检测" }
-        let time = probe.sampledAt.formatted(date: .omitted, time: .shortened)
-        guard controller.freshProbe != nil else { return time + " · 已失效" }
-        return time + (probe.passed ? " · DNS / HTTPS 通过" : " · 未通过")
-    }
-    private var healthState: PopoverFactState {
-        controller.freshProbe?.passed == true ? .ok : .unknown
-    }
-
     private func openClash() {
-        let applications = ["/Applications/Clash Verge.app", "/Applications/Clash Verge Rev.app"]
+        let applications = ["/Applications/Clash Verge.app", "/Applications/Clash Verge Rev.app", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Clash Verge.app").path]
         guard let path = applications.first(where: FileManager.default.fileExists(atPath:)) else { return }
         NSWorkspace.shared.openApplication(
             at: URL(fileURLWithPath: path),

@@ -4,8 +4,59 @@ import Security
 /// 轻量 Keychain 封装 — 安全存储密码和密钥
 /// 不引入第三方依赖，直接使用 Security.framework
 enum KeychainHelper {
+    private static let checkedAccessLock = NSLock()
 
-    private static let service = "com.zjah.NetBar"
+    struct StorageError: LocalizedError {
+        let status: OSStatus
+        var errorDescription: String? { "钥匙串已锁定或当前应用无权访问（\(status)）。请在“钥匙串访问”检查记录后重试；原记录保持不变。" }
+    }
+
+    /// Checked operations for explicit credential editing. Never delete before an update.
+    static func readChecked(key: String) throws -> Data? {
+        // Legacy login-keychain ACLs can ignore kSecUseAuthenticationUIFail.
+        // Keep this explicit operation noninteractive as well, restoring the
+        // process setting immediately afterwards; do not alter keychain ACLs.
+        checkedAccessLock.lock(); defer { checkedAccessLock.unlock() }
+        var allowed = DarwinBoolean(true)
+        SecKeychainGetUserInteractionAllowed(&allowed)
+        SecKeychainSetUserInteractionAllowed(false)
+        defer { SecKeychainSetUserInteractionAllowed(allowed.boolValue) }
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service, kSecAttrAccount as String: key,
+            kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
+        var value: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &value)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = value as? Data else { throw StorageError(status: status) }
+        return data
+    }
+
+    static func writeChecked(key: String, data: Data) throws {
+        checkedAccessLock.lock(); defer { checkedAccessLock.unlock() }
+        var allowed = DarwinBoolean(true)
+        SecKeychainGetUserInteractionAllowed(&allowed)
+        SecKeychainSetUserInteractionAllowed(false)
+        defer { SecKeychainSetUserInteractionAllowed(allowed.boolValue) }
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service, kSecAttrAccount as String: key,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
+        let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecSuccess { return }
+        guard status == errSecItemNotFound else { throw StorageError(status: status) }
+        var add = query
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        let added = SecItemAdd(add as CFDictionary, nil)
+        guard added == errSecSuccess else { throw StorageError(status: added) }
+    }
+
+    private static var service: String {
+        #if DEBUG
+        if MonitorCoordinator.isVisualCaptureRun { return Bundle.main.bundleIdentifier ?? "com.zjah.NetBar.preview" }
+        #endif
+        return "com.zjah.NetBar"
+    }
 
     /// 保存字符串到 Keychain
     static func save(key: String, value: String) {
@@ -44,7 +95,7 @@ enum KeychainHelper {
 
     /// 从 Keychain 读取 Data
     static func load(key: String) -> Data? {
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
@@ -52,6 +103,13 @@ enum KeychainHelper {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
 
+        #if DEBUG
+        // Rebuilt QA bundles must never wait for authorization of an older
+        // preview signature. Missing fixture credentials stay an explicit error.
+        if MonitorCoordinator.isVisualCaptureRun {
+            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        }
+        #endif
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess else { return nil }
