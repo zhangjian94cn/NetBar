@@ -1,8 +1,27 @@
 import Foundation
+import Combine
 
 /// 统一管理所有监控服务的生命周期
 /// 将服务创建、关联、启动/停止逻辑从 AppDelegate 中解耦
 class MonitorCoordinator {
+
+    let settingsDraft = SettingsDraft()
+    var onSettingsOpened: (() -> Void)?
+    private var visibleConsumers = VisibleDataConsumers()
+    private var subscriptions = Set<AnyCancellable>()
+
+    func openSettings() {
+        SettingsWindowController.shared.show(coordinator: self)
+        onSettingsOpened?()
+    }
+    func refreshVisibleFacts() {
+        networkInfoProvider.refresh()
+        if DistributionFlavor.current == .directFull { networkModeController.refresh(); clashNetworkModeController.refresh() }
+    }
+    func setVisibleConsumer(_ id: String, visible: Bool) {
+        visibleConsumers.set(id, visible: visible)
+        processTrafficMonitor.setDetailVisible(visibleConsumers.needsDetails)
+    }
 
     let networkMonitor = NetworkMonitor()
     let proxyDetector = ProxyDetector()
@@ -29,7 +48,7 @@ class MonitorCoordinator {
         }
         if DistributionFlavor.current.supportsProcessTraffic {
             monitors.insert(processTrafficMonitor, at: 2)
-            monitors.insert(trafficStore, at: 4)
+            if !Self.isVisualCaptureRun { monitors.insert(trafficStore, at: 4) }
         }
         if DistributionFlavor.current == .directFull {
             monitors.append(companyVPNDiagnosticMonitor)
@@ -40,10 +59,13 @@ class MonitorCoordinator {
     /// 启动所有监控服务
     func startAll() {
         // 关联持久化存储（必须在 start 之前）
-        if DistributionFlavor.current.supportsProcessTraffic {
+        if DistributionFlavor.current.supportsProcessTraffic, !Self.isVisualCaptureRun {
             processTrafficMonitor.trafficStore = trafficStore
         }
 
+        networkInfoProvider.$wifiSSID.removeDuplicates().dropFirst().sink { [weak self] _ in self?.identityChanged() }.store(in: &subscriptions)
+        networkInfoProvider.$localIP.removeDuplicates().dropFirst().sink { [weak self] _ in self?.identityChanged() }.store(in: &subscriptions)
+        proxyDetector.$status.removeDuplicates().dropFirst().sink { [weak self] _ in self?.identityChanged() }.store(in: &subscriptions)
         for monitor in allMonitors {
             monitor.start()
         }
@@ -64,8 +86,14 @@ class MonitorCoordinator {
         #endif
     }
 
+    private func identityChanged() {
+        clashNetworkModeController.invalidateProbe()
+        scheduleEgressIPRefreshAfterIdentityChange()
+    }
+
     /// 停止所有监控服务
     func stopAll() {
+        subscriptions.removeAll()
         egressIdentityRefreshScheduler.cancel()
         networkModeController.stopPolicyMonitoring()
         for monitor in allMonitors {

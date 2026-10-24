@@ -5,7 +5,7 @@ struct ProxyBadge: View {
     let status: ProcessTrafficMonitor.AppProxyStatus
 
     var body: some View {
-        PopoverBadge(text: status.label, color: color)
+        PopoverBadge(text: status == .unknown ? "待确认" : status.label, color: color)
     }
 
     private var color: Color {

@@ -23,10 +23,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        SettingsWindowController.shared.allowLeavingSettings() ? .terminateNow : .terminateCancel
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         coordinator.stopAll()
         NettopParser.terminateAllRunningChildren()
     }
+
+    @objc private func showSettings() { coordinator.openSettings() }
+    @objc private func findInPage() { NotificationCenter.default.post(name: .netbarFind, object: nil) }
 
     private func configureMainMenu() {
         let mainMenu = NSMenu()
@@ -35,8 +42,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu(title: "NetBar")
         appMenuItem.submenu = appMenu
+        let settings = appMenu.addItem(withTitle: "设置…", action: #selector(showSettings), keyEquivalent: ",")
+        settings.target = self
+        appMenu.addItem(.separator())
         appMenu.addItem(
-            withTitle: "Quit NetBar",
+            withTitle: "退出 NetBar",
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         )
@@ -56,6 +66,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
+        let windowItem = NSMenuItem()
+        mainMenu.addItem(windowItem)
+        let windowMenu = NSMenu(title: "窗口")
+        windowItem.submenu = windowMenu
+        windowMenu.addItem(withTitle: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        let find = editMenu.addItem(withTitle: "查找", action: #selector(findInPage), keyEquivalent: "f")
+        find.target = self
+        NSApp.windowsMenu = windowMenu
         NSApp.mainMenu = mainMenu
     }
 }

@@ -31,6 +31,7 @@ struct PopoverFactTile: View {
                     .foregroundColor(valueColor)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(value)
             }
             if let detail = Self.meaningfulDetail(detail) {
                 Text(detail)
@@ -103,7 +104,8 @@ struct PopoverFactRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        .frame(minHeight: compact ? 18 : 26)
+        .frame(minHeight: compact ? 19 : 29)
+        .help(title + "：" + value)
     }
 }
 
@@ -223,7 +225,8 @@ struct PopoverSegmentedOption: View {
                 .frame(maxWidth: .infinity, minHeight: 24)
                 .background {
                     RoundedRectangle(cornerRadius: PopoverVisualStyle.Radius.control - 2, style: .continuous)
-                        .fill(isSelected ? accent.opacity(0.16) : Color.clear)
+                        .fill(isSelected ? PopoverVisualStyle.surface : Color.clear)
+                        .shadow(color: .black.opacity(isSelected ? 0.06 : 0), radius: 1, y: 1)
                 }
                 .contentShape(Rectangle())
         }
@@ -236,8 +239,8 @@ struct PopoverSegmentedOption: View {
 extension View {
     /// Track behind a row of `PopoverSegmentedOption`s.
     func popoverSegmentedTrack() -> some View {
-        padding(2)
-            .popoverSurface(radius: PopoverVisualStyle.Radius.control)
+        padding(3)
+            .background(PopoverVisualStyle.meterTrack.opacity(0.5), in: RoundedRectangle(cornerRadius: PopoverVisualStyle.Radius.control))
     }
 }
 

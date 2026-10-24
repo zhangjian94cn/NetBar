@@ -5,7 +5,12 @@ import Security
 /// 不引入第三方依赖，直接使用 Security.framework
 enum KeychainHelper {
 
-    private static let service = "com.zjah.NetBar"
+    private static var service: String {
+        #if DEBUG
+        if MonitorCoordinator.isVisualCaptureRun { return Bundle.main.bundleIdentifier ?? "com.zjah.NetBar.preview" }
+        #endif
+        return "com.zjah.NetBar"
+    }
 
     /// 保存字符串到 Keychain
     static func save(key: String, value: String) {

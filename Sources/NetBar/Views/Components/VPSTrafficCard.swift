@@ -6,11 +6,12 @@ struct VPSTrafficCard: View {
 
     var body: some View {
         PopoverCard(icon: "cloud.fill", title: vps.name) {
-            Text(vps.lastUpdatedText)
+            Text(vps.hasData ? (vps.error == nil ? vps.lastUpdatedText : "上次成功：" + vps.lastUpdatedText + " · 数据已过期") : "尚未连接成功")
                 .font(PopoverVisualStyle.Typography.caption)
                 .foregroundColor(PopoverVisualStyle.tertiaryText)
         } content: {
             VStack(alignment: .leading, spacing: PopoverVisualStyle.Spacing.sm) {
+                if vps.hasData {
                 HStack(alignment: .top, spacing: PopoverVisualStyle.Spacing.lg) {
                     metric(title: "上传", icon: "arrow.up", value: vps.formattedUpload)
                     metric(title: "下载", icon: "arrow.down", value: vps.formattedDownload)
@@ -18,8 +19,12 @@ struct VPSTrafficCard: View {
                     Spacer(minLength: 0)
                 }
 
-                if let fraction = PopoverMeter.fraction(vps.total, of: vps.totalLimit) {
+                if vps.quotaKnown, let fraction = PopoverMeter.fraction(vps.total, of: vps.totalLimit) {
                     PopoverMeter(fraction: fraction, tint: quotaTint(fraction))
+                }
+
+                } else {
+                    Text("尚未取得数据").font(.system(size: 12)).foregroundColor(.secondary)
                 }
 
                 if let error = vps.error {

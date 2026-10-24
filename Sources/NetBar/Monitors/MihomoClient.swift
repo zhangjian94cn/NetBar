@@ -130,12 +130,7 @@ enum MihomoClient {
             return NettopParser.extractAppName(from: process)
         }
 
-        if let host = metadata.host?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !host.isEmpty {
-            return host
-        }
-
-        return "未知代理应用"
+        return "未归属连接"
     }
 
     private static func appBundleName(from processPath: String) -> String? {

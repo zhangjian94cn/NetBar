@@ -4,7 +4,7 @@ import Cocoa
 private enum TrafficTableLayout {
     static let columnSpacing = PopoverVisualStyle.Spacing.xs
     static let rowHorizontalPadding: CGFloat = 6
-    static let rowHeight: CGFloat = 26
+    static let rowHeight: CGFloat = 31
     static let iconSize: CGFloat = 16
     static let iconTextGap: CGFloat = 6
     static let routeWidth: CGFloat = 40
@@ -19,7 +19,7 @@ struct TrafficTableHeader: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, TrafficTableLayout.iconSize + TrafficTableLayout.iconTextGap)
 
-            Text(L10n.Table.route)
+            Text("近期路由")
                 .frame(width: TrafficTableLayout.routeWidth)
 
             Text(L10n.Table.downloadHeader)
@@ -141,6 +141,7 @@ struct TrafficTableRow: View {
         }
         .padding(.horizontal, TrafficTableLayout.rowHorizontalPadding)
         .frame(height: TrafficTableLayout.rowHeight)
+        .help(app.name + "\n" + app.routeEvidence)
         .background(alignment: .leading) {
             if let share {
                 GeometryReader { geometry in

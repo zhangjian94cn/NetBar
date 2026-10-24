@@ -101,7 +101,7 @@ final class AppConfig: ObservableObject {
 
     // MARK: - VPS 配置
 
-    struct VPSConfig: Codable, Identifiable {
+    struct VPSConfig: Codable, Identifiable, Equatable {
         var id: String
         var name: String
         var provider: VPSProviderType

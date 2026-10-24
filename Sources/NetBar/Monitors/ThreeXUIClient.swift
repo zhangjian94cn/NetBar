@@ -5,6 +5,7 @@ struct ThreeXUIInboundData {
     let down: UInt64
     let allTime: UInt64
     let total: UInt64
+    let quotaKnown: Bool
     let protocol_: String
     let port: Int
     let clients: [ThreeXUIClientData]
@@ -15,6 +16,7 @@ struct ThreeXUIInboundData {
         self.up = up
         self.down = down
         self.allTime = Self.uint64Value(dict["allTime"]) ?? up + down
+        self.quotaKnown = Self.uint64Value(dict["total"]) != nil
         self.total = Self.uint64Value(dict["total"]) ?? 0
         self.protocol_ = dict["protocol"] as? String ?? ""
         self.port = dict["port"] as? Int ?? 0
