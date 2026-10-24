@@ -18,6 +18,8 @@ rm -rf "$DIST_DIR"
 mkdir -p "$BIN_DIR" "$RES_DIR"
 cp "$ROOT_DIR/.build/release/NetBar" "$BIN_DIR/NetBar"
 cp -R "$ROOT_DIR/.build/release/NetBar_NetBar.bundle" "$RES_DIR/NetBar_NetBar.bundle"
+# SwiftPM may retain removed resources from an earlier build; never ship the retired DNS binary/plist.
+rm -f "$RES_DIR/NetBar_NetBar.bundle/RouteSafetyHelper/NetBarDNSGuardian" "$RES_DIR/NetBar_NetBar.bundle/RouteSafetyHelper/com.zjah.NetBarDNSGuardian.plist"
 cp "$ROOT_DIR/.build/release/NetBarMiniNetworkGuardian" "$RES_DIR/NetBar_NetBar.bundle/MiniLinkHelper/NetBarMiniNetworkGuardian"
 chmod 0755 "$RES_DIR/NetBar_NetBar.bundle/MiniLinkHelper/NetBarMiniNetworkGuardian"
 cp "$ROOT_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"

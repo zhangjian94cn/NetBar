@@ -5,8 +5,8 @@
 ## 不变量
 
 - 连通性优先于偏好；Mini 是默认首选，但不能为了满足偏好破坏当前健康路径。
-- NetBar 不开关 Wi-Fi，不修改 Mini 公司 DNS，不接管 Apple NAT/PF，不退出、重启或重载 Clash，也不操作其他 VPN/TUN。
-- 只有用户在 `Clash 模式` Tab 点击后，NetBar 才可事务性修改唯一顶层 `enable_tun_mode` 标量和对应 Mihomo runtime TUN；网络事件与出口切换无权改变该模式。
+- NetBar 不开关 Wi-Fi，不修改 Mini 公司 DNS，不接管 Apple NAT/PF，不退出或重启 Clash，也不操作其他 VPN/TUN。Clash 的配置、TUN、代理和 DNS 完全由 Clash 原生管理。
+- `Clash` Tab 只读观察与显式有界检测；策略由 dual-vpn-config 定义，节点由 clash-profile-compose 合成，原生激活及系统 DNS 归 Clash。NetBar 生命周期不改网络。
 - `utun` 成功不能证明底层物理出口；`forwarding=1` 也不能单独证明 MacBook 已能经 Mini 上网。
 - App Store Lite 不包含 SSH、Helper、自动路由或 Mihomo 写动作。
 
@@ -45,9 +45,9 @@ Wi-Fi 是当前出口时，Mini Helper 的 `ready` 只允许进入 30 秒资格�
 
 - Mini Helper v5：只接受 `status/prepare/migrate/rollback/finalize-rollback` 五个固定命令；迁移管理别名与 `bridge0` DHCP 契约，不写 Apple NAT/DHCP 私有配置。
 - Mini Guardian：维护 Mini 管理别名并观察 `en0`、Apple Internet Sharing、forwarding 与共享数据面；对 Apple 共享进程只观察不干预（不发信号、不 kickstart），不重写公司 DNS、NAT/DHCP 或 VPN。共享总开关关闭立刻 `manual_pending`；开着但未在服务时先报恢复中，90 秒后才 `manual_pending` 并点名原因。
-- Route Safety Helper v4：管理 Wi-Fi 与 `bridge0` 的相对服务顺序、补回本机管理别名，并只在用户明确点击且 Wi-Fi DNS 精确依赖 `192.168.2.1` 时恢复自动 DNS；每次事务必须以 commit、rollback 或 manual recovery 结束。
+- Route Safety Helper 基础协议 v5：管理 Wi-Fi 与 `bridge0` 的相对服务顺序、补回本机管理别名，并只在用户明确点击且 Wi-Fi DNS 精确依赖 `192.168.2.1` 时恢复自动 DNS；每次事务必须以 commit、rollback 或 manual recovery 结束。
 - NetBar 策略机：读取事实、决定候选与事务，不直接持有管理员密码。
-- Clash Overlay Controller：只响应用户模式命令；拥有 `enable_tun_mode` 与 runtime TUN 的窄写权限，并负责用户级事务回滚。
+- Clash Network Mode Controller：只读真实 UID、源/运行规则与 DNS/TUN 摘要、真实节点及代理；配置符合与探测证据分开。无 AX、模式/TUN/节点/DNS 写动作。
 - Mihomo underlay 协作：物理出口确实变化时每个 route generation 最多清理一次现有连接；不改配置或 TUN 状态。
 - ZCode 诊断：匿名 2xx–4xx 只证明端点传输可达，不是物理路由门禁，也不发送 OAuth token、Cookie 或账号信息。
 
@@ -58,3 +58,17 @@ Wi-Fi 是当前出口时，Mini Helper 的 `ready` 只允许进入 30 秒资格�
 读取配置、流量快照和已有写动作共用已验证目标；写动作仍只允许 Unix Socket，失败不跨目标重试。控制请求绕过环境代理，日志只记录来源/验证结论，不含 Secret 或响应正文。
 
 自动切回失败保留具体阶段及验证结果；退避不能一律归因于 Mini 上游抖动，成功切回后才清除上次失败。发现控制端成功不能替代路由和上网验证。
+
+## Clash 原生双配置与只读监控
+
+长期所有权及来源见 [infra 委托 ADR](https://github.com/zhangjian94cn/zhangjian-skills/blob/feature/netbar-clash-dns/skills/my/infra/docs/2026-10-22-netbar-profile-dns-delegation-adr.md)。manifest v2 的真实 UID 是身份；v1 仅迁移识别。节点/规则/DNS 仍由 Skills 拥有，NetBar 只验证，不重复定义。
+
+两份 profile 共用原生设置：保留 stack/device/MTU；自动路由/出口检测开、严格路由关、UDP/TCP53 劫持；现代排除字段保留公司/LAN/Tailscale/管理端点。root IPv6=true 保留 IPv6 TUN；DNS IPv6=false，无 IPv6 Fake-IP 池；明确例外后拒绝公网 IPv6，关闭 ICMP 转发。局部脚本只钳制 Verge 派生 DNS 字段，DNS 覆写关闭。系统 IPv6 不动。
+
+[只读观察器](Sources/NetBar/Monitors/ClashNetworkModeController.swift) 的 backend 无任何配置写方法。读取与显式检测单飞，不在启动自动探测。检测绑定配置、节点和网络指纹，五分钟内且身份不变才显示新鲜；网络事件清除旧结果。配置符合不能代替 DNS/流量/IPv6/公司业务证据。统一配置下公司隧道活动或未知时显示保障条件不足，不操作 VPN。
+
+面板只有刷新状态、检测当前网络、打开 Clash。退出/强退/重开 NetBar 不改网络，无辅助功能权限。旧 AX 适配器、Overlay TUN writer、DNS 租约/Guardian 已从源码及打包删除。原 Mini Guardian 与基础路由 Helper 保留。
+
+一次性 [退役维护](Sources/NetBar/Resources/RouteSafetyHelper/retire-netbar-dns-experiment.command) 仅在旧租约 inactive、TUN/代理关、DNS 原件核实后撤销 DNS 动作、卸载 DNS launchd 并私有备份组件；不写 DNS 或 Clash。基础路由动作逐字保留，外部变化 manual_pending。
+
+Clash 正常关 TUN/退出后核对逐服务 DNS；极端崩溃的恢复路径是重新打开 Clash 再关闭 TUN，不承诺后台自动恢复。只有 Clash 正常、TUN 有效及本轮证据通过时才谈分流保障。历史失败在 infra Spec validation 保留，不能将旧实验测试当作新版本验收。

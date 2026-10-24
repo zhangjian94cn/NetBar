@@ -8,13 +8,13 @@ final class DistributionFlavorTests: XCTestCase {
         XCTAssertFalse(DistributionFlavor.current.supportsProcessTraffic)
         XCTAssertFalse(DistributionFlavor.current.usesLaunchAgentStartup)
         XCTAssertFalse(DistributionFlavor.current.supportsNetworkModeSwitch)
-        XCTAssertFalse(DistributionFlavor.current.supportsClashModeSwitch)
+        XCTAssertFalse(DistributionFlavor.current.supportsClashDiagnostics)
         #else
         XCTAssertEqual(DistributionFlavor.current, .directFull)
         XCTAssertTrue(DistributionFlavor.current.supportsProcessTraffic)
         XCTAssertTrue(DistributionFlavor.current.usesLaunchAgentStartup)
         XCTAssertTrue(DistributionFlavor.current.supportsNetworkModeSwitch)
-        XCTAssertTrue(DistributionFlavor.current.supportsClashModeSwitch)
+        XCTAssertTrue(DistributionFlavor.current.supportsClashDiagnostics)
         #endif
     }
 }

@@ -16,8 +16,20 @@ cd "$SCRIPT_DIR"
 swift build -c release -Xswiftc -DDIRECT_FULL
 
 echo "📦 打包 NetBar.app 到 $HOME/Applications ..."
-# 先杀死正在运行的 NetBar，确保新编译的二进制能正确被打包并替换
-pkill NetBar || true
+# Stop the owner first so KeepAlive cannot restart the old app during replacement.
+launchctl unload "$PLIST_DST" 2>/dev/null || true
+if pgrep -x NetBar >/dev/null; then
+    # Read-only Clash/DNS integration has no termination transaction.
+    pkill -TERM -x NetBar || true
+fi
+for attempt in 1 2 3 4 5; do
+    pgrep -x NetBar >/dev/null || break
+    sleep 1
+done
+if pgrep -x NetBar >/dev/null; then
+    echo "NetBar 未退出，保留当前安装文件；请关闭后重试。"
+    exit 1
+fi
 # 清理旧的应用
 rm -rf "$APP_DIR"
 # 创建目录结构
@@ -27,6 +39,8 @@ mkdir -p "$RES_DIR"
 # 复制二进制和 Info.plist
 cp .build/release/NetBar "$BIN_DIR/"
 cp -R .build/release/NetBar_NetBar.bundle "$RES_DIR/NetBar_NetBar.bundle"
+# SwiftPM may retain removed resources from an earlier build; never ship the retired DNS binary/plist.
+rm -f "$RES_DIR/NetBar_NetBar.bundle/RouteSafetyHelper/NetBarDNSGuardian" "$RES_DIR/NetBar_NetBar.bundle/RouteSafetyHelper/com.zjah.NetBarDNSGuardian.plist"
 cp .build/release/NetBarMiniNetworkGuardian "$RES_DIR/NetBar_NetBar.bundle/MiniLinkHelper/NetBarMiniNetworkGuardian"
 chmod 0755 "$RES_DIR/NetBar_NetBar.bundle/MiniLinkHelper/NetBarMiniNetworkGuardian"
 if [ -f "Info.plist" ]; then

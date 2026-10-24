@@ -2,6 +2,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
+# Experimental DNS ownership must be retired from a verified inactive baseline.
+if [[ -e /Library/PrivilegedHelperTools/com.zjah.NetBarDNSGuardian || -e /Library/LaunchDaemons/com.zjah.NetBarDNSGuardian.plist ]]; then
+    print -u2 -- "请先退出 NetBar、在 Clash 关闭 TUN/系统代理并运行 retire-netbar-dns-experiment.command；此安装器不再安装 DNS 组件。"
+    exit 1
+fi
 HELPER_SOURCE="$SCRIPT_DIR/netbar-route-safety-helper"
 SUDOERS_SOURCE="$SCRIPT_DIR/com.zjah.NetBarRouteSafetyHelper.sudoers"
 PROFILE_SOURCE="$SCRIPT_DIR/../MiniLinkHelper/MacMiniLinkProfile.plist"

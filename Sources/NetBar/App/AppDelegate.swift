@@ -16,6 +16,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Opening the installed app again exposes its current facts, without
+        // selecting a mode or acquiring DNS on the user's behalf.
+        statusBarController?.showPanel()
+        return false
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         coordinator.stopAll()
         NettopParser.terminateAllRunningChildren()

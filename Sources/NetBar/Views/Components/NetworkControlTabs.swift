@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 struct ClashModeTabView: View {
-    @ObservedObject var controller: ClashOverlayModeController
+    @ObservedObject var controller: ClashNetworkModeController
     let applicationFacts: ApplicationPathFacts?
     @State private var showsDiagnostics = false
 
@@ -10,7 +10,6 @@ struct ClashModeTabView: View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: PopoverVisualStyle.blockSpacing) {
                 hero
-                modeSelector
                 explanation
                 configurationFacts
                 diagnosticsDisclosure
@@ -27,7 +26,7 @@ struct ClashModeTabView: View {
             .padding(.vertical, PopoverVisualStyle.Spacing.sm)
         }
         .onAppear { controller.refresh() }
-        .help("Clash 模式只会在你点击后切换；网络故障转移不会自动开关 TUN。")
+        .help("请在 Clash 原生界面切换；退出 NetBar 不改变网络。")
     }
 
     private var hero: some View {
@@ -36,37 +35,18 @@ struct ClashModeTabView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(PopoverVisualStyle.secondaryText)
             VStack(alignment: .leading, spacing: 1) {
-                Text(controller.snapshot.mode?.displayName ?? "正在检测 Clash")
+                Text(controller.snapshot.headline)
                     .font(PopoverVisualStyle.Typography.section)
-                Text(controller.snapshot.health.displayName)
+                Text(controller.snapshot.phase)
                     .font(PopoverVisualStyle.Typography.caption)
                     .foregroundColor(PopoverVisualStyle.secondaryText)
             }
             Spacer()
-            if controller.isSwitching {
+            if controller.isProbing || controller.isRefreshing {
                 ProgressView().controlSize(.small)
             } else {
                 PopoverStatusDot(state: healthState)
             }
-        }
-    }
-
-    private var modeSelector: some View {
-        HStack(spacing: 0) {
-            modeButton(.systemProxy, icon: "network")
-            modeButton(.tunFull, icon: "point.3.connected.trianglepath.dotted")
-        }
-        .popoverSegmentedTrack()
-    }
-
-    private func modeButton(_ mode: ClashOverlayMode, icon: String) -> some View {
-        PopoverSegmentedOption(
-            title: mode.displayName,
-            icon: icon,
-            isSelected: controller.snapshot.mode == mode,
-            isEnabled: !controller.isSwitching
-        ) {
-            controller.switchMode(to: mode)
         }
     }
 
@@ -79,25 +59,42 @@ struct ClashModeTabView: View {
 
     private var configurationFacts: some View {
         VStack(spacing: 0) {
-            PopoverFactRow(title: "持久配置", value: tunText(controller.snapshot.persistentTunEnabled))
+            PopoverFactRow(title: "当前配置", value: controller.snapshot.mode?.displayName ?? "其他配置 / 待检测")
             Divider()
-            PopoverFactRow(title: "Runtime", value: tunText(controller.snapshot.runtimeTunEnabled))
+            PopoverFactRow(title: "TUN", value: boolText(controller.snapshot.runtime?.tunEnabled))
             Divider()
-            PopoverFactRow(title: "系统代理", value: controller.snapshot.systemProxyEnabled ? "已开启" : "未开启")
+            PopoverFactRow(title: "系统代理", value: boolText(controller.snapshot.runtime?.systemProxyEnabled))
             Divider()
-            PopoverFactRow(
-                title: "共存基线",
-                value: controller.snapshot.coexistenceBaselineReady ? "完整" : "需要修复",
-                state: controller.snapshot.coexistenceBaselineReady ? .ok : .warning
-            )
+            PopoverFactRow(title: "节点", value: controller.snapshot.selectedNode ?? "待检测")
+            Divider()
+            PopoverFactRow(title: "DNS 策略", value: controller.snapshot.configurationMatches ? "配置符合 · 路径待独立检测" : "未核对 / 存在差异")
+            Divider()
+            PopoverFactRow(title: "最近检测", value: probeSummary,
+                           state: controller.freshProbe?.passed == true ? .ok : .unknown)
+            if let detail = controller.probe?.detail {
+                Text(detail).font(PopoverVisualStyle.Typography.caption)
+                    .foregroundColor(PopoverVisualStyle.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack {
+                Button("刷新状态") { controller.refresh() }
+                Spacer()
+                Button("检测当前网络") { controller.detectCurrentNetwork() }
+                Spacer()
+                Button("打开 Clash") { openClash() }
+            }
+            .buttonStyle(.link)
+            .font(PopoverVisualStyle.Typography.caption)
+            .padding(.vertical, PopoverVisualStyle.Spacing.sm)
+            .disabled(controller.isProbing || controller.isRefreshing)
         }
         .padding(.horizontal, PopoverVisualStyle.cardPadding)
         .popoverSurface()
     }
 
-    private func tunText(_ enabled: Bool?) -> String {
+    private func boolText(_ enabled: Bool?) -> String {
         guard let enabled else { return "待检测" }
-        return enabled ? "TUN" : "系统代理"
+        return enabled ? "已开启" : "未开启"
     }
 
     private var diagnosticsDisclosure: some View {
@@ -151,22 +148,16 @@ struct ClashModeTabView: View {
     }
 
     private var modeExplanation: String {
-        switch controller.snapshot.mode {
-        case .systemProxy:
-            return "更稳定：关闭 TUN，但保持 Clash 与系统代理在线；不遵循系统代理的后台程序可能无法联网。"
-        case .tunFull:
-            return "覆盖更多程序：保持共存排除规则，物理出口变化后只刷新旧连接，不重启 Clash。"
-        case nil:
-            return "NetBar 不会随 Mac mini 与 Wi-Fi 切换自动改变此模式。"
-        }
+        "请在 Clash 中切换配置、TUN 与系统代理。统一出口前手动断开公司 VPN。NetBar 只读，启动或退出均不改变网络；极端崩溃后重开 Clash 再关闭 TUN。"
     }
-
+    private var probeSummary: String {
+        guard let probe = controller.probe else { return "尚未检测" }
+        let time = probe.sampledAt.formatted(date: .omitted, time: .shortened)
+        guard controller.freshProbe != nil else { return time + " · 已失效" }
+        return time + (probe.passed ? " · DNS / HTTPS 通过" : " · 未通过")
+    }
     private var healthState: PopoverFactState {
-        switch controller.snapshot.health {
-        case .ready: return .ok
-        case .switching: return .unknown
-        case .unavailable, .configurationDrift, .degraded: return .warning
-        }
+        controller.freshProbe?.passed == true ? .ok : .unknown
     }
 
     private func openClash() {

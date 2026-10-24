@@ -190,6 +190,7 @@ wifi_dns_depends_on_mini() {
 
 save_dns_backup() {
     local target="${1:-automatic}"
+    [[ ! -e "$STATE_DIR/dns-lease.json" ]] || fail "release NetBar managed DNS before legacy Wi-Fi DNS repair"
     ensure_no_pending_transaction
     "$MKDIR" -p "$STATE_DIR"
     "$CHMOD" 700 "$STATE_DIR"

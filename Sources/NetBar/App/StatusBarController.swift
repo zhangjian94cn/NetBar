@@ -73,7 +73,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
             vpsTrafficMonitor: coordinator.vpsTrafficMonitor,
             appIconResolver: coordinator.appIconResolver,
             networkModeController: coordinator.networkModeController,
-            clashOverlayModeController: coordinator.clashOverlayModeController,
+            clashNetworkModeController: coordinator.clashNetworkModeController,
             coordinator: coordinator
         )
         let controller = NSHostingController(rootView: contentView)
@@ -144,7 +144,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func showPanel() {
+    func showPanel() {
         guard let button = statusItem.button, panel == nil else { return }
 
         DispatchQueue.main.async { [weak self, weak button] in
