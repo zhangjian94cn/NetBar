@@ -16,8 +16,8 @@ case "${1:-}" in
 esac
 case "${1:-}" in
   build) swift build ;;
-  direct-tests) swift test ;;
-  lite-tests) swift test -Xswiftc -DAPP_STORE ;;
+  direct-tests) swift test "${@:2}" ;;
+  lite-tests) swift test -Xswiftc -DAPP_STORE "${@:2}" ;;
   coverage)
     swift test --enable-code-coverage
     bin_dir="$(swift build --show-bin-path)"
