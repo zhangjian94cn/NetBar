@@ -6,6 +6,26 @@ import Security
 enum KeychainHelper {
     private static let checkedAccessLock = NSLock()
 
+    // Native CI must never read or prompt for the user's login keychain.
+    // Release builds ignore this test-only environment entirely.
+    private static func scoped(_ query: [String: Any], adding: Bool = false) -> [String: Any] {
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["NETBAR_CI_KEYCHAIN"] {
+            var keychain: SecKeychain?
+            guard path.hasPrefix("/"), SecKeychainOpen(path, &keychain) == errSecSuccess,
+                  let keychain else { preconditionFailure("CI keychain is unavailable") }
+            var result = query
+            result[kSecAttrService as String] = "com.zjah.NetBar.ci"
+            if adding { result[kSecUseKeychain as String] = keychain }
+            else { result[kSecMatchSearchList as String] = [keychain] }
+            result[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+            return result
+        }
+        #endif
+        return query
+    }
+
+
     struct StorageError: LocalizedError {
         let status: OSStatus
         var errorDescription: String? { "钥匙串已锁定或当前应用无权访问（\(status)）。请在“钥匙串访问”检查记录后重试；原记录保持不变。" }
@@ -26,7 +46,7 @@ enum KeychainHelper {
             kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne,
             kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
         var value: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &value)
+        let status = SecItemCopyMatching(scoped(query) as CFDictionary, &value)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = value as? Data else { throw StorageError(status: status) }
         return data
@@ -41,13 +61,13 @@ enum KeychainHelper {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service, kSecAttrAccount as String: key,
             kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
-        let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        let status = SecItemUpdate(scoped(query) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecSuccess { return }
         guard status == errSecItemNotFound else { throw StorageError(status: status) }
         var add = query
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        let added = SecItemAdd(add as CFDictionary, nil)
+        let added = SecItemAdd(scoped(add, adding: true) as CFDictionary, nil)
         guard added == errSecSuccess else { throw StorageError(status: added) }
     }
 
@@ -78,7 +98,7 @@ enum KeychainHelper {
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
         ]
-        SecItemDelete(deleteQuery as CFDictionary)
+        SecItemDelete(scoped(deleteQuery) as CFDictionary)
 
         let addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -87,7 +107,7 @@ enum KeychainHelper {
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
         ]
-        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        let status = SecItemAdd(scoped(addQuery, adding: true) as CFDictionary, nil)
         if status != errSecSuccess {
             Log.config.error("Keychain save failed for key '\(key)': \(status)")
         }
@@ -111,7 +131,7 @@ enum KeychainHelper {
         }
         #endif
         var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let status = SecItemCopyMatching(scoped(query) as CFDictionary, &result)
         guard status == errSecSuccess else { return nil }
         return result as? Data
     }
@@ -124,6 +144,6 @@ enum KeychainHelper {
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
         ]
-        return SecItemDelete(query as CFDictionary) == errSecSuccess
+        return SecItemDelete(scoped(query) as CFDictionary) == errSecSuccess
     }
 }

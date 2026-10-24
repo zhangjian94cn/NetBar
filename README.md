@@ -259,3 +259,5 @@ sudo rm -rf /Library/Application\ Support/NetBar
 ## 📄 许可证
 
 [MIT License](LICENSE)
+
+开发与交付流程见 [Forgejo / Drone 工作流](docs/development-workflow.md)。GitHub 仅镜像 main。

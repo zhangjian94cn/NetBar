@@ -1,0 +1,23 @@
+kind: pipeline
+type: exec
+name: verification
+platform:
+  os: darwin
+  arch: arm64
+clone:
+  depth: 0
+trigger:
+  branch: [main]
+  event: [pull_request, push, custom, cron]
+steps:
+  - name: freeze-plan
+    commands:
+      - python3 "$${SKILLS_CI_DRIVER}" plan --repo . --artifacts-root "$${DRONE_ARTIFACT_ROOT}" --owner-module "$${SKILLS_CI_OWNER}"
+  - name: run-suites
+    commands:
+      - python3 "$${DRONE_ARTIFACT_ROOT}/$DRONE_REPO/$DRONE_BUILD_NUMBER/runner.py" run --repo . --artifacts-root "$${DRONE_ARTIFACT_ROOT}"
+  - name: aggregate
+    when:
+      status: [success, failure]
+    commands:
+      - python3 "$${DRONE_ARTIFACT_ROOT}/$DRONE_REPO/$DRONE_BUILD_NUMBER/runner.py" aggregate --repo . --artifacts-root "$${DRONE_ARTIFACT_ROOT}"

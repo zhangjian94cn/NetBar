@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "provider": "forgejo",
+  "remote": "personal",
+  "profile": "netbar",
+  "required_checks": [
+    "validate/pr"
+  ],
+  "mirror": {
+    "enabled": true,
+    "remote": "origin",
+    "branches": [
+      "main"
+    ],
+    "tags": false
+  },
+  "verification": {
+    "owner": "external"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "repository": "zhangjian/zhangjian-skills",
+  "commit": "82749b4321fba6909be8ee71e5b4dce93eefa933",
+  "module": "src/skills_manager/core/verification.py",
+  "sha256": "46eb9f2b642d177a66462af3a932f86b6f4312599990261b2c2b43f25bbb7d30"
+}

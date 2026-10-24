@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "mode": "full",
+  "documentation": [
+    "*.md",
+    "docs/**"
+  ],
+  "full_inputs": [
+    "*"
+  ],
+  "suites": {
+    "build": {
+      "always": true,
+      "profile": "python",
+      "commands": [
+        {
+          "name": "build",
+          "argv": [
+            "bash",
+            "scripts/ci-checks.sh",
+            "build"
+          ],
+          "timeout": 1200
+        }
+      ]
+    },
+    "direct-tests": {
+      "always": true,
+      "profile": "python",
+      "commands": [
+        {
+          "name": "direct-tests",
+          "argv": [
+            "bash",
+            "scripts/ci-checks.sh",
+            "direct-tests"
+          ],
+          "timeout": 1200
+        }
+      ]
+    },
+    "lite-tests": {
+      "always": true,
+      "profile": "python",
+      "commands": [
+        {
+          "name": "lite-tests",
+          "argv": [
+            "bash",
+            "scripts/ci-checks.sh",
+            "lite-tests"
+          ],
+          "timeout": 1200
+        }
+      ]
+    },
+    "coverage": {
+      "always": true,
+      "profile": "python",
+      "commands": [
+        {
+          "name": "coverage",
+          "argv": [
+            "bash",
+            "scripts/ci-checks.sh",
+            "coverage"
+          ],
+          "timeout": 1200
+        }
+      ]
+    },
+    "helper-contracts": {
+      "always": true,
+      "profile": "python",
+      "commands": [
+        {
+          "name": "helper-contracts",
+          "argv": [
+            "bash",
+            "scripts/ci-checks.sh",
+            "helper-contracts"
+          ],
+          "timeout": 1200
+        }
+      ]
+    },
+    "direct-package": {
+      "always": true,
+      "profile": "python",
+      "commands": [
+        {
+          "name": "direct-package",
+          "argv": [
+            "bash",
+            "scripts/ci-checks.sh",
+            "direct-package"
+          ],
+          "timeout": 1200
+        }
+      ]
+    },
+    "lite-package": {
+      "always": true,
+      "profile": "python",
+      "commands": [
+        {
+          "name": "lite-package",
+          "argv": [
+            "bash",
+            "scripts/ci-checks.sh",
+            "lite-package"
+          ],
+          "timeout": 1200
+        }
+      ]
+    }
+  }
+}
