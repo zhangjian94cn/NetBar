@@ -1,5 +1,7 @@
 # NetBar 网络策略上下文
 
+监控页管理面板由[ManagementPanelsStore](Sources/NetBar/App/ManagementPanels.swift)拥有，入口和登录信息整体保存在独立系统钥匙串条目，不写普通偏好。管理面板窗口单实例，编辑草稿与原VPS监控连接独立。sub2api通过固定host参数委托既有服务脚本；其SSH/watchdog归原owner，不能用自动kill进程组的探测runner启动。浏览器负责登录与MFA，打开不代表业务健康；Lite仅打开URL并提示隧道前提。
+
 本文件统一 Direct Full 网络策略的领域术语。长期决策见 [2026-08-27 状态机 ADR](docs/2026-08-27-evidence-driven-network-policy-machine-adr.md) 与 [2026-08-28 underlay/overlay ADR](docs/2026-08-28-underlay-overlay-control-boundary-adr.md)。
 
 ## 不变量

@@ -24,7 +24,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        SettingsWindowController.shared.allowLeavingSettings() ? .terminateNow : .terminateCancel
+        SettingsWindowController.shared.allowLeavingSettings() && ManagementPanelsWindowController.shared.allowQuitting() ? .terminateNow : .terminateCancel
     }
 
     func applicationWillTerminate(_ notification: Notification) {

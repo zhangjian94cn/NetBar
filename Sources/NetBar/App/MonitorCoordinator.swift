@@ -6,6 +6,7 @@ import Combine
 class MonitorCoordinator {
 
     let settingsDraft = SettingsDraft()
+    let managementPanels = ManagementPanelsStore()
     var onSettingsOpened: (() -> Void)?
     private var visibleConsumers = VisibleDataConsumers()
     private var subscriptions = Set<AnyCancellable>()

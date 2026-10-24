@@ -203,6 +203,7 @@ struct MenuPopoverView: View {
                 statusPresentation: statusPresentation,
                 dnsFacts: networkModeController.dnsPathFacts,
                 companyVPNMonitor: coordinator.companyVPNDiagnosticMonitor,
+                managementPanels: coordinator.managementPanels,
                 appConfig: appConfig
             )
         }
@@ -486,11 +487,13 @@ private struct MonitoringTabView: View {
     let statusPresentation: PopoverStatusPresentation
     let dnsFacts: DNSPathFacts?
     @ObservedObject var companyVPNMonitor: CompanyVPNDiagnosticMonitor
+    @ObservedObject var managementPanels: ManagementPanelsStore
     @ObservedObject var appConfig: AppConfig
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: PopoverVisualStyle.blockSpacing) {
+                ManagementPanelsCard(store: managementPanels)
                 Text("本机网络").font(PopoverVisualStyle.Typography.caption).foregroundColor(.secondary)
                 networkFacts.padding(PopoverVisualStyle.cardPadding).popoverSurface()
 

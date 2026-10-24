@@ -1,5 +1,6 @@
 import Cocoa
 import SwiftUI
+import Security
 
 /// 应用入口 — 纯菜单栏应用，无 Dock 图标
 @main
@@ -9,6 +10,11 @@ struct NetBarApp {
     static let appDelegate = AppDelegate()
 
     static func main() {
+        #if DEBUG
+        // Legacy keychain ACL prompts also ignore per-query UI suppression.
+        // QA identities must never queue a prompt for a previous preview build.
+        if MonitorCoordinator.isVisualCaptureRun { SecKeychainSetUserInteractionAllowed(false) }
+        #endif
         let currentPID = ProcessInfo.processInfo.processIdentifier
         // Guard against a second copy of *this* bundle. Hardcoding the shipping
         // identifier also blocked the Debug visual-QA bundle whenever the
