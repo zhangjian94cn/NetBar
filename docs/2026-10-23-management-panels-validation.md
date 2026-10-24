@@ -49,4 +49,4 @@ Direct/Lite 均构建成功。本地安装采用 ad-hoc 封装并通过 `codesig
 
 当前安装和凭据保存通过；全部真实链接、正式隧道、安装后重启回读与资源抽样尚待当前桌面证据。未复测内容沿既有结论，不借本轮入口功能宣称网络、业务或 VPS 健康通过。
 
-Skills 改动的 5 份文档路径检查通过；全 Skill 目录扫描另发现 27 个旧跨仓链接在隔离 worktree 缺失，不属于本次新增链接。`manage.py verify` 按 owner 生成全量计划并执行，asset-build 通过，其余套件未过：所用系统 Python 缺 pytest、隔离验证拒绝未提交工作树，以及原浏览器报告缺失。原始日志保留，不把这些环境/门禁失败算作功能通过，也不为本轮入口改动降低全仓门禁。两个堆叠 PR 仍为 Draft，远端适用工作流未运行，不用本地绿测代替 CI。
+Skills 改动的文档路径检查通过；全 Skill 目录扫描另发现 27 个旧跨仓链接在隔离 worktree 缺失，不属于本次新增链接。`manage.py verify` 首次全量执行受系统 Python 缺 pytest、未提交工作树和原浏览器报告缺失阻塞；原始失败保留。提交后改用既有完整依赖 venv，重新冻结计划并执行，绑定 Skills checkpoint `9ea2ad8a5`：asset-build、frontend、global、graph-tests、lifecycle、media 六套通过；context / repository 被已有绝对 symlink 的 Python 3.14 安全归档限制阻塞，relationships 报既有依赖环且 `new_diagnostics=[]`。后续只更新交付证据，不把新文档冒称上述源码版本全测。未修改归档安全策略或降低门禁。两个堆叠 PR 仍为 Draft，远端适用工作流未运行，不用本地绿测代替 CI。
