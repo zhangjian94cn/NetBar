@@ -132,11 +132,15 @@ struct TrafficTableRow: View {
             Text(downloadText)
                 .font(PopoverVisualStyle.Typography.data)
                 .foregroundColor(PopoverVisualStyle.secondaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.9)
                 .frame(width: TrafficTableLayout.trafficWidth, alignment: .trailing)
 
             Text(uploadText)
                 .font(PopoverVisualStyle.Typography.data)
                 .foregroundColor(PopoverVisualStyle.secondaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.9)
                 .frame(width: TrafficTableLayout.trafficWidth, alignment: .trailing)
         }
         .padding(.horizontal, TrafficTableLayout.rowHorizontalPadding)
